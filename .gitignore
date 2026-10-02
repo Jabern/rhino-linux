@@ -1,0 +1,19 @@
+# Temporary / editor files
+*~
+*.swp
+*.swo
+.DS_Store
+
+# Build artifacts
+build-wine/
+wine-src/
+*.o
+*.obj
+
+# Logs
+*.log
+logs/
+
+# Python cache
+__pycache__/
+*.pyc

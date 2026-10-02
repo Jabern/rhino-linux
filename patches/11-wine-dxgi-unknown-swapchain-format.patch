@@ -1,0 +1,23 @@
+diff --git a/dlls/dxgi/utils.c b/dlls/dxgi/utils.c
+index 49610cb077c..e8531ae0357 100644
+--- a/dlls/dxgi/utils.c
++++ b/dlls/dxgi/utils.c
+@@ -626,7 +626,17 @@ HRESULT wined3d_swapchain_desc_from_dxgi(struct wined3d_swapchain_desc *wined3d_
+     wined3d_desc->output = dxgi_output->wined3d_output;
+     wined3d_desc->backbuffer_width = dxgi_desc->Width;
+     wined3d_desc->backbuffer_height = dxgi_desc->Height;
+-    wined3d_desc->backbuffer_format = wined3dformat_from_dxgi_format(dxgi_desc->Format);
++    if (dxgi_desc->Format == DXGI_FORMAT_UNKNOWN)
++    {
++        /* Some applications (e.g. Autodesk Revit's OGS graphics engine) pass
++         * DXGI_FORMAT_UNKNOWN and expect the runtime to pick a default display
++         * format.  Windows rejects this for the legacy path, but the apps rely
++         * on it, so substitute the usual windowed display format here. */
++        WARN("DXGI_FORMAT_UNKNOWN backbuffer format, using B8G8R8A8_UNORM.\n");
++        wined3d_desc->backbuffer_format = WINED3DFMT_B8G8R8A8_UNORM;
++    }
++    else
++        wined3d_desc->backbuffer_format = wined3dformat_from_dxgi_format(dxgi_desc->Format);
+     wined3d_desc->backbuffer_count = dxgi_desc->BufferCount;
+     wined3d_desc->backbuffer_bind_flags = wined3d_bind_flags_from_dxgi_usage(dxgi_desc->BufferUsage);
+     wined3d_sample_desc_from_dxgi(&wined3d_desc->multisample_type,

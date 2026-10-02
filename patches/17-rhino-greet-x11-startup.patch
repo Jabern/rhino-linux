@@ -1,0 +1,330 @@
+diff --git a/dlls/user32/user32.spec b/dlls/user32/user32.spec
+--- a/dlls/user32/user32.spec
++++ b/dlls/user32/user32.spec
+@@ -707,6 +707,7 @@
+ # @ stub GetWindowFeedbackSetting
+ @ stdcall GetWindowInfo(long ptr)
+ @ stdcall GetWindowLongA(long long)
++@ stdcall -arch=win64 GetWindowLongPtr(long long) GetWindowLongPtrW
+ @ stdcall -arch=win64 GetWindowLongPtrA(long long)
+ @ stdcall -arch=win64 GetWindowLongPtrW(long long)
+ @ stdcall GetWindowLongW(long long)
+@@ -1110,6 +1111,7 @@
+ @ stdcall SetWindowDisplayAffinity(long long)
+ # @ stub SetWindowFeedbackSetting
+ @ stdcall SetWindowLongA(long long long)
++@ stdcall -arch=win64 SetWindowLongPtr(long long long) SetWindowLongPtrW
+ @ stdcall -arch=win64 SetWindowLongPtrA(long long long)
+ @ stdcall -arch=win64 SetWindowLongPtrW(long long long)
+ @ stdcall SetWindowLongW(long long long)
+diff --git a/dlls/winex11.drv/window.c b/dlls/winex11.drv/window.c
+--- a/dlls/winex11.drv/window.c
++++ b/dlls/winex11.drv/window.c
+@@ -387,6 +387,35 @@
+     return ret;
+ }
+ 
++static void raise_owned_windows( struct x11drv_win_data *data )
++{
++    HWND *list;
++    UINT i, count = 0;
++    Window win_stack[64];
++
++    if (!(list = build_hwnd_list())) return;
++
++    for (i = 0; list[i] != HWND_BOTTOM; i++)
++    {
++        HWND owner;
++        if (list[i] == data->hwnd) break;
++        owner = NtUserGetWindowRelative( list[i], GW_OWNER );
++        if (owner) owner = NtUserGetAncestor( owner, GA_ROOT );
++        if (owner == data->hwnd && NtUserIsWindowVisible( list[i] ))
++        {
++            Window win = X11DRV_get_whole_window( list[i] );
++            if (win && count < ARRAY_SIZE(win_stack))
++                win_stack[count++] = win;
++        }
++    }
++    free( list );
++
++    while (count > 0)
++    {
++        XRaiseWindow( data->display, win_stack[--count] );
++    }
++}
++
+ /* returns the HWND for the X11 window, or the desktop window if it isn't a Wine window */
+ static HWND hwnd_from_window( Display *display, Window window )
+ {
+@@ -1116,17 +1145,18 @@
+         owner_win = X11DRV_get_whole_window( owner );
+     }
+ 
+     if (owner_win)
+     {
+         XSetTransientForHint( data->display, data->whole_window, owner_win );
+         group_leader = owner_win;
++        if (data->whole_window && NtUserIsWindowVisible( data->hwnd )) XRaiseWindow( data->display, data->whole_window );
+     }
+@@ -1666,6 +1667,21 @@
+     if (!data->managed) data->wm_state_serial = 0;
+ }
+ 
++
++/***********************************************************************
++ *     map_window
++ */
++static void map_window( HWND hwnd, DWORD new_style, BOOL activate )
++{
++    struct x11drv_win_data *data;
++
++    make_owner_managed( hwnd );
++
++    if (!(data = get_win_data( hwnd ))) return;
++    window_set_wm_state( data, (new_style & WS_MINIMIZE) ? IconicState : NormalState, activate );
++    release_win_data( data );
++}
++
+ static void window_set_managed( struct x11drv_win_data *data, BOOL new_managed )
+ {
+     XSetWindowAttributes attr = {.override_redirect = !new_managed};
+@@ -2621,6 +2637,7 @@
+ {
+     BOOL same_visual = (data->vis.visualid == vis->visualid);
+     Window client_window = data->client_window;
++    UINT old_state = data->desired_state.wm_state;
+ 
+     if (!data->use_alpha == !use_alpha && same_visual) return;
+     data->use_alpha = use_alpha;
+@@ -2634,6 +2651,10 @@
+     create_whole_window( data );
+     /* attach the client back to the re-created whole_window */
+     attach_client_window( data, client_window );
++    if (old_state != WithdrawnState)
++    {
++        window_set_wm_state( data, old_state, FALSE );
++    }
+ }
+ 
+ 
+@@ -3401,9 +3422,15 @@
+     }
+ 
+     window_set_wm_state( data, get_desired_wm_state( new_style, new_rects ), activate );
++    if (swp_flags & (SWP_FRAMECHANGED | SWP_STATECHANGED)) set_wm_hints( data );
+     if (!data->wm_state_serial && data->pending_state.wm_state != WithdrawnState)
+     {
+-        if (swp_flags & (SWP_FRAMECHANGED | SWP_STATECHANGED)) set_wm_hints( data );
+         update_net_wm_states( data );
+     }
++
++    if (data->whole_window && (new_style & WS_VISIBLE) &&
++        ((swp_flags & SWP_SHOWWINDOW) || (activate && !(swp_flags & SWP_NOZORDER))))
++    {
++        raise_owned_windows( data );
++    }
+ 
+@@ -3538,6 +3559,18 @@
+         }
+ 
+         data->layered = TRUE;
++        if (data->desired_state.wm_state == WithdrawnState)  /* mapping is delayed until attributes are set */
++        {
++            DWORD style = NtUserGetWindowLongW( data->hwnd, GWL_STYLE );
++
++            if ((style & WS_VISIBLE) &&
++                ((style & WS_MINIMIZE) || is_window_rect_mapped( &data->rects.window )))
++            {
++                release_win_data( data );
++                map_window( hwnd, style, TRUE );
++                return;
++            }
++        }
+         release_win_data( data );
+     }
+     else
+@@ -3561,6 +3594,7 @@
+ {
+     struct x11drv_win_data *data;
+     HWND parent;
++
+ 
+     if (!(data = get_win_data( hwnd ))) return;
+ 
+@@ -3575,6 +3609,19 @@
+         XFlush( data->display );
+     }
+ 
++    data->layered = TRUE;
++    if (data->desired_state.wm_state == WithdrawnState)  /* mapping is delayed until attributes are set */
++    {
++        DWORD style = NtUserGetWindowLongW( data->hwnd, GWL_STYLE );
++
++        if ((style & WS_VISIBLE) &&
++            ((style & WS_MINIMIZE) || is_window_rect_mapped( &data->rects.window )))
++        {
++            release_win_data( data );
++            map_window( hwnd, style, TRUE );
++            return;
++        }
++    }
+     release_win_data( data );
+ }
+ 
+diff --git a/dlls/winex11.drv/event.c b/dlls/winex11.drv/event.c
+--- a/dlls/winex11.drv/event.c
++++ b/dlls/winex11.drv/event.c
+@@ -1121,7 +1121,7 @@
+     activate = value == NormalState && !data->wm_state_serial && data->current_state.activate;
+     release_win_data( data );
+ 
+-    if (hwnd == NtUserGetForegroundWindow() && activate) set_net_active_window( hwnd, 0 );
++    if (activate) set_net_active_window( hwnd, 0 );
+     NtUserPostMessage( hwnd, WM_WINE_WINDOW_STATE_CHANGED, 0, 0 );
+ }
+ 
+diff --git a/dlls/win32u/window.c b/dlls/win32u/window.c
+--- a/dlls/win32u/window.c
++++ b/dlls/win32u/window.c
+@@ -1525,6 +1554,7 @@
+     }
+     SERVER_END_REQ;
+     release_win_ptr( win );
++    if (ret != owner) update_window_state( hwnd );
+     return ret;
+ }
+ 
+@@ -4928,7 +4958,7 @@
+ void update_window_state( HWND hwnd )
+ {
+     static const UINT swp_flags = SWP_NOSIZE | SWP_NOMOVE | SWP_NOCLIENTSIZE | SWP_NOCLIENTMOVE |
+-                                  SWP_NOZORDER | SWP_NOACTIVATE | SWP_NOREDRAW;
++                                  SWP_NOZORDER | SWP_NOACTIVATE | SWP_NOREDRAW | SWP_STATECHANGED;
+     UINT context;
+     RECT valid_rects[2], surface_rect;
+     struct window_surface *surface;
+diff --git a/server/window.c b/server/window.c
+index 3cd82b0c3fd..c08d884f05a 100644
+--- a/server/window.c
++++ b/server/window.c
+@@ -323,6 +323,79 @@ static struct ratio get_window_dpi( struct window *win )
+     return dpi;
+ }
+ 
++static int is_window_owned_by( struct window *win, user_handle_t owner )
++{
++    unsigned int depth = 0;
++    while (win && win->owner && depth++ < 64)
++    {
++        if (win->owner == owner) return 1;
++        win = get_window( win->owner );
++    }
++    return 0;
++}
++
++static int restack_owned_windows( struct window *win )
++{
++    struct window *ptr, *next, *owner;
++    struct list *entry;
++    int changed = 0;
++
++    if (!win->parent) return 0;
++
++    /* 1. If win has an owner and win is below owner, move win above owner */
++    if (win->owner && (owner = get_window( win->owner )))
++    {
++        if (owner->parent == win->parent && owner->is_linked && win->is_linked)
++        {
++            int win_is_below = 0;
++            for (entry = owner->entry.next; entry != &win->parent->children; entry = entry->next)
++            {
++                if (entry == &win->entry)
++                {
++                    win_is_below = 1;
++                    break;
++                }
++            }
++            if (win_is_below)
++            {
++                list_remove( &win->entry );
++                list_add_before( &owner->entry, &win->entry );
++                if (owner->ex_style & WS_EX_TOPMOST) win->ex_style |= WS_EX_TOPMOST;
++                changed = 1;
++            }
++        }
++    }
++
++    /* 2. For any window owned by win that is below win, move it above win */
++    if (win->is_linked)
++    {
++        LIST_FOR_EACH_ENTRY_SAFE( ptr, next, &win->parent->children, struct window, entry )
++        {
++            if (ptr == win) continue;
++            if (is_window_owned_by( ptr, win->handle ))
++            {
++                int ptr_is_below = 0;
++                for (entry = win->entry.next; entry != &win->parent->children; entry = entry->next)
++                {
++                    if (entry == &ptr->entry)
++                    {
++                        ptr_is_below = 1;
++                        break;
++                    }
++                }
++                if (ptr_is_below)
++                {
++                    list_remove( &ptr->entry );
++                    list_add_before( &win->entry, &ptr->entry );
++                    if (win->ex_style & WS_EX_TOPMOST) ptr->ex_style |= WS_EX_TOPMOST;
++                    changed = 1;
++                }
++            }
++        }
++    }
++    return changed;
++}
++
+ /* link a window at the right place in the siblings list */
+ static int link_window( struct window *win, struct window *previous )
+ {
+@@ -356,10 +429,21 @@ static int link_window( struct window *win, struct window *previous )
+             while (entry != &win->parent->children)
+             {
+                 struct window *next = LIST_ENTRY( entry, struct window, entry );
+-                if (!(next->ex_style & WS_EX_TOPMOST)) break;
+-                if (next->handle == win->owner)  /* keep it above owner */
++                if (next->ex_style & WS_EX_TOPMOST)
++                {
++                    if (next->handle == win->owner)  /* keep it above owner */
++                    {
++                        win->ex_style |= WS_EX_TOPMOST;
++                        break;
++                    }
++                }
++                else
+                 {
+-                    win->ex_style |= WS_EX_TOPMOST;
++                    if (is_window_owned_by( next, win->handle ))
++                    {
++                        entry = entry->next;
++                        continue;
++                    }
+                     break;
+                 }
+                 entry = entry->next;
+@@ -379,6 +463,7 @@ static int link_window( struct window *win, struct window *previous )
+     }
+ 
+     win->is_linked = 1;
++    if (restack_owned_windows( win )) return 1;
+     return old_prev != win->entry.prev;
+ }
+ 
+@@ -2415,6 +2500,7 @@ DECL_HANDLER(set_window_owner)
+ 
+     reply->prev_owner = win->owner;
+     reply->full_owner = win->owner = owner ? owner->handle : 0;
++    if (win->is_linked) restack_owned_windows( win );
+ }
+ 
+ 

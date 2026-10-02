@@ -1,0 +1,150 @@
+From: Revit-on-Wine lab
+Subject: dcomp/wined3d: stop drawing to hidden DComp/swapchain targets
+
+--- a/dlls/dxgi/factory.c
++++ b/dlls/dxgi/factory.c
+@@ -398,14 +398,29 @@
+ #define DCOMP_REBLIT_TIMER_ID 0xDC01
+ #define DCOMP_POPUP_REBLIT_TIMER_ID 0xDC02
+ 
++/* A DComp target may be hidden by design (visual hosting composites onto its
++ * visible owner), so only the ancestors decide whether drawing is allowed.
++ * Top-level windows must be visible themselves. */
++static BOOL dcomp_target_ancestors_visible( HWND hwnd )
++{
++    HWND parent = GetAncestor( hwnd, GA_PARENT );
++    if (!parent || parent == GetDesktopWindow()) return IsWindowVisible( hwnd );
++    return IsWindowVisible( parent );
++}
++
+ /* Re-blit composition content from persistent buffer to window.
+  * Called on WM_PAINT, focus changes, timer tick, and other events
+- * that may cause the window surface to be overwritten. */
++ * that may cause the window surface to be overwritten.
++ * Do not draw when the target window (or one of its ancestors) is hidden:
++ * the retained DC clipping may be stale after a cross-process hide and the
++ * blit would otherwise paint over the workspace. */
+ static void dcomp_reblit_comp_buffer(HWND hwnd, const char *reason)
+ {
+     HDC comp_dc = (HDC)GetPropW(hwnd, L"__wine_dcomp_comp_dc");
+     LPARAM dims = (LPARAM)GetPropW(hwnd, L"__wine_dcomp_comp_size");
+ 
++    if (!dcomp_target_ancestors_visible( hwnd )) return;
++
+     if (comp_dc && dims)
+     {
+         unsigned int w = LOWORD(dims);
+@@ -476,7 +491,7 @@
+             LPARAM dims = (LPARAM)GetPropW(hwnd, L"__wine_dcomp_comp_size");
+ 
+             BeginPaint(hwnd, &ps);
+-            if (comp_dc && dims)
++            if (dcomp_target_ancestors_visible( hwnd ) && comp_dc && dims)
+             {
+                 unsigned int w = LOWORD(dims);
+                 unsigned int h = HIWORD(dims);
+@@ -589,7 +604,7 @@
+             LPARAM dims = (LPARAM)GetPropW(hwnd, L"__wine_dcomp_comp_size");
+ 
+             BeginPaint(hwnd, &ps);
+-            if (comp_dc && dims)
++            if (dcomp_target_ancestors_visible( hwnd ) && comp_dc && dims)
+             {
+                 unsigned int w = LOWORD(dims);
+                 unsigned int h = HIWORD(dims);
+@@ -631,7 +646,8 @@
+                      * (no new rendering since the last Present1).  We still
+                      * call Present so JUCE's SwapChain event loop gets its
+                      * frame-ready signal — without it, input events stall. */
+-                    IDXGISwapChain4_Present(sc, 0, 0);
++                    if (dcomp_target_ancestors_visible( hwnd ))
++                        IDXGISwapChain4_Present(sc, 0, 0);
+ 
+                 }
+                 else
+@@ -666,9 +682,20 @@
+         {
+             LRESULT result = orig ? CallWindowProcW(orig, hwnd, msg, wparam, lparam)
+                                   : DefWindowProcW(hwnd, msg, wparam, lparam);
+-            dcomp_reblit_comp_buffer(hwnd, msg == WM_ACTIVATE ? "activate" :
+-                    msg == WM_SHOWWINDOW ? "showwindow" :
+-                    msg == WM_CHILDACTIVATE ? "childactivate" : "mouseactivate");
++            if (msg == WM_SHOWWINDOW && wparam && dcomp_target_ancestors_visible( hwnd ))
++            {
++                /* Becoming visible again: refresh the retained DC clipping
++                 * (it may be stale after a cross-process ancestor hide) and
++                 * repaint from the composition buffer. */
++                RedrawWindow( hwnd, NULL, NULL, RDW_INVALIDATE | RDW_ERASE | RDW_ALLCHILDREN );
++                dcomp_reblit_comp_buffer( hwnd, "showwindow" );
++            }
++            else
++            {
++                dcomp_reblit_comp_buffer(hwnd, msg == WM_ACTIVATE ? "activate" :
++                        msg == WM_SHOWWINDOW ? "showwindow" :
++                        msg == WM_CHILDACTIVATE ? "childactivate" : "mouseactivate");
++            }
+             return result;
+         }
+ 
+--- a/dlls/wined3d/swapchain.c
++++ b/dlls/wined3d/swapchain.c
+@@ -696,6 +696,23 @@
+     }
+ }
+ 
++/* Do not copy composition content to a window that is not effectively
++ * visible (hidden itself or through a hidden ancestor): its retained DC
++ * clipping can be stale after a cross-process ancestor hide and the copy
++ * would paint over other UI. The composition buffer is still updated so
++ * the content is ready when the window becomes visible again. */
++static BOOL swapchain_window_visible( const struct wined3d_swapchain *swapchain )
++{
++    HWND parent;
++
++    if (!swapchain->win_handle) return FALSE;
++    /* A swapchain window may be hidden by design (composited onto a visible
++     * owner), so only the ancestors decide. Top-levels must be visible. */
++    if ((parent = GetAncestor( swapchain->win_handle, GA_PARENT )) && parent != GetDesktopWindow())
++        return IsWindowVisible( parent );
++    return IsWindowVisible( swapchain->win_handle );
++}
++
+ static void swapchain_blit_gdi(struct wined3d_swapchain *swapchain,
+         struct wined3d_context *context, const RECT *src_rect, const RECT *dst_rect)
+ {
+@@ -976,8 +993,9 @@
+         else
+         {
+             /* Always BitBlt full comp buffer to window — survives any surface reset. */
+-            BitBlt(swapchain->dc, dst_rect->left, dst_rect->top, dst_w, dst_h,
+-                    swapchain->comp_dc, 0, 0, SRCCOPY);
++            if (swapchain_window_visible( swapchain ))
++                BitBlt(swapchain->dc, dst_rect->left, dst_rect->top, dst_w, dst_h,
++                        swapchain->comp_dc, 0, 0, SRCCOPY);
+         }
+ 
+         /* Store comp_dc as window property so WM_PAINT can re-blit. */
+@@ -995,7 +1013,8 @@
+     }
+     else
+     {
+-        if (!StretchBlt(swapchain->dc, dst_rect->left, dst_rect->top,
++        if (swapchain_window_visible( swapchain )
++                && !StretchBlt(swapchain->dc, dst_rect->left, dst_rect->top,
+                 dst_rect->right - dst_rect->left, dst_rect->bottom - dst_rect->top,
+                 src_dc, src_rect->left, src_rect->top,
+                 src_rect->right - src_rect->left, src_rect->bottom - src_rect->top, SRCCOPY))
+@@ -1889,9 +1908,10 @@
+             swapchain->front_buffer->resource.height);
+     IntersectRect(&draw_rect, &draw_rect, &swapchain->front_buffer_update);
+ 
+-    BitBlt(swapchain->dc, draw_rect.left - offset.x, draw_rect.top - offset.y,
+-            draw_rect.right - draw_rect.left, draw_rect.bottom - draw_rect.top,
+-            src_dc, draw_rect.left, draw_rect.top, SRCCOPY);
++    if (swapchain_window_visible( swapchain ))
++        BitBlt(swapchain->dc, draw_rect.left - offset.x, draw_rect.top - offset.y,
++                draw_rect.right - draw_rect.left, draw_rect.bottom - draw_rect.top,
++                src_dc, draw_rect.left, draw_rect.top, SRCCOPY);
+ 
+     SetRectEmpty(&swapchain->front_buffer_update);
+ }

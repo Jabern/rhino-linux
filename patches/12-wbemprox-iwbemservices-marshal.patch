@@ -1,0 +1,152 @@
+diff --git a/dlls/wbemprox/services.c b/dlls/wbemprox/services.c
+index 7ca8979064e..8bb394f0fbe 100644
+--- a/dlls/wbemprox/services.c
++++ b/dlls/wbemprox/services.c
+@@ -208,6 +208,7 @@ struct wbem_services
+ {
+     IWbemServices IWbemServices_iface;
+     LONG refs;
++    IUnknown *marshal;
+     CRITICAL_SECTION cs;
+     enum wbm_namespace ns;
+     struct async_header *async;
+@@ -247,6 +248,7 @@ static ULONG WINAPI wbem_services_Release(
+         DeleteCriticalSection( &ws->cs );
+         if (ws->context)
+             IWbemContext_Release( ws->context );
++        IUnknown_Release( ws->marshal );
+         free( ws );
+     }
+     return refs;
+@@ -271,6 +273,10 @@ static HRESULT WINAPI wbem_services_QueryInterface(
+         *ppvObject = &client_security;
+         return S_OK;
+     }
++    else if ( IsEqualGUID( riid, &IID_IMarshal ) )
++    {
++        return IUnknown_QueryInterface( ws->marshal, riid, ppvObject );
++    }
+     else
+     {
+         FIXME("interface %s not implemented\n", debugstr_guid(riid));
+@@ -980,6 +986,7 @@ HRESULT WbemServices_create( const WCHAR *namespace, IWbemContext *context, LPVO
+ {
+     struct wbem_services *ws;
+     enum wbm_namespace ns;
++    HRESULT hr;
+ 
+     TRACE("namespace %s, context %p, ppObj %p.\n", debugstr_w(namespace), context, ppObj);
+ 
+@@ -993,6 +1000,12 @@ HRESULT WbemServices_create( const WCHAR *namespace, IWbemContext *context, LPVO
+     ws->IWbemServices_iface.lpVtbl = &wbem_services_vtbl;
+     ws->refs      = 1;
+     ws->ns        = ns;
++    hr = CoCreateFreeThreadedMarshaler( (IUnknown *)&ws->IWbemServices_iface, &ws->marshal );
++    if (FAILED(hr))
++    {
++        free( ws );
++        return hr;
++    }
+     InitializeCriticalSectionEx( &ws->cs, 0, RTL_CRITICAL_SECTION_FLAG_FORCE_DEBUG_INFO );
+     ws->cs.DebugInfo->Spare[0] = (DWORD_PTR)(__FILE__ ": wbemprox_services.cs");
+     if (context)
+diff --git a/dlls/wbemprox/tests/services.c b/dlls/wbemprox/tests/services.c
+index 4881cee745d..2c8a93711cd 100644
+--- a/dlls/wbemprox/tests/services.c
++++ b/dlls/wbemprox/tests/services.c
+@@ -285,6 +285,89 @@ static void test_namespaces(void)
+     IWbemLocator_Release( locator );
+ }
+ 
++
++static DWORD WINAPI services_marshal_thread( void *arg )
++{
++    IUnknown *unknown;
++    IWbemServices *services;
++    IEnumWbemClassObject *result;
++    BSTR language, query;
++    HRESULT hr;
++
++    hr = CoInitializeEx( NULL, COINIT_APARTMENTTHREADED );
++    ok( hr == S_OK, "Got %#lx.\n", hr );
++    if (FAILED(hr)) return 0;
++    hr = CoGetInterfaceAndReleaseStream( arg, &IID_IUnknown, (void **)&unknown );
++    ok( hr == S_OK, "Got %#lx.\n", hr );
++    if (SUCCEEDED(hr))
++    {
++        hr = IUnknown_QueryInterface( unknown, &IID_IWbemServices, (void **)&services );
++        ok( hr == S_OK, "Cross-apartment QueryInterface failed: %#lx.\n", hr );
++        if (SUCCEEDED(hr))
++        {
++            language = SysAllocString( L"WQL" );
++            query = SysAllocString( L"SELECT Caption FROM Win32_OperatingSystem" );
++            hr = IWbemServices_ExecQuery( services, language, query, WBEM_FLAG_FORWARD_ONLY, NULL, &result );
++            ok( hr == S_OK, "Cross-apartment ExecQuery failed: %#lx.\n", hr );
++            if (SUCCEEDED(hr)) IEnumWbemClassObject_Release( result );
++            SysFreeString( query );
++            SysFreeString( language );
++            IWbemServices_Release( services );
++        }
++        IUnknown_Release( unknown );
++    }
++    CoUninitialize();
++    return 0;
++}
++
++static void test_services_marshal(void)
++{
++    IWbemLocator *locator;
++    IWbemServices *services;
++    IStream *stream;
++    BSTR path;
++    HANDLE thread;
++    HRESULT hr;
++
++    hr = CoInitializeEx( NULL, COINIT_MULTITHREADED );
++    ok( hr == S_OK, "Got %#lx.\n", hr );
++    if (FAILED(hr)) return;
++    hr = CoCreateInstance( &CLSID_WbemLocator, NULL, CLSCTX_INPROC_SERVER, &IID_IWbemLocator, (void **)&locator );
++    if (FAILED(hr))
++    {
++        win_skip( "Cannot create WbemLocator: %#lx.\n", hr );
++        CoUninitialize();
++        return;
++    }
++    path = SysAllocString( L"ROOT\\CIMV2" );
++    hr = IWbemLocator_ConnectServer( locator, path, NULL, NULL, NULL, 0, NULL, NULL, &services );
++    SysFreeString( path );
++    ok( hr == S_OK, "Got %#lx.\n", hr );
++    if (SUCCEEDED(hr))
++    {
++        hr = CoMarshalInterThreadInterfaceInStream( &IID_IUnknown, (IUnknown *)services, &stream );
++        ok( hr == S_OK, "Got %#lx.\n", hr );
++        if (SUCCEEDED(hr))
++        {
++            thread = CreateThread( NULL, 0, services_marshal_thread, stream, 0, NULL );
++            ok( !!thread, "CreateThread failed: %lu.\n", GetLastError() );
++            if (thread)
++            {
++                WaitForSingleObject( thread, INFINITE );
++                CloseHandle( thread );
++            }
++            else
++            {
++                CoReleaseMarshalData( stream );
++                IStream_Release( stream );
++            }
++        }
++        IWbemServices_Release( services );
++    }
++    IWbemLocator_Release( locator );
++    CoUninitialize();
++}
++
+ START_TEST(services)
+ {
+     CoInitialize( NULL );
+@@ -293,4 +376,5 @@ START_TEST(services)
+     test_IWbemContext();
+     test_namespaces();
+     CoUninitialize();
++    test_services_marshal();
+ }

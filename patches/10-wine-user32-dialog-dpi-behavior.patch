@@ -1,0 +1,141 @@
+diff --git a/dlls/user32/dialog.c b/dlls/user32/dialog.c
+index b3bad848206..2f0003b5289 100644
+--- a/dlls/user32/dialog.c
++++ b/dlls/user32/dialog.c
+@@ -1968,3 +1968,64 @@ INT WINAPI DlgDirListComboBoxW( HWND hDlg, LPWSTR spec, INT idCBox,
+ {
+     return DIALOG_DlgDirListW( hDlg, spec, idCBox, idStatic, attrib, TRUE );
+ }
++
++static const WCHAR dialog_dpi_behavior_propW[] = L"__wine_dialog_dpi_behavior";
++static const WCHAR dialog_control_dpi_behavior_propW[] = L"__wine_dialog_control_dpi_behavior";
++
++/**********************************************************************
++ *		SetDialogDpiChangeBehavior (USER32.@)
++ */
++BOOL WINAPI SetDialogDpiChangeBehavior( HWND hwnd, DIALOG_DPI_CHANGE_BEHAVIORS mask,
++                                        DIALOG_DPI_CHANGE_BEHAVIORS values )
++{
++    if (!IsWindow( hwnd ) || ((DWORD)values & ~(DWORD)mask))
++    {
++        SetLastError( ERROR_INVALID_PARAMETER );
++        return FALSE;
++    }
++    SetPropW( hwnd, dialog_dpi_behavior_propW, (HANDLE)(ULONG_PTR)((DWORD)values & (DWORD)mask) );
++    return TRUE;
++}
++
++/**********************************************************************
++ *		GetDialogDpiChangeBehavior (USER32.@)
++ */
++BOOL WINAPI GetDialogDpiChangeBehavior( HWND hwnd, DIALOG_DPI_CHANGE_BEHAVIORS *values )
++{
++    if (!values || !IsWindow( hwnd ))
++    {
++        SetLastError( ERROR_INVALID_PARAMETER );
++        return FALSE;
++    }
++    *values = (DIALOG_DPI_CHANGE_BEHAVIORS)(ULONG_PTR)GetPropW( hwnd, dialog_dpi_behavior_propW );
++    return TRUE;
++}
++
++/**********************************************************************
++ *		SetDialogControlDpiChangeBehavior (USER32.@)
++ */
++BOOL WINAPI SetDialogControlDpiChangeBehavior( HWND hwnd, DIALOG_CONTROL_DPI_CHANGE_BEHAVIORS mask,
++                                               DIALOG_CONTROL_DPI_CHANGE_BEHAVIORS values )
++{
++    if (!IsWindow( hwnd ) || ((DWORD)values & ~(DWORD)mask))
++    {
++        SetLastError( ERROR_INVALID_PARAMETER );
++        return FALSE;
++    }
++    SetPropW( hwnd, dialog_control_dpi_behavior_propW, (HANDLE)(ULONG_PTR)((DWORD)values & (DWORD)mask) );
++    return TRUE;
++}
++
++/**********************************************************************
++ *		GetDialogControlDpiChangeBehavior (USER32.@)
++ */
++BOOL WINAPI GetDialogControlDpiChangeBehavior( HWND hwnd, DIALOG_CONTROL_DPI_CHANGE_BEHAVIORS *values )
++{
++    if (!values || !IsWindow( hwnd ))
++    {
++        SetLastError( ERROR_INVALID_PARAMETER );
++        return FALSE;
++    }
++    *values = (DIALOG_CONTROL_DPI_CHANGE_BEHAVIORS)(ULONG_PTR)GetPropW( hwnd, dialog_control_dpi_behavior_propW );
++    return TRUE;
++}
+diff --git a/dlls/user32/user32.spec b/dlls/user32/user32.spec
+index 241b40054b8..7097d55f600 100644
+--- a/dlls/user32/user32.spec
++++ b/dlls/user32/user32.spec
+@@ -548,8 +548,8 @@
+ # @ stub GetDesktopID
+ @ stdcall GetDesktopWindow()
+ @ stdcall GetDialogBaseUnits()
+-# @ stub GetDialogControlDpiChangeBehavior
+-# @ stub GetDialogDpiChangeBehavior
++@ stdcall GetDialogControlDpiChangeBehavior(long ptr)
++@ stdcall GetDialogDpiChangeBehavior(long ptr)
+ @ stdcall GetDisplayAutoRotationPreferences(ptr)
+ @ stdcall GetDisplayConfigBufferSizes(long ptr ptr) NtUserGetDisplayConfigBufferSizes
+ @ stdcall GetDlgCtrlID(long)
+@@ -1033,8 +1033,8 @@
+ @ stdcall SetDebugErrorLevel(long)
+ @ stdcall SetDeskWallpaper(str)
+ # @ stub SetDesktopColorTransform
+-# @ stub SetDialogControlDpiChangeBehavior
+-# @ stub SetDialogDpiChangeBehavior
++@ stdcall SetDialogControlDpiChangeBehavior(long long long)
++@ stdcall SetDialogDpiChangeBehavior(long long long)
+ @ stdcall SetDisplayAutoRotationPreferences(long)
+ @ stdcall SetDisplayConfig(long ptr long ptr long)
+ @ stdcall SetDlgItemInt(long long long long)
+diff --git a/include/windef.h b/include/windef.h
+index bb0722b57ba..c512d6cbb29 100644
+--- a/include/windef.h
++++ b/include/windef.h
+@@ -188,4 +188,19 @@ typedef enum {
+   DPI_HOSTING_BEHAVIOR_MIXED = 1
+ } DPI_HOSTING_BEHAVIOR;
+ 
++typedef enum DIALOG_DPI_CHANGE_BEHAVIORS
++{
++    DDC_DEFAULT = 0x0000,
++    DDC_DISABLE_ALL = 0x0001,
++    DDC_DISABLE_RESIZE = 0x0002,
++    DDC_DISABLE_CONTROL_RELAYOUT = 0x0004
++} DIALOG_DPI_CHANGE_BEHAVIORS;
++
++typedef enum DIALOG_CONTROL_DPI_CHANGE_BEHAVIORS
++{
++    DCDC_DEFAULT = 0x0000,
++    DCDC_DISABLE_FONT_UPDATE = 0x0001,
++    DCDC_DISABLE_RELAYOUT = 0x0002
++} DIALOG_CONTROL_DPI_CHANGE_BEHAVIORS;
++
+ #endif /* _WINDEF_ */
+diff --git a/include/winuser.h b/include/winuser.h
+index d613dcc0664..a4c5ccd1213 100644
+--- a/include/winuser.h
++++ b/include/winuser.h
+@@ -4187,6 +4187,8 @@ WINUSERAPI HDC         WINAPI GetDC(HWND);
+ WINUSERAPI HDC         WINAPI GetDCEx(HWND,HRGN,DWORD);
+ WINUSERAPI HWND        WINAPI GetDesktopWindow(void);
+ WINUSERAPI DWORD       WINAPI GetDialogBaseUnits(void);
++WINUSERAPI BOOL        WINAPI GetDialogControlDpiChangeBehavior(HWND,DIALOG_CONTROL_DPI_CHANGE_BEHAVIORS*);
++WINUSERAPI BOOL        WINAPI GetDialogDpiChangeBehavior(HWND,DIALOG_DPI_CHANGE_BEHAVIORS*);
+ WINUSERAPI BOOL        WINAPI GetDisplayAutoRotationPreferences(ORIENTATION_PREFERENCE*);
+ WINUSERAPI INT         WINAPI GetDlgCtrlID(HWND);
+ WINUSERAPI HWND        WINAPI GetDlgItem(HWND,INT);
+@@ -4597,6 +4599,8 @@ WINUSERAPI HCURSOR     WINAPI SetCursor(HCURSOR);
+ WINUSERAPI BOOL        WINAPI SetCursorPos(INT,INT);
+ WINUSERAPI VOID        WINAPI SetDebugErrorLevel(DWORD);
+ WINUSERAPI BOOL        WINAPI SetDeskWallpaper(const char*);
++WINUSERAPI BOOL        WINAPI SetDialogControlDpiChangeBehavior(HWND,DIALOG_CONTROL_DPI_CHANGE_BEHAVIORS,DIALOG_CONTROL_DPI_CHANGE_BEHAVIORS);
++WINUSERAPI BOOL        WINAPI SetDialogDpiChangeBehavior(HWND,DIALOG_DPI_CHANGE_BEHAVIORS,DIALOG_DPI_CHANGE_BEHAVIORS);
+ WINUSERAPI BOOL        WINAPI SetDisplayAutoRotationPreferences(ORIENTATION_PREFERENCE);
+ WINUSERAPI BOOL        WINAPI SetDlgItemInt(HWND,INT,UINT,BOOL);
+ WINUSERAPI BOOL        WINAPI SetDlgItemTextA(HWND,INT,LPCSTR);

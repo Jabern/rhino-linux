@@ -1,0 +1,53 @@
+diff --git a/server/mapping.c b/server/mapping.c
+index 7446c706aec..61465d56f36 100644
+--- a/server/mapping.c
++++ b/server/mapping.c
+@@ -412,6 +412,24 @@ static int generate_dll_event( struct thread *thread, int code, struct memory_vi
+     return 1;
+ }
+ 
++/* check whether the image name is services.exe (case-insensitive) */
++static int is_services_exe( const struct unicode_str *name )
++{
++    static const WCHAR exe[] = {'s','e','r','v','i','c','e','s','.','e','x','e'};
++    unsigned int i, len = name->len / sizeof(WCHAR);
++    const WCHAR *p = name->str;
++
++    if (!p || len < ARRAY_SIZE(exe)) return 0;
++    p += len - ARRAY_SIZE(exe);
++    for (i = 0; i < ARRAY_SIZE(exe); i++)
++    {
++        WCHAR c = p[i];
++        if (c >= 'A' && c <= 'Z') c += 'a' - 'A';
++        if (c != exe[i]) return 0;
++    }
++    return 1;
++}
++
+ /* add a view to the process list */
+ /* return 1 if this is the main exe view */
+ static int add_process_view( struct thread *thread, struct memory_view *view )
+@@ -432,6 +450,10 @@ static int add_process_view( struct thread *thread, struct memory_view *view )
+             process->image = NULL;
+             if (get_view_nt_name( view, &name ) && (process->image = memdup( name.str, name.len )))
+                 process->imagelen = name.len;
++            /* Windows runs services in session 0. Programs (Go's svc package,
++             * .NET service helpers) detect service mode from the SCM process's
++             * session id, so services.exe must report session 0. */
++            if (process->image && is_services_exe( &name )) process->session_id = 0;
+             process->image_info = view->image;
+             list_add_head( &process->views, &view->entry );
+             return 1;
+diff --git a/server/process.c b/server/process.c
+index f1a8c065c76..85dc33b970b 100644
+--- a/server/process.c
++++ b/server/process.c
+@@ -692,6 +692,8 @@ struct process *create_process( int fd, struct process *parent, unsigned int fla
+     }
+     if (!process->handles || !process->token) goto error;
+     process->session_id = token_get_session_id( process->token );
++    /* Services run in session 0 and their children stay there. */
++    if (parent && parent->session_id == 0) process->session_id = 0;
+ 
+     set_fd_events( process->msg_fd, POLLIN );  /* start listening to events */
+     return process;

@@ -1,0 +1,190 @@
+#!/usr/bin/env bash
+# rhino-9 — Launch and control Rhinoceros under Wine with optimized X11/DXVK settings.
+#
+# Usage:
+#   rhino-9                open Rhino with splash and start page
+#   rhino-9 <file...>      open .3dm models or supported CAD files (Linux or Windows paths)
+#   rhino-9 --stop         stop this Wine prefix (terminates all processes in prefix cleanly)
+#
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
+
+# Auto-detect default prefix: check RHINO_PREFIX, WINEPREFIX, ~/.wine-rhino, or rhino-lab prefix
+if [ -n "${RHINO_PREFIX:-}" ]; then
+    export WINEPREFIX="$RHINO_PREFIX"
+elif [ -n "${WINEPREFIX:-}" ]; then
+    export WINEPREFIX="$WINEPREFIX"
+elif [ -d "$HOME/.wine-rhino" ]; then
+    export WINEPREFIX="$HOME/.wine-rhino"
+elif [ -d "/home/jaberm/src/rhino-lab/prefix-rhino9" ]; then
+    export WINEPREFIX="/home/jaberm/src/rhino-lab/prefix-rhino9"
+else
+    export WINEPREFIX="$HOME/.wine-rhino"
+fi
+
+# Auto-detect Wine binary: check WINE, WINE_BUILD, /opt/wine-rhino, repo build, or system wine
+if [ -n "${WINE:-}" ]; then
+    WINE_BIN="$WINE"
+    WINESERVER_BIN="$(dirname "$WINE_BIN")/wineserver"
+elif [ -n "${WINE_BUILD:-}" ] && [ -x "$WINE_BUILD/wine" ]; then
+    WINE_BIN="$WINE_BUILD/wine"
+    WINESERVER_BIN="$WINE_BUILD/server/wineserver"
+elif [ -x "/opt/wine-rhino/bin/wine" ]; then
+    WINE_BIN="/opt/wine-rhino/bin/wine"
+    WINESERVER_BIN="/opt/wine-rhino/bin/wineserver"
+elif [ -x "$SCRIPT_DIR/../build-wine/wine" ]; then
+    WINE_BIN="$SCRIPT_DIR/../build-wine/wine"
+    WINESERVER_BIN="$SCRIPT_DIR/../build-wine/server/wineserver"
+elif [ -x "/home/jaberm/src/rhino-lab/build-wine/wine" ]; then
+    WINE_BIN="/home/jaberm/src/rhino-lab/build-wine/wine"
+    WINESERVER_BIN="/home/jaberm/src/rhino-lab/build-wine/server/wineserver"
+elif command -v wine >/dev/null 2>&1; then
+    WINE_BIN="$(command -v wine)"
+    WINESERVER_BIN="$(command -v wineserver 2>/dev/null || echo "wineserver")"
+else
+    echo "error: No Wine binary found. Set WINE=/path/to/wine or ensure wine is in PATH." >&2
+    exit 1
+fi
+
+RHINO_DIR="$WINEPREFIX/drive_c/Program Files/Rhino 9 WIP/System"
+
+case "${1:-}" in
+    --stop)
+        echo "Stopping Rhino Wine prefix ($WINEPREFIX)..."
+        WINEPREFIX="$WINEPREFIX" "$WINESERVER_BIN" -k 2>/dev/null || true
+        echo "Rhino Wine prefix stopped."
+        exit 0
+        ;;
+esac
+
+[ -x "$WINE_BIN" ] || { echo "error: Wine not executable at $WINE_BIN" >&2; exit 1; }
+[ -d "$RHINO_DIR" ] || { echo "error: Rhino not found at $RHINO_DIR" >&2; exit 1; }
+
+# Convert Linux paths or file:// URIs to Windows paths
+args=()
+for arg in "$@"; do
+    if [[ "$arg" =~ ^file:// ]]; then
+        arg="${arg#file://}"
+    fi
+    if [[ "$arg" == ?:* || "$arg" == -* ]]; then
+        args+=("$arg")
+    else
+        # URL decode path if needed
+        decoded_arg=$(printf '%b' "${arg//%/\\x}")
+        if [ -e "$decoded_arg" ]; then
+            arg="$decoded_arg"
+        fi
+        if [[ "$arg" == /* ]]; then
+            # Direct mapping under z: -> / (zero process startup overhead)
+            args+=("Z:${arg//\//\\}")
+        elif [ -e "$arg" ]; then
+            abs_arg="$(readlink -f "$arg")"
+            args+=("Z:${abs_arg//\//\\}")
+        else
+            args+=("$arg")
+        fi
+    fi
+done
+
+# Keep Rhino's own startup flow enabled. RhinoGreet shows the splash and
+# template/recent-file page when no document was supplied. File arguments still
+# go straight to the requested model.
+
+# WebView2 mode: real Edge WebView2 enabled for panels and Cloud Zoo
+ms="$WINEPREFIX/drive_c/Program Files (x86)/Microsoft"
+if [ "${RHINO_WEBVIEW2:-1}" = "1" ]; then
+    [ -d "$ms/EdgeWebView.disabled" ] && mv "$ms/EdgeWebView.disabled" "$ms/EdgeWebView"
+    [ -d "$ms/EdgeCore.disabled" ] && mv "$ms/EdgeCore.disabled" "$ms/EdgeCore"
+    unset WEBVIEW2_BROWSER_EXECUTABLE_FOLDER
+else
+    wv2stub="$WINEPREFIX/drive_c/wv2stub"
+    if [ ! -f "$wv2stub/msedgewebview2.exe" ]; then
+        mkdir -p "$wv2stub"
+        if [ -f "$SCRIPT_DIR/msedgewebview2-stub.exe" ]; then
+            cp "$SCRIPT_DIR/msedgewebview2-stub.exe" "$wv2stub/msedgewebview2.exe"
+        fi
+    fi
+    export WEBVIEW2_BROWSER_EXECUTABLE_FOLDER="C:\\wv2stub"
+    [ -d "$ms/EdgeWebView" ] && mv "$ms/EdgeWebView" "$ms/EdgeWebView.disabled"
+    [ -d "$ms/EdgeCore" ] && mv "$ms/EdgeCore" "$ms/EdgeCore.disabled"
+fi
+
+export WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS="${WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS:---no-sandbox --disable-features=Translate,OptimizationHints,MediaRouter,DialMediaRouteProvider,CalculateNativeWinOcclusion,InterestFeedContentSuggestions,CertificateTransparencyComponentUpdater,AutofillServerCommunication,HeavyAdIntervention,RendererCodeIntegrity --disable-background-networking --disable-component-update --disable-domain-reliability --disable-sync --disable-client-side-phishing-detection --disable-default-apps --disable-hang-monitor --disable-prompt-on-repost --disable-breakpad --disable-renderer-backgrounding --disable-background-timer-throttling --no-first-run --no-default-browser-check --no-pings --enable-gpu-rasterization --enable-zero-copy --disk-cache-size=33554432}"
+
+# Suppress slow Wine console logging unless overridden by user
+export WINEDEBUG="${WINEDEBUG:--all}"
+
+# Multi-monitor & Fullscreen fix: Prevent mouse cursor confinement and sticky dragging
+export WINE_DISABLE_CLIP_CURSOR=1
+
+# NVIDIA anti-aliasing / smoothing optimizations
+export __GL_ALLOW_FXAA_33=1
+
+# NVIDIA shader disk cache optimizations
+export __GL_SHADER_DISK_CACHE=1
+export __GL_SHADER_DISK_CACHE_SKIP_CLEANUP=1
+
+# DXVK low-latency configuration and fast state cache directory
+if [ -f "$SCRIPT_DIR/dxvk-rhino.conf" ]; then
+    export DXVK_CONFIG_FILE="${RHINO_DXVK_CONF:-$SCRIPT_DIR/dxvk-rhino.conf}"
+fi
+export DXVK_STATE_CACHE=1
+export DXVK_STATE_CACHE_PATH="${XDG_CACHE_HOME:-$HOME/.cache}/dxvk"
+mkdir -p "$DXVK_STATE_CACHE_PATH"
+
+# Driver selection: X11 with XDamage presentation
+export RHINO_GRAPHICS_DRIVER="${RHINO_GRAPHICS_DRIVER:-x11}"
+
+# ==============================================================================
+# .NET 9 Runtime & RyuJIT Performance Tuning (Rhino Core, Grasshopper, Plugins)
+# ==============================================================================
+# 1. Server Garbage Collection: 16 dedicated GC heaps + parallel background GC threads.
+#    Eliminates UI thread pause freezes during heavy CAD modeling and mesh calculations.
+export DOTNET_gcServer=1
+
+# 2. Dynamic Profile-Guided Optimization: RyuJIT devirtualization & AVX2 loop vectorization.
+export DOTNET_TieredPGO=1
+export DOTNET_TC_QuickJitForLoops=1
+export DOTNET_ReadyToRun=1
+
+# 3. Dynamic Heap Adaptation (DATAS) in .NET 9: balances heap size to active working set.
+export DOTNET_GCDynamicAdaptationMode=1
+
+# 4. Eliminate Wine W^X VirtualProtect overhead during JIT code page emission.
+export DOTNET_EnableWriteXorExecute=0
+
+# ==============================================================================
+# OpenMP Thread Affinity & Scheduling (Multi-Threaded Solvers & Meshing Engines)
+# ==============================================================================
+# Pin worker threads across physical CPU cores to maximize L1/L2 cache locality
+export OMP_PROC_BIND="${OMP_PROC_BIND:-spread}"
+export OMP_PLACES="${OMP_PLACES:-cores}"
+
+# Keep thread pools warm and prevent teardown churn between dynamic loop iterations
+export OMP_DYNAMIC="${OMP_DYNAMIC:-false}"
+
+# Keep worker threads spinning actively on task handoff (eliminates ~15µs futex sleep/wake)
+export OMP_WAIT_POLICY="${OMP_WAIT_POLICY:-ACTIVE}"
+
+# ==============================================================================
+# Linux Kernel In-Kernel Synchronization & Memory Allocator Tuning
+# ==============================================================================
+# Enable fast in-kernel NT synchronization if /dev/ntsync driver is active
+if [ -e "/dev/ntsync" ]; then
+    export WINENTSYNC="${WINENTSYNC:-1}"
+fi
+
+# Pre-load jemalloc for lockless multi-arena memory allocation if available
+if [ -f "/usr/lib/libjemalloc.so.2" ] && [[ "${LD_PRELOAD:-}" != *"libjemalloc.so.2"* ]]; then
+    export LD_PRELOAD="/usr/lib/libjemalloc.so.2${LD_PRELOAD:+:$LD_PRELOAD}"
+fi
+
+# DLL overrides:
+# - vcomp140=builtin: CRITICAL! Wine builtin vcomp (with 64-bit dynamic loop patch) bounds threads to ~200.
+#   Native MS vcomp140 creates unbounded 46,000 thread explosion and deadlocks Wine ntdll.
+# - d3dcompiler_47=native,builtin: Required for complex HLSL shader compiling.
+export WINEDLLOVERRIDES="vcomp140=builtin;d3dcompiler_47=native,builtin;${WINEDLLOVERRIDES:-}"
+
+cd "$RHINO_DIR"
+exec "$WINE_BIN" 'C:\Program Files\Rhino 9 WIP\System\Rhino.exe' "${args[@]}"

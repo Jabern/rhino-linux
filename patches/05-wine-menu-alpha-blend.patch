@@ -1,0 +1,45 @@
+diff --git a/dlls/win32u/menu.c b/dlls/win32u/menu.c
+index a700f44af78..1411cf29379 100644
+--- a/dlls/win32u/menu.c
++++ b/dlls/win32u/menu.c
+@@ -2382,6 +2382,40 @@ got_bitmap:
+     /* handle fontsize > bitmap_height */
+     top = (h>bm.bmHeight) ? rect->top + (h - bm.bmHeight) / 2 : rect->top;
+     left=rect->left;
++
++    if (bm.bmBitsPixel == 32 && !IS_MAGIC_BITMAP(bmp_to_draw))
++    {
++        BOOL has_alpha = FALSE;
++        if (bm.bmBits)
++        {
++            const DWORD *p = (const DWORD *)bm.bmBits;
++            int count = bm.bmWidth * abs(bm.bmHeight);
++            int i;
++            for (i = 0; i < count; i++)
++            {
++                if (p[i] & 0xff000000) { has_alpha = TRUE; break; }
++            }
++        }
++        else
++        {
++            has_alpha = TRUE;
++        }
++
++        if (has_alpha)
++        {
++            BLENDFUNCTION blend = { AC_SRC_OVER, 0, 255, AC_SRC_ALPHA };
++            int draw_w = min( w, bm.bmWidth );
++            int draw_h = min( h, bm.bmHeight );
++            if (NtGdiAlphaBlend( hdc, left, top, draw_w, draw_h, mem_hdc,
++                                 bmp_xoffset, 0, draw_w, draw_h,
++                                 *(DWORD *)&blend, 0 ))
++            {
++                NtGdiDeleteObjectApp( mem_hdc );
++                return;
++            }
++        }
++    }
++
+     rop= ((item->fState & MF_HILITE) && !IS_MAGIC_BITMAP(bmp_to_draw)) ? NOTSRCCOPY : SRCCOPY;
+     if ((item->fState & MF_HILITE) && item->hbmpItem)
+         NtGdiGetAndSetDCDword( hdc, NtGdiSetBkColor, get_sys_color( COLOR_HIGHLIGHT ), NULL );

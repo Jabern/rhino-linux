@@ -1,0 +1,13 @@
+diff --git a/dlls/win32u/window.c b/dlls/win32u/window.c
+index 8ddc40fb17f..ec34b24833b 100644
+--- a/dlls/win32u/window.c
++++ b/dlls/win32u/window.c
+@@ -2226,7 +2235,7 @@ static struct window_surface *get_window_surface( HWND hwnd, UINT swp_flags, BOO
+     else monitor_rects = map_window_rects_virt_to_raw( *rects, get_thread_dpi() );
+ 
+     if (!user_driver->pWindowPosChanging( hwnd, swp_flags, shaped, &monitor_rects )) needs_surface = FALSE;
+-    else if (is_child) needs_surface = FALSE;
++    else if (is_child && !(ex_style & WS_EX_LAYERED)) needs_surface = FALSE;
+     else if (swp_flags & SWP_HIDEWINDOW) needs_surface = FALSE;
+     else if (swp_flags & SWP_SHOWWINDOW) needs_surface = TRUE;
+     else needs_surface = !!(style & WS_VISIBLE);

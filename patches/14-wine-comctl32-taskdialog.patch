@@ -1,0 +1,151 @@
+diff --git a/dlls/comctl32/Makefile.in b/dlls/comctl32/Makefile.in
+index b3566bc011c..75fc729358e 100644
+--- a/dlls/comctl32/Makefile.in
++++ b/dlls/comctl32/Makefile.in
+@@ -42,6 +42,7 @@ SOURCES = \
+ 	status.c \
+ 	string.c \
+ 	tab.c \
++	taskdialog.c \
+ 	toolbar.c \
+ 	tooltips.c \
+ 	trackbar.c \
+diff --git a/dlls/comctl32/comctl32.spec b/dlls/comctl32/comctl32.spec
+index e0f74791b24..09f70f2f84f 100644
+--- a/dlls/comctl32/comctl32.spec
++++ b/dlls/comctl32/comctl32.spec
+@@ -185,5 +185,7 @@
+ @ stdcall PropertySheetA(ptr)
+ @ stdcall PropertySheetW(ptr)
+ @ stdcall RegisterClassNameW(wstr)
++@ stdcall TaskDialog(ptr ptr wstr wstr wstr long wstr ptr)
++@ stdcall TaskDialogIndirect(ptr ptr ptr ptr)
+ @ stdcall UninitializeFlatSB(long)
+ @ stdcall _TrackMouseEvent(ptr)
+diff --git a/dlls/comctl32/taskdialog.c b/dlls/comctl32/taskdialog.c
+new file mode 100644
+index 00000000000..d8e93c4ff7d
+--- /dev/null
++++ b/dlls/comctl32/taskdialog.c
+@@ -0,0 +1,121 @@
++/*
++ * Task Dialog
++ *
++ * Minimal implementation of the task dialog API on top of MessageBox.
++ *
++ * This library is free software; you can redistribute it and/or
++ * modify it under the terms of the GNU Lesser General Public
++ * License as published by the Free Software Foundation; either
++ * version 2.1 of the License, or (at your option) any later version.
++ */
++
++#include <stdarg.h>
++
++#include "windef.h"
++#include "winbase.h"
++#include "winuser.h"
++#include "commctrl.h"
++#include "wine/debug.h"
++
++WINE_DEFAULT_DEBUG_CHANNEL(commctrl);
++
++static UINT map_common_buttons( TASKDIALOG_COMMON_BUTTON_FLAGS buttons )
++{
++    if ((buttons & TDCBF_YES_BUTTON) && (buttons & TDCBF_NO_BUTTON) && (buttons & TDCBF_CANCEL_BUTTON))
++        return MB_YESNOCANCEL;
++    if ((buttons & TDCBF_YES_BUTTON) && (buttons & TDCBF_NO_BUTTON))
++        return MB_YESNO;
++    if ((buttons & TDCBF_RETRY_BUTTON) && (buttons & TDCBF_CANCEL_BUTTON))
++        return MB_RETRYCANCEL;
++    if ((buttons & TDCBF_OK_BUTTON) && (buttons & TDCBF_CANCEL_BUTTON))
++        return MB_OKCANCEL;
++    return MB_OK;
++}
++
++static int map_messagebox_result( UINT result, TASKDIALOG_COMMON_BUTTON_FLAGS buttons,
++                                  const TASKDIALOG_BUTTON *custom, UINT custom_count )
++{
++    if (custom_count && custom)
++    {
++        switch (result)
++        {
++        case IDOK:
++        case IDYES:
++            return custom[0].nButtonID;
++        case IDCANCEL:
++        case IDNO:
++            return custom_count > 1 ? custom[1].nButtonID : custom[0].nButtonID;
++        case IDRETRY:
++            return custom_count > 2 ? custom[2].nButtonID : custom[0].nButtonID;
++        }
++    }
++    if (result == IDOK && !(buttons & (TDCBF_OK_BUTTON | TDCBF_YES_BUTTON | TDCBF_NO_BUTTON | TDCBF_RETRY_BUTTON)))
++        return IDCLOSE;
++    return result;
++}
++
++HRESULT WINAPI TaskDialogIndirect( const TASKDIALOGCONFIG *config, int *button, int *radio, BOOL *verified )
++{
++    TASKDIALOG_COMMON_BUTTON_FLAGS buttons;
++    WCHAR text[4096];
++    UINT mb, result, len;
++
++    TRACE( "config %p, button %p, radio %p, verified %p\n", config, button, radio, verified );
++
++    if (!config || !button) return E_INVALIDARG;
++
++    text[0] = 0;
++    if (config->pszMainInstruction)
++        lstrcpynW( text, config->pszMainInstruction, ARRAY_SIZE( text ));
++    if (config->pszContent)
++    {
++        len = lstrlenW( text );
++        if (len) lstrcpynW( text + len, L"\n\n", ARRAY_SIZE( text ) - len );
++        len = lstrlenW( text );
++        lstrcpynW( text + len, config->pszContent, ARRAY_SIZE( text ) - len );
++    }
++    if (!text[0] && config->pszWindowTitle)
++        lstrcpynW( text, config->pszWindowTitle, ARRAY_SIZE( text ));
++    if (!text[0])
++        lstrcpynW( text, L" ", ARRAY_SIZE( text ));
++
++    buttons = config->dwCommonButtons;
++    if (config->cButtons && config->pButtons)
++    {
++        switch (config->cButtons)
++        {
++        case 1:  buttons = TDCBF_OK_BUTTON; break;
++        case 2:  buttons = TDCBF_OK_BUTTON | TDCBF_CANCEL_BUTTON; break;
++        default: buttons = TDCBF_YES_BUTTON | TDCBF_NO_BUTTON | TDCBF_CANCEL_BUTTON; break;
++        }
++    }
++
++    mb = map_common_buttons( buttons ) | MB_ICONINFORMATION;
++    if (config->dwFlags & TDF_RTL_LAYOUT) mb |= MB_RTLREADING;
++
++    result = MessageBoxW( config->hwndParent, text, config->pszWindowTitle, mb );
++
++    *button = map_messagebox_result( result, buttons, config->pButtons, config->cButtons );
++    if (radio) *radio = 0;
++    if (verified) *verified = (config->dwFlags & TDF_VERIFICATION_FLAG_CHECKED) ? TRUE : FALSE;
++    return S_OK;
++}
++
++HRESULT WINAPI TaskDialog( HWND owner, HINSTANCE hinst, const WCHAR *title, const WCHAR *main_instruction,
++                           const WCHAR *content, TASKDIALOG_COMMON_BUTTON_FLAGS common_buttons,
++                           const WCHAR *icon, int *button )
++{
++    TASKDIALOGCONFIG config;
++
++    memset( &config, 0, sizeof(config) );
++    config.cbSize = sizeof(config);
++    config.hwndParent = owner;
++    config.hInstance = hinst;
++    config.dwCommonButtons = common_buttons;
++    config.pszWindowTitle = title;
++    config.pszMainInstruction = main_instruction;
++    config.pszContent = content;
++    config.pszMainIcon = icon;
++
++    return TaskDialogIndirect( &config, button, NULL, NULL );
++}

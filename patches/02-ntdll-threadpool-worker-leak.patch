@@ -1,0 +1,159 @@
+diff --git a/dlls/ntdll/threadpool.c b/dlls/ntdll/threadpool.c
+index b47a26775ea..2c5c8354ba0 100644
+--- a/dlls/ntdll/threadpool.c
++++ b/dlls/ntdll/threadpool.c
+@@ -97,6 +97,10 @@ struct timer_queue
+ 
+ #define THREADPOOL_WORKER_TIMEOUT 5000
+ #define MAXIMUM_WAITQUEUE_OBJECTS (MAXIMUM_WAIT_OBJECTS - 1)
++#define MAX_GLOBAL_WORKERS 256
++#define MAX_POOL_WORKERS   64
++
++static LONG total_worker_threads = 0;
+ 
+ /* internal threadpool representation */
+ struct threadpool
+@@ -113,6 +117,8 @@ struct threadpool
+     int                     min_workers;
+     int                     num_workers;
+     int                     num_busy_workers;
++    int                     num_idle_workers;
++    ULONG                   last_spawn_time;
+     HANDLE                  compl_port;
+     TP_POOL_STACK_INFORMATION stack_info;
+ };
+@@ -1210,11 +1216,18 @@ static NTSTATUS tp_new_worker_thread( struct threadpool *pool )
+     HANDLE thread;
+     NTSTATUS status;
+ 
++    if (total_worker_threads >= MAX_GLOBAL_WORKERS)
++    {
++        WARN( "global worker thread limit reached (%ld threads)\n", total_worker_threads );
++        return STATUS_TOO_MANY_THREADS;
++    }
++
+     status = RtlCreateUserThread( GetCurrentProcess(), NULL, FALSE, 0,
+                                   pool->stack_info.StackReserve, pool->stack_info.StackCommit,
+                                   threadpool_worker_proc, pool, &thread, NULL );
+     if (status == STATUS_SUCCESS)
+     {
++        InterlockedIncrement( &total_worker_threads );
+         InterlockedIncrement( &pool->refcount );
+         pool->num_workers++;
+         NtClose( thread );
+@@ -1776,10 +1789,12 @@ static NTSTATUS tp_threadpool_alloc( struct threadpool **out )
+         list_init( &pool->pools[i] );
+     RtlInitializeConditionVariable( &pool->update_event );
+ 
+-    pool->max_workers             = 500;
++    pool->max_workers             = min( MAX_POOL_WORKERS, max( 32, (int)NtCurrentTeb()->Peb->NumberOfProcessors * 2 ) );
+     pool->min_workers             = 0;
+     pool->num_workers             = 0;
+     pool->num_busy_workers        = 0;
++    pool->num_idle_workers        = 0;
++    pool->last_spawn_time         = 0;
+     pool->stack_info.StackReserve = nt->OptionalHeader.SizeOfStackReserve;
+     pool->stack_info.StackCommit  = nt->OptionalHeader.SizeOfStackCommit;
+ 
+@@ -2077,18 +2092,12 @@ static void tp_object_prio_queue( struct threadpool_object *object )
+ static void tp_object_submit( struct threadpool_object *object, BOOL signaled )
+ {
+     struct threadpool *pool = object->pool;
+-    NTSTATUS status = STATUS_UNSUCCESSFUL;
+ 
+     assert( !object->shutdown );
+     assert( !pool->shutdown );
+ 
+     RtlEnterCriticalSection( &pool->cs );
+ 
+-    /* Start new worker threads if required. */
+-    if (pool->num_busy_workers >= pool->num_workers &&
+-        pool->num_workers < pool->max_workers)
+-        status = tp_new_worker_thread( pool );
+-
+     /* Queue work item and increment refcount. */
+     InterlockedIncrement( &object->refcount );
+     if (!object->num_pending_callbacks++)
+@@ -2098,12 +2107,24 @@ static void tp_object_submit( struct threadpool_object *object, BOOL signaled )
+     if (object->type == TP_OBJECT_TYPE_WAIT && signaled)
+         object->u.wait.signaled++;
+ 
+-    /* No new thread started - wake up one existing thread. */
+-    if (status != STATUS_SUCCESS)
++    /* If idle workers are available, wake one up. */
++    if (pool->num_idle_workers > 0)
+     {
+-        assert( pool->num_workers > 0 );
+         RtlWakeConditionVariable( &pool->update_event );
+     }
++    else if (pool->num_workers == 0 || pool->num_workers < pool->max_workers)
++    {
++        /* All existing workers are busy (or none spawned yet).
++         * Scale up to CPU count immediately; beyond that rate-limit thread injection. */
++        ULONG ncpu = NtCurrentTeb()->Peb->NumberOfProcessors;
++        ULONG now = NtGetTickCount();
++
++        if (pool->num_workers < ncpu || (now - pool->last_spawn_time >= 250))
++        {
++            if (tp_new_worker_thread( pool ) == STATUS_SUCCESS)
++                pool->last_spawn_time = now;
++        }
++    }
+ 
+     RtlLeaveCriticalSection( &pool->cs );
+ }
+@@ -2440,6 +2461,7 @@ static void CALLBACK threadpool_worker_proc( void *param )
+     struct threadpool *pool = param;
+     LARGE_INTEGER timeout;
+     struct list *ptr;
++    NTSTATUS status;
+ 
+     TRACE( "starting worker thread for pool %p\n", pool );
+     set_thread_name(L"wine_threadpool_worker");
+@@ -2476,7 +2498,10 @@ static void CALLBACK threadpool_worker_proc( void *param )
+          * min_workers == 0, then objcount is used to detect if the last thread
+          * can be terminated. */
+         timeout.QuadPart = (ULONGLONG)THREADPOOL_WORKER_TIMEOUT * -10000;
+-        if (RtlSleepConditionVariableCS( &pool->update_event, &pool->cs, &timeout ) == STATUS_TIMEOUT &&
++        pool->num_idle_workers++;
++        status = RtlSleepConditionVariableCS( &pool->update_event, &pool->cs, &timeout );
++        pool->num_idle_workers--;
++        if (status == STATUS_TIMEOUT &&
+             !threadpool_get_next_item( pool ) && (pool->num_workers > max( pool->min_workers, 1 ) ||
+             (!pool->min_workers && !pool->objcount)))
+         {
+@@ -2484,6 +2509,7 @@ static void CALLBACK threadpool_worker_proc( void *param )
+         }
+     }
+     pool->num_workers--;
++    InterlockedDecrement( &total_worker_threads );
+     RtlLeaveCriticalSection( &pool->cs );
+ 
+     TRACE( "terminating worker thread for pool %p\n", pool );
+@@ -2735,7 +2761,7 @@ NTSTATUS WINAPI TpCallbackMayRunLong( TP_CALLBACK_INSTANCE *instance )
+     RtlEnterCriticalSection( &pool->cs );
+ 
+     /* Start new worker threads if required. */
+-    if (pool->num_busy_workers >= pool->num_workers)
++    if (pool->num_idle_workers == 0)
+     {
+         if (pool->num_workers < pool->max_workers)
+         {
+@@ -3036,7 +3062,7 @@ VOID WINAPI TpSetPoolMaxThreads( TP_POOL *pool, DWORD maximum )
+     TRACE( "%p %lu\n", pool, maximum );
+ 
+     RtlEnterCriticalSection( &this->cs );
+-    this->max_workers = max( maximum, 1 );
++    this->max_workers = min( max( maximum, 1 ), MAX_POOL_WORKERS );
+     this->min_workers = min( this->min_workers, this->max_workers );
+     RtlLeaveCriticalSection( &this->cs );
+ }
+@@ -3053,6 +3079,8 @@ BOOL WINAPI TpSetPoolMinThreads( TP_POOL *pool, DWORD minimum )
+ 
+     RtlEnterCriticalSection( &this->cs );
+ 
++    minimum = min( minimum, MAX_POOL_WORKERS );
++
+     while (this->num_workers < minimum)
+     {
+         status = tp_new_worker_thread( this );

@@ -1,0 +1,35 @@
+diff --git a/dlls/kernelbase/thread.c b/dlls/kernelbase/thread.c
+index 92ef0731435..27dd4c5f1e4 100644
+--- a/dlls/kernelbase/thread.c
++++ b/dlls/kernelbase/thread.c
+@@ -573,8 +573,28 @@ DWORD WINAPI DECLSPEC_HOTPATCH SetThreadIdealProcessor( HANDLE thread, DWORD pro
+ BOOL WINAPI DECLSPEC_HOTPATCH SetThreadIdealProcessorEx( HANDLE thread, PROCESSOR_NUMBER *ideal,
+                                                          PROCESSOR_NUMBER *previous )
+ {
+-    FIXME( "(%p %p %p): stub\n", thread, ideal, previous );
+-    SetLastError( ERROR_CALL_NOT_IMPLEMENTED );
++    ULONG proc;
++    NTSTATUS status;
++
++    TRACE( "(%p %p %p)\n", thread, ideal, previous );
++
++    if (!ideal)
++    {
++        SetLastError( ERROR_INVALID_PARAMETER );
++        return FALSE;
++    }
++
++    if (previous)
++    {
++        memset( previous, 0, sizeof(*previous) );
++        NtQueryInformationThread( thread, ThreadIdealProcessorEx, previous, sizeof(*previous), NULL );
++    }
++
++    proc = ideal->Number;
++    status = NtSetInformationThread( thread, ThreadIdealProcessor, &proc, sizeof(proc) );
++    if (NT_SUCCESS(status)) return TRUE;
++
++    SetLastError( RtlNtStatusToDosError( status ));
+     return FALSE;
+ }
+ 

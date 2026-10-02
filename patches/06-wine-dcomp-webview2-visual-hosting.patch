@@ -1,0 +1,4092 @@
+diff --git a/dlls/dcomp/Makefile.in b/dlls/dcomp/Makefile.in
+index 3c14125a2ff..8927fca7186 100644
+--- a/dlls/dcomp/Makefile.in
++++ b/dlls/dcomp/Makefile.in
+@@ -1,4 +1,5 @@
+ MODULE    = dcomp.dll
++IMPORTS   = dxguid uuid user32 gdi32 d2d1
+ 
+ VER_PRODUCTVERSION = 10,0,14393,0
+ 
+diff --git a/dlls/dcomp/device.c b/dlls/dcomp/device.c
+index 2744d758e91..eee4d19aee7 100644
+--- a/dlls/dcomp/device.c
++++ b/dlls/dcomp/device.c
+@@ -1,47 +1,2707 @@
+ /*
+  * Copyright 2020 Nikolay Sivov for CodeWeavers
++ * Copyright 2026 Giang Nguyen
+  *
+  * This library is free software; you can redistribute it and/or
+  * modify it under the terms of the GNU Lesser General Public
+- * License as published by the Free Software Foundation; either
+- * version 2.1 of the License, or (at your option) any later version.
+- *
+- * This library is distributed in the hope that it will be useful,
+- * but WITHOUT ANY WARRANTY; without even the implied warranty of
+- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+- * Lesser General Public License for more details.
+- *
+- * You should have received a copy of the GNU Lesser General Public
+  * License along with this library; if not, write to the Free Software
+  * Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301, USA
+  */
++
+ #include <stdarg.h>
++#include <stdio.h>
+ 
++#define INITGUID
++#define COBJMACROS
+ #include "windef.h"
+ #include "winbase.h"
++#include "wingdi.h"
++#include "winuser.h"
+ #include "objidl.h"
+ #include "dxgi.h"
++#include "d3d11.h"
++#include "d2d1_1.h"
++#include "dcomp.h"
+ #include "wine/debug.h"
+ 
+ WINE_DEFAULT_DEBUG_CHANNEL(dcomp);
+ 
+-HRESULT WINAPI DCompositionCreateDevice(IDXGIDevice *dxgi_device, REFIID iid, void **device)
++/* Private heap for dcomp — isolates surface/visual/target lifecycle
++ * allocations (BeginDraw/EndDraw cycles, dirty-rect tracking, persistent
++ * context wrappers) from the process heap. */
++static HANDLE dcomp_heap;
++
++static inline void *dcomp_private_alloc(size_t size)
+ {
+-    FIXME("%p, %s, %p.\n", dxgi_device, debugstr_guid(iid), device);
++    return HeapAlloc(dcomp_heap, 0, size);
++}
+ 
+-    return E_NOTIMPL;
++static inline void *dcomp_private_calloc(size_t count, size_t size)
++{
++    return HeapAlloc(dcomp_heap, HEAP_ZERO_MEMORY, count * size);
+ }
+ 
+-HRESULT WINAPI DCompositionCreateDevice2(IUnknown *rendering_device, REFIID iid, void **device)
++static inline void *dcomp_private_realloc(void *ptr, size_t size)
+ {
+-    FIXME("%p, %s, %p.\n", rendering_device, debugstr_guid(iid), device);
++    if (!ptr) return HeapAlloc(dcomp_heap, 0, size);
++    return HeapReAlloc(dcomp_heap, 0, ptr, size);
++}
+ 
+-    return E_NOTIMPL;
++static inline void dcomp_private_free(void *ptr)
++{
++    if (ptr) HeapFree(dcomp_heap, 0, ptr);
+ }
+ 
+-HRESULT WINAPI DCompositionCreateDevice3(IUnknown *rendering_device, REFIID iid, void **device)
++#define malloc(s)       dcomp_private_alloc(s)
++#define calloc(c, s)    dcomp_private_calloc(c, s)
++#define realloc(p, s)   dcomp_private_realloc(p, s)
++#define free(p)         dcomp_private_free(p)
++
++#define WM_WINE_DCOMP_SET_CHILD_MODE (WM_USER + 0x101)
++
++/* Forward declarations for target back-pointer and list management */
++struct dcomp_device;
++struct dcomp_target;
++static void dcomp_device_remove_target(struct dcomp_device *device, struct dcomp_target *target);
++
++/* Send child mode message to a swapchain's comp window */
++static void dcomp_send_child_mode(IUnknown *content)
+ {
+-    FIXME("%p, %s, %p.\n", rendering_device, debugstr_guid(iid), device);
++    WCHAR prop_name[64];
++    HWND comp_wnd;
+ 
+-    return E_NOTIMPL;
++    if (!content)
++        return;
++
++    swprintf(prop_name, ARRAY_SIZE(prop_name),
++            L"__wine_dcomp_wnd_%I64x", (UINT_PTR)content);
++    comp_wnd = (HWND)GetPropW(GetDesktopWindow(), prop_name);
++    if (comp_wnd)
++    {
++        FIXME("Sending child mode to comp_wnd %p for content %p.\n", comp_wnd, content);
++        SendMessageW(comp_wnd, WM_WINE_DCOMP_SET_CHILD_MODE, 0, 0);
++    }
++}
++
++static HRESULT STDMETHODCALLTYPE dcomp_device_Commit(IDCompositionDevice *iface);
++
++/* =====================================================================
++ * IDCompositionSurface
++ * ===================================================================== */
++
++struct dcomp_surface
++{
++    IDCompositionSurface IDCompositionSurface_iface;
++    LONG refcount;
++    UINT width, height;
++    DXGI_FORMAT format;
++    DXGI_ALPHA_MODE alpha_mode;
++    BOOL is_virtual;          /* TRUE for IDCompositionVirtualSurface */
++    /* D3D11 path (when rendering_device is IDXGIDevice/ID3D11Device) */
++    ID3D11Device *d3d11_device;
++    ID3D11Texture2D *texture;         /* GPU render target */
++    ID3D11Texture2D *staging;         /* CPU-readable staging copy */
++    IDXGISurface *dxgi_surface;       /* QI from texture */
++    /* D2D1 bitmap path (when rendering_device is ID2D1Device) */
++    ID2D1Device *d2d1_device;                /* VSTGUI's D2D1 device — resource-compatible */
++    ID2D1DeviceContext *persistent_context;   /* reusable DC for BeginDraw/EndDraw */
++    ID2D1Bitmap1 *target_bitmap;             /* GPU render target (D2D1_BITMAP_OPTIONS_TARGET) */
++    ID2D1Bitmap1 *readback_bitmap;           /* CPU-readable (CPU_READ | CANNOT_DRAW) */
++    /* Shared state */
++    DWORD *bits;                      /* System memory for composition */
++    BOOL drawing;
++    ID2D1DeviceContext *active_context; /* D2D1 context from BeginDraw (for EndDraw clip pop) */
++    BOOL has_clip;                     /* TRUE if PushAxisAlignedClip active */
++    IDCompositionDevice *device_iface; /* back-pointer for auto-commit in EndDraw */
++    /* Dirty-rect tracking — avoids full-surface GPU readback per frame.
++     * Without this, EndDraw copies width*height pixels GPU→CPU even when
++     * the app only redrew a small area (e.g. one knob). */
++    BOOL has_dirty_rect;               /* TRUE if BeginDraw got a valid sub-rect */
++    RECT dirty_rect;                   /* clamped to surface bounds */
++    BOOL needs_full_init_copy;         /* TRUE before first readback — must copy full surface once */
++};
++
++static inline struct dcomp_surface *impl_from_IDCompositionSurface(IDCompositionSurface *iface)
++{
++    return CONTAINING_RECORD(iface, struct dcomp_surface, IDCompositionSurface_iface);
++}
++
++static HRESULT STDMETHODCALLTYPE dcomp_surface_QueryInterface(IDCompositionSurface *iface,
++        REFIID iid, void **out)
++{
++    struct dcomp_surface *surface = impl_from_IDCompositionSurface(iface);
++
++    TRACE("iface %p, iid %s, out %p.\n", iface, debugstr_guid(iid), out);
++
++    if (IsEqualGUID(iid, &IID_IUnknown)
++            || IsEqualGUID(iid, &IID_IDCompositionSurface))
++    {
++        *out = &surface->IDCompositionSurface_iface;
++        IDCompositionSurface_AddRef(*out);
++        return S_OK;
++    }
++
++    if (surface->is_virtual && IsEqualGUID(iid, &IID_IDCompositionVirtualSurface))
++    {
++        *out = &surface->IDCompositionSurface_iface;
++        IDCompositionSurface_AddRef(*out);
++        return S_OK;
++    }
++
++    FIXME("unsupported iid %s.\n", debugstr_guid(iid));
++    *out = NULL;
++    return E_NOINTERFACE;
++}
++
++static ULONG STDMETHODCALLTYPE dcomp_surface_AddRef(IDCompositionSurface *iface)
++{
++    struct dcomp_surface *surface = impl_from_IDCompositionSurface(iface);
++    ULONG refcount = InterlockedIncrement(&surface->refcount);
++
++    TRACE("%p, refcount %lu.\n", iface, refcount);
++    return refcount;
++}
++
++static ULONG STDMETHODCALLTYPE dcomp_surface_Release(IDCompositionSurface *iface)
++{
++    struct dcomp_surface *surface = impl_from_IDCompositionSurface(iface);
++    ULONG refcount = InterlockedDecrement(&surface->refcount);
++
++    TRACE("%p, refcount %lu.\n", iface, refcount);
++
++    if (!refcount)
++    {
++        /* D2D1 bitmap path cleanup */
++        if (surface->readback_bitmap)
++            ID2D1Bitmap1_Release(surface->readback_bitmap);
++        if (surface->target_bitmap)
++            ID2D1Bitmap1_Release(surface->target_bitmap);
++        if (surface->persistent_context)
++            ID2D1DeviceContext_Release(surface->persistent_context);
++        if (surface->d2d1_device)
++            ID2D1Device_Release(surface->d2d1_device);
++        /* D3D11 path cleanup */
++        if (surface->dxgi_surface)
++            IDXGISurface_Release(surface->dxgi_surface);
++        if (surface->staging)
++            ID3D11Texture2D_Release(surface->staging);
++        if (surface->texture)
++            ID3D11Texture2D_Release(surface->texture);
++        if (surface->d3d11_device)
++            ID3D11Device_Release(surface->d3d11_device);
++        free(surface->bits);
++        free(surface);
++    }
++    return refcount;
++}
++
++/* Lazy-init the persistent D2D1 context and bitmaps for the D2D1Device path. */
++static HRESULT dcomp_surface_ensure_d2d1_resources(struct dcomp_surface *surface)
++{
++    D2D1_BITMAP_PROPERTIES1 bmp_props;
++    D2D1_SIZE_U size;
++    HRESULT hr;
++
++    if (surface->persistent_context)
++        return S_OK;   /* already initialised */
++
++    hr = ID2D1Device_CreateDeviceContext(surface->d2d1_device,
++            D2D1_DEVICE_CONTEXT_OPTIONS_NONE, &surface->persistent_context);
++    if (FAILED(hr))
++    {
++        FIXME("ID2D1Device_CreateDeviceContext failed: %#lx.\n", hr);
++        return hr;
++    }
++
++    size.width = surface->width;
++    size.height = surface->height;
++
++    /* Render-target bitmap (GPU-backed, TARGET flag) */
++    memset(&bmp_props, 0, sizeof(bmp_props));
++    bmp_props.pixelFormat.format = DXGI_FORMAT_B8G8R8A8_UNORM;
++    bmp_props.pixelFormat.alphaMode = D2D1_ALPHA_MODE_PREMULTIPLIED;
++    bmp_props.dpiX = 96.0f;
++    bmp_props.dpiY = 96.0f;
++    bmp_props.bitmapOptions = D2D1_BITMAP_OPTIONS_TARGET;
++
++    hr = ID2D1DeviceContext_CreateBitmap(surface->persistent_context,
++            size, NULL, 0, &bmp_props, &surface->target_bitmap);
++    if (FAILED(hr))
++    {
++        FIXME("CreateBitmap(TARGET) failed: %#lx.\n", hr);
++        ID2D1DeviceContext_Release(surface->persistent_context);
++        surface->persistent_context = NULL;
++        return hr;
++    }
++
++    /* CPU-readable bitmap for readback (CANNOT_DRAW | CPU_READ) */
++    memset(&bmp_props, 0, sizeof(bmp_props));
++    bmp_props.pixelFormat.format = DXGI_FORMAT_B8G8R8A8_UNORM;
++    bmp_props.pixelFormat.alphaMode = D2D1_ALPHA_MODE_PREMULTIPLIED;
++    bmp_props.dpiX = 96.0f;
++    bmp_props.dpiY = 96.0f;
++    bmp_props.bitmapOptions = D2D1_BITMAP_OPTIONS_CANNOT_DRAW | D2D1_BITMAP_OPTIONS_CPU_READ;
++
++    hr = ID2D1DeviceContext_CreateBitmap(surface->persistent_context,
++            size, NULL, 0, &bmp_props, &surface->readback_bitmap);
++    if (FAILED(hr))
++    {
++        FIXME("CreateBitmap(CPU_READ) failed: %#lx.\n", hr);
++        ID2D1Bitmap1_Release(surface->target_bitmap);
++        surface->target_bitmap = NULL;
++        ID2D1DeviceContext_Release(surface->persistent_context);
++        surface->persistent_context = NULL;
++        return hr;
++    }
++
++    FIXME("Created D2D1 resources: context %p, target_bitmap %p, readback_bitmap %p (%ux%u).\n",
++            surface->persistent_context, surface->target_bitmap,
++            surface->readback_bitmap, surface->width, surface->height);
++    return S_OK;
++}
++
++static HRESULT STDMETHODCALLTYPE dcomp_surface_BeginDraw(IDCompositionSurface *iface,
++        const RECT *rect, REFIID iid, void **object, POINT *offset)
++{
++    struct dcomp_surface *surface = impl_from_IDCompositionSurface(iface);
++    ID2D1DeviceContext *context;
++    HRESULT hr;
++
++    FIXME("iface %p, rect %s, iid %s, object %p, offset %p semi-stub.\n",
++            iface, wine_dbgstr_rect(rect), debugstr_guid(iid), object, offset);
++
++    if (!object || !offset)
++        return E_INVALIDARG;
++
++    *object = NULL;
++
++    if (surface->drawing)
++    {
++        WARN("Already in a draw session.\n");
++        return E_FAIL;
++    }
++
++    /* Remember the dirty rect (clamped) so EndDraw can avoid a full-surface readback. */
++    if (rect && (rect->right > rect->left) && (rect->bottom > rect->top))
++    {
++        surface->dirty_rect = *rect;
++        if (surface->dirty_rect.left < 0) surface->dirty_rect.left = 0;
++        if (surface->dirty_rect.top  < 0) surface->dirty_rect.top  = 0;
++        if (surface->dirty_rect.right  > (LONG)surface->width)
++            surface->dirty_rect.right  = (LONG)surface->width;
++        if (surface->dirty_rect.bottom > (LONG)surface->height)
++            surface->dirty_rect.bottom = (LONG)surface->height;
++        surface->has_dirty_rect = (surface->dirty_rect.right > surface->dirty_rect.left
++                                && surface->dirty_rect.bottom > surface->dirty_rect.top);
++    }
++    else
++    {
++        surface->has_dirty_rect = FALSE;
++    }
++
++    if (IsEqualGUID(iid, &IID_ID2D1DeviceContext))
++    {
++        /* D2D1Device path: use VSTGUI's device so resources are compatible. */
++        if (surface->d2d1_device)
++        {
++            hr = dcomp_surface_ensure_d2d1_resources(surface);
++            if (FAILED(hr))
++                return hr;
++
++            context = surface->persistent_context;
++            ID2D1DeviceContext_SetTarget(context, (ID2D1Image *)surface->target_bitmap);
++            ID2D1DeviceContext_BeginDraw(context);
++        }
++        else if (surface->dxgi_surface)
++        {
++            /* D3D11 path: create a standalone D2D1 context from the DXGI surface. */
++            D2D1_CREATION_PROPERTIES props;
++            memset(&props, 0, sizeof(props));
++            props.threadingMode = D2D1_THREADING_MODE_SINGLE_THREADED;
++            props.options = D2D1_DEVICE_CONTEXT_OPTIONS_NONE;
++
++            hr = D2D1CreateDeviceContext(surface->dxgi_surface, &props, &context);
++            if (FAILED(hr))
++            {
++                FIXME("D2D1CreateDeviceContext failed: %#lx.\n", hr);
++                return hr;
++            }
++        }
++        else
++        {
++            WARN("Surface has neither D2D1 device nor DXGI surface.\n");
++            return E_FAIL;
++        }
++
++        /* Push a clip rect so that Clear() only affects the dirty area,
++         * preserving the rest of the surface (VSTGUI partial redraw pattern). */
++        if (surface->has_dirty_rect)
++        {
++            D2D1_RECT_F clip_rect;
++            clip_rect.left = (float)surface->dirty_rect.left;
++            clip_rect.top = (float)surface->dirty_rect.top;
++            clip_rect.right = (float)surface->dirty_rect.right;
++            clip_rect.bottom = (float)surface->dirty_rect.bottom;
++            ID2D1DeviceContext_PushAxisAlignedClip(context, &clip_rect,
++                    D2D1_ANTIALIAS_MODE_ALIASED);
++            surface->has_clip = TRUE;
++            TRACE("Pushed dirty-rect clip (%ld,%ld)-(%ld,%ld) on context %p.\n",
++                    surface->dirty_rect.left, surface->dirty_rect.top,
++                    surface->dirty_rect.right, surface->dirty_rect.bottom, context);
++        }
++        else
++        {
++            surface->has_clip = FALSE;
++        }
++
++        /* Keep a reference for EndDraw to pop the clip */
++        surface->active_context = context;
++        ID2D1DeviceContext_AddRef(context);
++
++        ID2D1DeviceContext_AddRef(context);  /* AddRef for caller (COM out-parameter) */
++        *object = context;
++        surface->drawing = TRUE;
++        offset->x = rect ? rect->left : 0;
++        offset->y = rect ? rect->top : 0;
++        return S_OK;
++    }
++
++    if (IsEqualGUID(iid, &IID_IDXGISurface))
++    {
++        if (!surface->dxgi_surface)
++        {
++            WARN("Surface has no DXGI surface.\n");
++            return E_FAIL;
++        }
++        IDXGISurface_AddRef(surface->dxgi_surface);
++        *object = surface->dxgi_surface;
++        surface->drawing = TRUE;
++        offset->x = rect ? rect->left : 0;
++        offset->y = rect ? rect->top : 0;
++        return S_OK;
++    }
++
++    FIXME("Unsupported IID %s for BeginDraw.\n", debugstr_guid(iid));
++    return E_NOINTERFACE;
++}
++
++static HRESULT STDMETHODCALLTYPE dcomp_surface_EndDraw(IDCompositionSurface *iface)
++{
++    struct dcomp_surface *surface = impl_from_IDCompositionSurface(iface);
++    HRESULT hr;
++    unsigned int y;
++
++    FIXME("iface %p.\n", iface);
++
++    if (!surface->drawing)
++    {
++        WARN("Not in a draw session.\n");
++        return E_FAIL;
++    }
++
++    /* Pop the dirty-rect clip before readback so the
++     * D2D1 command list is finalized correctly. */
++    if (surface->active_context)
++    {
++        if (surface->has_clip)
++        {
++            ID2D1DeviceContext_PopAxisAlignedClip(surface->active_context);
++            surface->has_clip = FALSE;
++            TRACE("Popped dirty-rect clip on context %p.\n", surface->active_context);
++        }
++        ID2D1DeviceContext_Release(surface->active_context);
++        surface->active_context = NULL;
++    }
++
++    surface->drawing = FALSE;
++
++    /* Determine the readback region:
++     *   - first frame after surface (re)creation: full surface — CPU bits are uninitialized
++     *   - subsequent frames with a clamped dirty rect: only the dirty sub-rect
++     *   - no dirty rect (full redraw or unsupported): full surface
++     * surface->bits and the readback/staging bitmaps are persistent across frames,
++     * so the non-dirty pixels remain valid from the previous readback. */
++    {
++        BOOL use_dirty = surface->has_dirty_rect && !surface->needs_full_init_copy;
++        LONG copy_left   = use_dirty ? surface->dirty_rect.left   : 0;
++        LONG copy_top    = use_dirty ? surface->dirty_rect.top    : 0;
++        LONG copy_right  = use_dirty ? surface->dirty_rect.right  : (LONG)surface->width;
++        LONG copy_bottom = use_dirty ? surface->dirty_rect.bottom : (LONG)surface->height;
++        unsigned int copy_w = (unsigned int)(copy_right - copy_left);
++
++        if (surface->d2d1_device && surface->persistent_context)
++        {
++            D2D1_MAPPED_RECT d2d_mapped;
++            D2D1_POINT_2U dest_point;
++            D2D1_RECT_U src_rect;
++
++            dest_point.x = (UINT32)copy_left;
++            dest_point.y = (UINT32)copy_top;
++            src_rect.left   = (UINT32)copy_left;
++            src_rect.top    = (UINT32)copy_top;
++            src_rect.right  = (UINT32)copy_right;
++            src_rect.bottom = (UINT32)copy_bottom;
++
++            hr = ID2D1DeviceContext_EndDraw(surface->persistent_context, NULL, NULL);
++            if (FAILED(hr))
++                FIXME("ID2D1DeviceContext_EndDraw failed: %#lx.\n", hr);
++
++            /* Copy render target → CPU-readable bitmap (dirty sub-rect only when possible). */
++            hr = ID2D1Bitmap1_CopyFromBitmap(surface->readback_bitmap, &dest_point,
++                    (ID2D1Bitmap *)surface->target_bitmap, &src_rect);
++            if (FAILED(hr))
++            {
++                FIXME("CopyFromBitmap failed: %#lx.\n", hr);
++                return hr;
++            }
++
++            /* Map the readback bitmap and copy the dirty rows into system memory. */
++            hr = ID2D1Bitmap1_Map(surface->readback_bitmap, D2D1_MAP_OPTIONS_READ, &d2d_mapped);
++            if (SUCCEEDED(hr))
++            {
++                for (y = (unsigned int)copy_top; y < (unsigned int)copy_bottom; ++y)
++                {
++                    memcpy(surface->bits + y * surface->width + copy_left,
++                            (const BYTE *)d2d_mapped.bits + y * d2d_mapped.pitch
++                                    + copy_left * sizeof(DWORD),
++                            copy_w * sizeof(DWORD));
++                }
++                ID2D1Bitmap1_Unmap(surface->readback_bitmap);
++                surface->needs_full_init_copy = FALSE;
++            }
++            else
++            {
++                FIXME("ID2D1Bitmap1_Map failed: %#lx.\n", hr);
++            }
++        }
++        else if (surface->staging && surface->texture && surface->bits)
++        {
++            ID3D11DeviceContext *d3d_context;
++            D3D11_MAPPED_SUBRESOURCE mapped;
++            D3D11_BOX src_box;
++
++            ID3D11Device_GetImmediateContext(surface->d3d11_device, &d3d_context);
++
++            src_box.left   = (UINT)copy_left;
++            src_box.top    = (UINT)copy_top;
++            src_box.right  = (UINT)copy_right;
++            src_box.bottom = (UINT)copy_bottom;
++            src_box.front = 0;
++            src_box.back  = 1;
++
++            /* CopySubresourceRegion with the dirty box; if not using dirty,
++             * pass the full box (equivalent to the previous CopyResource). */
++            ID3D11DeviceContext_CopySubresourceRegion(d3d_context,
++                    (ID3D11Resource *)surface->staging, 0,
++                    (UINT)copy_left, (UINT)copy_top, 0,
++                    (ID3D11Resource *)surface->texture, 0, &src_box);
++
++            hr = ID3D11DeviceContext_Map(d3d_context,
++                    (ID3D11Resource *)surface->staging, 0,
++                    D3D11_MAP_READ, 0, &mapped);
++            if (SUCCEEDED(hr))
++            {
++                for (y = (unsigned int)copy_top; y < (unsigned int)copy_bottom; ++y)
++                {
++                    memcpy(surface->bits + y * surface->width + copy_left,
++                            (const BYTE *)mapped.pData + y * mapped.RowPitch
++                                    + copy_left * sizeof(DWORD),
++                            copy_w * sizeof(DWORD));
++                }
++                ID3D11DeviceContext_Unmap(d3d_context,
++                        (ID3D11Resource *)surface->staging, 0);
++                surface->needs_full_init_copy = FALSE;
++            }
++            else
++            {
++                FIXME("Failed to map staging texture: %#lx.\n", hr);
++            }
++
++            ID3D11DeviceContext_Release(d3d_context);
++        }
++    }
++
++    /* Auto-commit: present the updated surface immediately so that apps
++     * that don't call Commit() after every EndDraw (or call it too late)
++     * still get timely screen updates.  This mirrors Windows behavior where
++     * DWM presents composition changes at the next vsync boundary.
++     * Guard against reentrancy: Commit → BitBlt → WM_PAINT → BeginDraw/EndDraw.
++     * If reentrant EndDraw happens, set dirty flag so we re-commit after. */
++    if (surface->device_iface)
++    {
++        static BOOL in_auto_commit;
++        static BOOL commit_pending;
++        if (!in_auto_commit)
++        {
++            in_auto_commit = TRUE;
++            dcomp_device_Commit(surface->device_iface);
++            while (commit_pending)
++            {
++                commit_pending = FALSE;
++                dcomp_device_Commit(surface->device_iface);
++            }
++            in_auto_commit = FALSE;
++        }
++        else
++        {
++            commit_pending = TRUE;
++        }
++    }
++
++    return S_OK;
++}
++
++static HRESULT STDMETHODCALLTYPE dcomp_surface_SuspendDraw(IDCompositionSurface *iface)
++{
++    FIXME("iface %p stub!\n", iface);
++    return S_OK;
++}
++
++static HRESULT STDMETHODCALLTYPE dcomp_surface_ResumeDraw(IDCompositionSurface *iface)
++{
++    FIXME("iface %p stub!\n", iface);
++    return S_OK;
++}
++
++static HRESULT STDMETHODCALLTYPE dcomp_surface_Scroll(IDCompositionSurface *iface,
++        const RECT *scroll, const RECT *clip, int offset_x, int offset_y)
++{
++    FIXME("iface %p, scroll %s, clip %s, offset %d,%d stub!\n",
++            iface, wine_dbgstr_rect(scroll), wine_dbgstr_rect(clip),
++            offset_x, offset_y);
++    return S_OK;
++}
++
++static const IDCompositionSurfaceVtbl dcomp_surface_vtbl =
++{
++    dcomp_surface_QueryInterface,
++    dcomp_surface_AddRef,
++    dcomp_surface_Release,
++    dcomp_surface_BeginDraw,
++    dcomp_surface_EndDraw,
++    dcomp_surface_SuspendDraw,
++    dcomp_surface_ResumeDraw,
++    dcomp_surface_Scroll,
++};
++
++/* IDCompositionVirtualSurface extends IDCompositionSurface */
++static HRESULT STDMETHODCALLTYPE dcomp_virtual_surface_Resize(IDCompositionVirtualSurface *iface,
++        UINT width, UINT height)
++{
++    struct dcomp_surface *surface = CONTAINING_RECORD(iface, struct dcomp_surface, IDCompositionSurface_iface);
++    DWORD *new_bits;
++
++    TRACE("iface %p, %ux%u (old %ux%u).\n", iface, width, height, surface->width, surface->height);
++
++    if (width == surface->width && height == surface->height)
++        return S_OK;
++
++    if (surface->drawing)
++    {
++        WARN("Resize called during active BeginDraw — ignoring.\n");
++        return DXGI_ERROR_INVALID_CALL;
++    }
++
++    /* Reallocate system memory for composition. */
++    new_bits = calloc(width * height, sizeof(DWORD));
++    if (!new_bits)
++        return E_OUTOFMEMORY;
++    free(surface->bits);
++    surface->bits = new_bits;
++
++    /* Release D2D1 bitmaps — they will be recreated lazily in BeginDraw
++     * via dcomp_surface_ensure_d2d1_resources() with the new dimensions. */
++    if (surface->readback_bitmap)
++    {
++        ID2D1Bitmap1_Release(surface->readback_bitmap);
++        surface->readback_bitmap = NULL;
++    }
++    if (surface->target_bitmap)
++    {
++        ID2D1Bitmap1_Release(surface->target_bitmap);
++        surface->target_bitmap = NULL;
++    }
++    if (surface->persistent_context)
++    {
++        ID2D1DeviceContext_Release(surface->persistent_context);
++        surface->persistent_context = NULL;
++    }
++
++    /* Recreate D3D11 textures at the new size (no lazy-init in this path). */
++    if (surface->d3d11_device)
++    {
++        D3D11_TEXTURE2D_DESC tex_desc;
++        HRESULT hr;
++
++        if (surface->dxgi_surface)
++        {
++            IDXGISurface_Release(surface->dxgi_surface);
++            surface->dxgi_surface = NULL;
++        }
++        if (surface->staging)
++        {
++            ID3D11Texture2D_Release(surface->staging);
++            surface->staging = NULL;
++        }
++        if (surface->texture)
++        {
++            ID3D11Texture2D_Release(surface->texture);
++            surface->texture = NULL;
++        }
++
++        memset(&tex_desc, 0, sizeof(tex_desc));
++        tex_desc.Width = width;
++        tex_desc.Height = height;
++        tex_desc.MipLevels = 1;
++        tex_desc.ArraySize = 1;
++        tex_desc.Format = surface->format;
++        tex_desc.SampleDesc.Count = 1;
++        tex_desc.Usage = D3D11_USAGE_DEFAULT;
++        tex_desc.BindFlags = D3D11_BIND_RENDER_TARGET | D3D11_BIND_SHADER_RESOURCE;
++
++        hr = ID3D11Device_CreateTexture2D(surface->d3d11_device, &tex_desc, NULL, &surface->texture);
++        if (FAILED(hr))
++        {
++            WARN("Failed to create resized render target texture: %#lx.\n", hr);
++            surface->width = width;
++            surface->height = height;
++            return hr;
++        }
++
++        tex_desc.Usage = D3D11_USAGE_STAGING;
++        tex_desc.BindFlags = 0;
++        tex_desc.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
++
++        hr = ID3D11Device_CreateTexture2D(surface->d3d11_device, &tex_desc, NULL, &surface->staging);
++        if (FAILED(hr))
++        {
++            WARN("Failed to create resized staging texture: %#lx.\n", hr);
++            ID3D11Texture2D_Release(surface->texture);
++            surface->texture = NULL;
++            surface->width = width;
++            surface->height = height;
++            return hr;
++        }
++
++        hr = ID3D11Texture2D_QueryInterface(surface->texture,
++                &IID_IDXGISurface, (void **)&surface->dxgi_surface);
++        if (FAILED(hr))
++        {
++            WARN("Failed to get IDXGISurface from resized texture: %#lx.\n", hr);
++            surface->width = width;
++            surface->height = height;
++            return hr;
++        }
++    }
++
++    surface->width = width;
++    surface->height = height;
++    surface->needs_full_init_copy = TRUE;
++
++    return S_OK;
++}
++
++static HRESULT STDMETHODCALLTYPE dcomp_virtual_surface_Trim(IDCompositionVirtualSurface *iface,
++        const RECT *rectangles, UINT count)
++{
++    FIXME("iface %p, rectangles %p, count %u stub!\n", iface, rectangles, count);
++    return S_OK;
++}
++
++static const IDCompositionVirtualSurfaceVtbl dcomp_virtual_surface_vtbl =
++{
++    /* IDCompositionSurface methods */
++    (void *)dcomp_surface_QueryInterface,
++    (void *)dcomp_surface_AddRef,
++    (void *)dcomp_surface_Release,
++    (void *)dcomp_surface_BeginDraw,
++    (void *)dcomp_surface_EndDraw,
++    (void *)dcomp_surface_SuspendDraw,
++    (void *)dcomp_surface_ResumeDraw,
++    (void *)dcomp_surface_Scroll,
++    /* IDCompositionVirtualSurface methods */
++    dcomp_virtual_surface_Resize,
++    dcomp_virtual_surface_Trim,
++};
++
++static HRESULT dcomp_surface_create(ID3D11Device *d3d11_device, ID2D1Device *d2d1_device,
++        UINT width, UINT height, DXGI_FORMAT pixel_format,
++        DXGI_ALPHA_MODE alpha_mode, BOOL is_virtual,
++        struct dcomp_surface **out)
++{
++    struct dcomp_surface *surface;
++    HRESULT hr;
++
++    if (!(surface = calloc(1, sizeof(*surface))))
++        return E_OUTOFMEMORY;
++
++    surface->IDCompositionSurface_iface.lpVtbl = is_virtual
++            ? (const IDCompositionSurfaceVtbl *)&dcomp_virtual_surface_vtbl
++            : &dcomp_surface_vtbl;
++    surface->refcount = 1;
++    surface->width = width;
++    surface->height = height;
++    surface->format = pixel_format;
++    surface->alpha_mode = alpha_mode;
++    surface->is_virtual = is_virtual;
++    surface->needs_full_init_copy = TRUE;
++
++    if (d2d1_device)
++    {
++        /* D2D1 bitmap path: store device reference, bitmaps created lazily in BeginDraw.
++         * This path is used when the rendering_device is an ID2D1Device (VSTGUI pattern).
++         * We create the DeviceContext and bitmaps from this device so that D2D1 resources
++         * (brushes, bitmaps, effects) created by VSTGUI are compatible with our context. */
++        surface->d2d1_device = d2d1_device;
++        ID2D1Device_AddRef(d2d1_device);
++    }
++    else if (d3d11_device)
++    {
++        /* D3D11 path: create GPU textures for rendering + staging for readback. */
++        D3D11_TEXTURE2D_DESC tex_desc;
++
++        surface->d3d11_device = d3d11_device;
++        ID3D11Device_AddRef(d3d11_device);
++
++        memset(&tex_desc, 0, sizeof(tex_desc));
++        tex_desc.Width = width;
++        tex_desc.Height = height;
++        tex_desc.MipLevels = 1;
++        tex_desc.ArraySize = 1;
++        tex_desc.Format = pixel_format;
++        tex_desc.SampleDesc.Count = 1;
++        tex_desc.Usage = D3D11_USAGE_DEFAULT;
++        tex_desc.BindFlags = D3D11_BIND_RENDER_TARGET | D3D11_BIND_SHADER_RESOURCE;
++
++        hr = ID3D11Device_CreateTexture2D(d3d11_device, &tex_desc, NULL, &surface->texture);
++        if (FAILED(hr))
++        {
++            FIXME("Failed to create render target texture: %#lx.\n", hr);
++            goto fail;
++        }
++
++        tex_desc.Usage = D3D11_USAGE_STAGING;
++        tex_desc.BindFlags = 0;
++        tex_desc.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
++
++        hr = ID3D11Device_CreateTexture2D(d3d11_device, &tex_desc, NULL, &surface->staging);
++        if (FAILED(hr))
++        {
++            FIXME("Failed to create staging texture: %#lx.\n", hr);
++            goto fail;
++        }
++
++        hr = ID3D11Texture2D_QueryInterface(surface->texture,
++                &IID_IDXGISurface, (void **)&surface->dxgi_surface);
++        if (FAILED(hr))
++        {
++            FIXME("Failed to get IDXGISurface from texture: %#lx.\n", hr);
++            goto fail;
++        }
++    }
++    else
++    {
++        FIXME("No rendering device provided.\n");
++        free(surface);
++        return E_INVALIDARG;
++    }
++
++    /* Allocate system memory for composition (transparent = 0x00000000) */
++    surface->bits = calloc(width * height, sizeof(DWORD));
++    if (!surface->bits)
++    {
++        hr = E_OUTOFMEMORY;
++        goto fail;
++    }
++
++    FIXME("Created DComp surface %p (%ux%u, fmt=%#x, alpha=%#x, virtual=%d, d2d1=%d).\n",
++            surface, width, height, pixel_format, alpha_mode, is_virtual, !!d2d1_device);
++
++    *out = surface;
++    return S_OK;
++
++fail:
++    IDCompositionSurface_Release(&surface->IDCompositionSurface_iface);
++    return hr;
++}
++
++/* =====================================================================
++ * IDCompositionSurfaceFactory
++ * ===================================================================== */
++
++struct dcomp_surface_factory
++{
++    IDCompositionSurfaceFactory IDCompositionSurfaceFactory_iface;
++    LONG refcount;
++    IDCompositionDevice *device_iface;  /* back-pointer via COM interface */
++};
++
++static inline struct dcomp_surface_factory *impl_from_IDCompositionSurfaceFactory(
++        IDCompositionSurfaceFactory *iface)
++{
++    return CONTAINING_RECORD(iface, struct dcomp_surface_factory, IDCompositionSurfaceFactory_iface);
++}
++
++static HRESULT STDMETHODCALLTYPE dcomp_surface_factory_QueryInterface(
++        IDCompositionSurfaceFactory *iface, REFIID iid, void **out)
++{
++    struct dcomp_surface_factory *factory = impl_from_IDCompositionSurfaceFactory(iface);
++
++    TRACE("iface %p, iid %s, out %p.\n", iface, debugstr_guid(iid), out);
++
++    if (IsEqualGUID(iid, &IID_IUnknown)
++            || IsEqualGUID(iid, &IID_IDCompositionSurfaceFactory))
++    {
++        *out = &factory->IDCompositionSurfaceFactory_iface;
++        IDCompositionSurfaceFactory_AddRef(*out);
++        return S_OK;
++    }
++
++    FIXME("unsupported iid %s.\n", debugstr_guid(iid));
++    *out = NULL;
++    return E_NOINTERFACE;
++}
++
++static ULONG STDMETHODCALLTYPE dcomp_surface_factory_AddRef(IDCompositionSurfaceFactory *iface)
++{
++    struct dcomp_surface_factory *factory = impl_from_IDCompositionSurfaceFactory(iface);
++    ULONG refcount = InterlockedIncrement(&factory->refcount);
++
++    TRACE("%p, refcount %lu.\n", iface, refcount);
++    return refcount;
++}
++
++static ULONG STDMETHODCALLTYPE dcomp_surface_factory_Release(IDCompositionSurfaceFactory *iface)
++{
++    struct dcomp_surface_factory *factory = impl_from_IDCompositionSurfaceFactory(iface);
++    ULONG refcount = InterlockedDecrement(&factory->refcount);
++
++    TRACE("%p, refcount %lu.\n", iface, refcount);
++
++    if (!refcount)
++    {
++        if (factory->device_iface)
++            IDCompositionDevice_Release(factory->device_iface);
++        free(factory);
++    }
++    return refcount;
++}
++
++static HRESULT STDMETHODCALLTYPE dcomp_surface_factory_CreateSurface(
++        IDCompositionSurfaceFactory *iface, UINT width, UINT height,
++        DXGI_FORMAT pixel_format, DXGI_ALPHA_MODE alpha_mode,
++        IDCompositionSurface **surface)
++{
++    struct dcomp_surface_factory *factory = impl_from_IDCompositionSurfaceFactory(iface);
++
++    FIXME("iface %p, %ux%u, format %#x, alpha %#x, surface %p.\n",
++            iface, width, height, pixel_format, alpha_mode, surface);
++
++    if (!factory->device_iface)
++        return E_FAIL;
++
++    return IDCompositionDevice_CreateSurface(factory->device_iface,
++            width, height, pixel_format, alpha_mode, surface);
++}
++
++static HRESULT STDMETHODCALLTYPE dcomp_surface_factory_CreateVirtualSurface(
++        IDCompositionSurfaceFactory *iface, UINT width, UINT height,
++        DXGI_FORMAT pixel_format, DXGI_ALPHA_MODE alpha_mode,
++        IDCompositionVirtualSurface **surface)
++{
++    struct dcomp_surface_factory *factory = impl_from_IDCompositionSurfaceFactory(iface);
++
++    FIXME("iface %p, %ux%u, format %#x, alpha %#x, surface %p.\n",
++            iface, width, height, pixel_format, alpha_mode, surface);
++
++    if (!factory->device_iface)
++        return E_FAIL;
++
++    return IDCompositionDevice_CreateVirtualSurface(factory->device_iface,
++            width, height, pixel_format, alpha_mode, surface);
++}
++
++static const IDCompositionSurfaceFactoryVtbl dcomp_surface_factory_vtbl =
++{
++    dcomp_surface_factory_QueryInterface,
++    dcomp_surface_factory_AddRef,
++    dcomp_surface_factory_Release,
++    dcomp_surface_factory_CreateSurface,
++    dcomp_surface_factory_CreateVirtualSurface,
++};
++
++/* =====================================================================
++ * IDCompositionVisual
++ * ===================================================================== */
++
++struct dcomp_visual
++{
++    IDCompositionVisual IDCompositionVisual_iface;
++    LONG refcount;
++    IUnknown *content;
++    struct dcomp_surface *surface_content; /* non-NULL if content is a DComp surface */
++    HWND target_hwnd;
++    /* Visual tree */
++    float offset_x;
++    float offset_y;
++    struct dcomp_visual *parent;
++    struct dcomp_visual *children;       /* head of child list (first = back) */
++    struct dcomp_visual *next_sibling;   /* doubly-linked sibling list */
++    struct dcomp_visual *prev_sibling;
++};
++
++static inline struct dcomp_visual *impl_from_IDCompositionVisual(IDCompositionVisual *iface)
++{
++    return CONTAINING_RECORD(iface, struct dcomp_visual, IDCompositionVisual_iface);
++}
++
++static void dcomp_visual_try_reparent(struct dcomp_visual *visual);
++static void dcomp_commit_visual_tree(HWND target_hwnd, struct dcomp_visual *root);
++
++/* Visual tree linked-list helpers */
++static void dcomp_visual_unlink(struct dcomp_visual *child)
++{
++    if (!child->parent)
++        return;
++
++    if (child->prev_sibling)
++        child->prev_sibling->next_sibling = child->next_sibling;
++    else
++        child->parent->children = child->next_sibling;
++
++    if (child->next_sibling)
++        child->next_sibling->prev_sibling = child->prev_sibling;
++
++    child->parent = NULL;
++    child->prev_sibling = NULL;
++    child->next_sibling = NULL;
++}
++
++static void dcomp_visual_append(struct dcomp_visual *parent, struct dcomp_visual *child)
++{
++    struct dcomp_visual *last = parent->children;
++
++    child->parent = parent;
++    child->prev_sibling = NULL;
++    child->next_sibling = NULL;
++
++    if (!last)
++    {
++        parent->children = child;
++        return;
++    }
++
++    while (last->next_sibling)
++        last = last->next_sibling;
++
++    last->next_sibling = child;
++    child->prev_sibling = last;
++}
++
++static void dcomp_visual_prepend(struct dcomp_visual *parent, struct dcomp_visual *child)
++{
++    child->parent = parent;
++    child->prev_sibling = NULL;
++    child->next_sibling = parent->children;
++
++    if (parent->children)
++        parent->children->prev_sibling = child;
++
++    parent->children = child;
++}
++
++static void dcomp_visual_insert_after(struct dcomp_visual *ref, struct dcomp_visual *child)
++{
++    child->parent = ref->parent;
++    child->prev_sibling = ref;
++    child->next_sibling = ref->next_sibling;
++
++    if (ref->next_sibling)
++        ref->next_sibling->prev_sibling = child;
++
++    ref->next_sibling = child;
++}
++
++static void dcomp_visual_insert_before(struct dcomp_visual *ref, struct dcomp_visual *child)
++{
++    child->parent = ref->parent;
++    child->next_sibling = ref;
++    child->prev_sibling = ref->prev_sibling;
++
++    if (ref->prev_sibling)
++        ref->prev_sibling->next_sibling = child;
++    else if (ref->parent)
++        ref->parent->children = child;
++
++    ref->prev_sibling = child;
++}
++
++static HRESULT STDMETHODCALLTYPE dcomp_visual_QueryInterface(IDCompositionVisual *iface,
++        REFIID iid, void **out)
++{
++    struct dcomp_visual *visual = impl_from_IDCompositionVisual(iface);
++
++    TRACE("iface %p, iid %s, out %p.\n", iface, debugstr_guid(iid), out);
++
++    if (IsEqualGUID(iid, &IID_IUnknown)
++            || IsEqualGUID(iid, &IID_IDCompositionVisual)
++            || IsEqualGUID(iid, &IID_IDCompositionVisual2))
++    {
++        *out = &visual->IDCompositionVisual_iface;
++        IDCompositionVisual_AddRef(*out);
++        return S_OK;
++    }
++
++    FIXME("unsupported iid %s.\n", debugstr_guid(iid));
++    *out = NULL;
++    return E_NOINTERFACE;
++}
++
++static ULONG STDMETHODCALLTYPE dcomp_visual_AddRef(IDCompositionVisual *iface)
++{
++    struct dcomp_visual *visual = impl_from_IDCompositionVisual(iface);
++    ULONG refcount = InterlockedIncrement(&visual->refcount);
++
++    TRACE("%p, refcount %lu.\n", iface, refcount);
++    return refcount;
++}
++
++static ULONG STDMETHODCALLTYPE dcomp_visual_Release(IDCompositionVisual *iface)
++{
++    struct dcomp_visual *visual = impl_from_IDCompositionVisual(iface);
++    ULONG refcount = InterlockedDecrement(&visual->refcount);
++
++    TRACE("%p, refcount %lu.\n", iface, refcount);
++
++    if (!refcount)
++    {
++        /* Unlink from parent if still in a tree */
++        if (visual->parent)
++            dcomp_visual_unlink(visual);
++
++        /* Release all children */
++        {
++            struct dcomp_visual *child = visual->children;
++            while (child)
++            {
++                struct dcomp_visual *next = child->next_sibling;
++                child->parent = NULL;
++                child->prev_sibling = NULL;
++                child->next_sibling = NULL;
++                IDCompositionVisual_Release(&child->IDCompositionVisual_iface);
++                child = next;
++            }
++            visual->children = NULL;
++        }
++
++        if (visual->content)
++            IUnknown_Release(visual->content);
++        free(visual);
++    }
++    return refcount;
++}
++
++static HRESULT STDMETHODCALLTYPE dcomp_visual_SetOffsetXAnimation(IDCompositionVisual *iface,
++        IDCompositionAnimation *animation)
++{
++    FIXME("iface %p, animation %p stub!\n", iface, animation);
++    return S_OK;
++}
++
++static HRESULT STDMETHODCALLTYPE dcomp_visual_SetOffsetX(IDCompositionVisual *iface, float offset_x)
++{
++    struct dcomp_visual *visual = impl_from_IDCompositionVisual(iface);
++
++    TRACE("iface %p, offset_x %.8e.\n", iface, offset_x);
++    visual->offset_x = offset_x;
++    return S_OK;
++}
++
++static HRESULT STDMETHODCALLTYPE dcomp_visual_SetOffsetYAnimation(IDCompositionVisual *iface,
++        IDCompositionAnimation *animation)
++{
++    FIXME("iface %p, animation %p stub!\n", iface, animation);
++    return S_OK;
++}
++
++static HRESULT STDMETHODCALLTYPE dcomp_visual_SetOffsetY(IDCompositionVisual *iface, float offset_y)
++{
++    struct dcomp_visual *visual = impl_from_IDCompositionVisual(iface);
++
++    TRACE("iface %p, offset_y %.8e.\n", iface, offset_y);
++    visual->offset_y = offset_y;
++    return S_OK;
++}
++
++static HRESULT STDMETHODCALLTYPE dcomp_visual_SetTransformObject(IDCompositionVisual *iface,
++        IDCompositionTransform *transform)
++{
++    FIXME("iface %p, transform %p stub!\n", iface, transform);
++    return S_OK;
++}
++
++static HRESULT STDMETHODCALLTYPE dcomp_visual_SetTransform(IDCompositionVisual *iface,
++        const D2D_MATRIX_3X2_F *matrix)
++{
++    FIXME("iface %p, matrix %p stub!\n", iface, matrix);
++    return S_OK;
++}
++
++static HRESULT STDMETHODCALLTYPE dcomp_visual_SetTransformParent(IDCompositionVisual *iface,
++        IDCompositionVisual *visual)
++{
++    FIXME("iface %p, visual %p stub!\n", iface, visual);
++    return S_OK;
++}
++
++static HRESULT STDMETHODCALLTYPE dcomp_visual_SetEffect(IDCompositionVisual *iface,
++        IDCompositionEffect *effect)
++{
++    FIXME("iface %p, effect %p stub!\n", iface, effect);
++    return S_OK;
++}
++
++static HRESULT STDMETHODCALLTYPE dcomp_visual_SetBitmapInterpolationMode(IDCompositionVisual *iface,
++        enum DCOMPOSITION_BITMAP_INTERPOLATION_MODE interpolation_mode)
++{
++    FIXME("iface %p, mode %d stub!\n", iface, interpolation_mode);
++    return S_OK;
++}
++
++static HRESULT STDMETHODCALLTYPE dcomp_visual_SetBorderMode(IDCompositionVisual *iface,
++        enum DCOMPOSITION_BORDER_MODE border_mode)
++{
++    FIXME("iface %p, mode %d stub!\n", iface, border_mode);
++    return S_OK;
++}
++
++static HRESULT STDMETHODCALLTYPE dcomp_visual_SetClipObject(IDCompositionVisual *iface,
++        IDCompositionClip *clip)
++{
++    FIXME("iface %p, clip %p stub!\n", iface, clip);
++    return S_OK;
++}
++
++static HRESULT STDMETHODCALLTYPE dcomp_visual_SetClip(IDCompositionVisual *iface,
++        const D2D_RECT_F *rect)
++{
++    FIXME("iface %p, rect %p stub!\n", iface, rect);
++    return S_OK;
++}
++
++static HRESULT STDMETHODCALLTYPE dcomp_visual_SetContent(IDCompositionVisual *iface,
++        IUnknown *content)
++{
++    struct dcomp_visual *visual = impl_from_IDCompositionVisual(iface);
++    IDCompositionSurface *surface_iface = NULL;
++
++    FIXME("iface %p, content %p (visual: target_hwnd %p).\n",
++            iface, content, visual->target_hwnd);
++
++    if (visual->content)
++        IUnknown_Release(visual->content);
++
++    visual->content = content;
++    visual->surface_content = NULL;
++    if (content)
++    {
++        IUnknown_AddRef(content);
++
++        /* Check if the content is one of our DComp surfaces */
++        if (SUCCEEDED(IUnknown_QueryInterface(content, &IID_IDCompositionSurface,
++                (void **)&surface_iface)))
++        {
++            visual->surface_content = impl_from_IDCompositionSurface(surface_iface);
++            IDCompositionSurface_Release(surface_iface);
++            FIXME("Visual %p: content is DComp surface %p (%ux%u).\n",
++                    visual, visual->surface_content,
++                    visual->surface_content->width, visual->surface_content->height);
++        }
++    }
++
++    /* Surface content does not need swapchain reparenting. */
++    if (visual->surface_content)
++    {
++        /* Surface content: no swapchain to reparent. The composition
++         * integration happens through direct bits in commit_visual_tree. */
++    }
++    else
++    {
++        if (visual->target_hwnd)
++            dcomp_visual_try_reparent(visual);
++        if (visual->parent && visual->parent->content)
++            dcomp_send_child_mode(visual->content);
++    }
++
++    return S_OK;
++}
++
++static void dcomp_visual_set_target_hwnd(struct dcomp_visual *visual, HWND target_hwnd);
++
++static HRESULT STDMETHODCALLTYPE dcomp_visual_AddVisual(IDCompositionVisual *iface,
++        IDCompositionVisual *visual, BOOL insert_above, IDCompositionVisual *reference_visual)
++{
++    struct dcomp_visual *parent = impl_from_IDCompositionVisual(iface);
++    struct dcomp_visual *child = impl_from_IDCompositionVisual(visual);
++    struct dcomp_visual *ref = reference_visual
++            ? impl_from_IDCompositionVisual(reference_visual) : NULL;
++
++    FIXME("iface %p, visual %p, insert_above %d, reference %p.\n",
++            iface, visual, insert_above, reference_visual);
++
++    if (!visual)
++        return E_INVALIDARG;
++
++    /* Remove from old parent if already in a tree */
++    if (child->parent)
++    {
++        dcomp_visual_unlink(child);
++        IDCompositionVisual_Release(visual);
++    }
++
++    /* Inherit target_hwnd from root of tree and reparent if content already set */
++    if (parent->target_hwnd)
++        dcomp_visual_set_target_hwnd(child, parent->target_hwnd);
++
++    if (!ref)
++    {
++        /* No reference: insert_above=TRUE → on top (end), FALSE → at bottom (start) */
++        if (insert_above)
++            dcomp_visual_append(parent, child);
++        else
++            dcomp_visual_prepend(parent, child);
++    }
++    else
++    {
++        if (insert_above)
++            dcomp_visual_insert_after(ref, child);
++        else
++            dcomp_visual_insert_before(ref, child);
++    }
++
++    IDCompositionVisual_AddRef(visual);
++
++    /* If child already has content and parent also has content, enable child mode on its swapchain */
++    if (child->content && parent->content)
++        dcomp_send_child_mode(child->content);
++
++    /* Serialize tree info for the root's target window */
++    {
++        struct dcomp_visual *root = parent;
++        while (root->parent)
++            root = root->parent;
++        if (root->target_hwnd)
++            dcomp_commit_visual_tree(root->target_hwnd, root);
++    }
++
++    return S_OK;
++}
++
++static HRESULT STDMETHODCALLTYPE dcomp_visual_RemoveVisual(IDCompositionVisual *iface,
++        IDCompositionVisual *visual)
++{
++    struct dcomp_visual *child = impl_from_IDCompositionVisual(visual);
++
++    FIXME("iface %p, visual %p.\n", iface, visual);
++
++    if (!visual)
++        return E_INVALIDARG;
++
++    if (child->parent)
++    {
++        struct dcomp_visual *root = child->parent;
++        dcomp_visual_unlink(child);
++        IDCompositionVisual_Release(visual);
++
++        /* Re-serialize tree after removal */
++        while (root->parent)
++            root = root->parent;
++        if (root->target_hwnd)
++            dcomp_commit_visual_tree(root->target_hwnd, root);
++    }
++
++    return S_OK;
++}
++
++static HRESULT STDMETHODCALLTYPE dcomp_visual_RemoveAllVisuals(IDCompositionVisual *iface)
++{
++    struct dcomp_visual *parent = impl_from_IDCompositionVisual(iface);
++    struct dcomp_visual *child = parent->children;
++
++    FIXME("iface %p.\n", iface);
++
++    while (child)
++    {
++        struct dcomp_visual *next = child->next_sibling;
++        child->parent = NULL;
++        child->prev_sibling = NULL;
++        child->next_sibling = NULL;
++        IDCompositionVisual_Release(&child->IDCompositionVisual_iface);
++        child = next;
++    }
++    parent->children = NULL;
++
++    return S_OK;
++}
++
++static HRESULT STDMETHODCALLTYPE dcomp_visual_SetCompositeMode(IDCompositionVisual *iface,
++        enum DCOMPOSITION_COMPOSITE_MODE composite_mode)
++{
++    FIXME("iface %p, mode %d stub!\n", iface, composite_mode);
++    return S_OK;
++}
++
++static HRESULT STDMETHODCALLTYPE dcomp_visual_SetOpacityMode(IDCompositionVisual2 *iface,
++        enum DCOMPOSITION_OPACITY_MODE mode)
++{
++    FIXME("iface %p, mode %d stub!\n", iface, mode);
++    return S_OK;
++}
++
++static HRESULT STDMETHODCALLTYPE dcomp_visual_SetBackFaceVisibility(IDCompositionVisual2 *iface,
++        enum DCOMPOSITION_BACKFACE_VISIBILITY visibility)
++{
++    FIXME("iface %p, visibility %d stub!\n", iface, visibility);
++    return S_OK;
++}
++
++struct dcomp_visual_vtbl_full
++{
++    IDCompositionVisualVtbl v1;
++    HRESULT (STDMETHODCALLTYPE *SetOpacityMode)(IDCompositionVisual2 *iface, enum DCOMPOSITION_OPACITY_MODE mode);
++    HRESULT (STDMETHODCALLTYPE *SetBackFaceVisibility)(IDCompositionVisual2 *iface, enum DCOMPOSITION_BACKFACE_VISIBILITY visibility);
++};
++
++static const struct dcomp_visual_vtbl_full dcomp_visual_vtbl =
++{
++    {
++        dcomp_visual_QueryInterface,
++        dcomp_visual_AddRef,
++        dcomp_visual_Release,
++        dcomp_visual_SetOffsetXAnimation,
++        dcomp_visual_SetOffsetX,
++        dcomp_visual_SetOffsetYAnimation,
++        dcomp_visual_SetOffsetY,
++        dcomp_visual_SetTransformObject,
++        dcomp_visual_SetTransform,
++        dcomp_visual_SetTransformParent,
++        dcomp_visual_SetEffect,
++        dcomp_visual_SetBitmapInterpolationMode,
++        dcomp_visual_SetBorderMode,
++        dcomp_visual_SetClipObject,
++        dcomp_visual_SetClip,
++        dcomp_visual_SetContent,
++        dcomp_visual_AddVisual,
++        dcomp_visual_RemoveVisual,
++        dcomp_visual_RemoveAllVisuals,
++        dcomp_visual_SetCompositeMode,
++    },
++    dcomp_visual_SetOpacityMode,
++    dcomp_visual_SetBackFaceVisibility,
++};
++
++#define WM_WINE_DCOMP_SET_TARGET (WM_USER + 0x100)
++
++static void dcomp_visual_try_reparent(struct dcomp_visual *visual)
++{
++    WCHAR prop_name[64];
++    HWND comp_wnd;
++
++    if (!visual->content || !visual->target_hwnd)
++    {
++        FIXME("Reparent skipped: content %p, target_hwnd %p.\n",
++                visual->content, visual->target_hwnd);
++        return;
++    }
++
++    swprintf(prop_name, ARRAY_SIZE(prop_name),
++            L"__wine_dcomp_wnd_%I64x", (UINT_PTR)visual->content);
++    comp_wnd = (HWND)GetPropW(GetDesktopWindow(), prop_name);
++
++    if (!comp_wnd)
++    {
++        FIXME("Composition window NOT FOUND for content %p (prop: __wine_dcomp_wnd_%I64x).\n",
++                visual->content, (UINT_PTR)visual->content);
++        return;
++    }
++
++    TRACE("Switching swapchain window from %p to target %p.\n",
++            comp_wnd, visual->target_hwnd);
++
++    /* Tell dxgi to switch the swapchain's rendering target to target_hwnd.
++     * This avoids SetParent which destroys the X11 window and breaks GL rendering.
++     * The wndproc in dxgi/factory.c handles this message by calling
++     * wined3d_swapchain_set_window, which triggers lazy GL context rebinding. */
++    SendMessageW(comp_wnd, WM_WINE_DCOMP_SET_TARGET, 0, (LPARAM)visual->target_hwnd);
++
++    FIXME("Requested swapchain window switch from %p to target %p.\n",
++            comp_wnd, visual->target_hwnd);
++}
++
++static void dcomp_visual_set_target_hwnd(struct dcomp_visual *visual, HWND target_hwnd)
++{
++    struct dcomp_visual *child;
++    visual->target_hwnd = target_hwnd;
++    if (visual->content)
++        dcomp_visual_try_reparent(visual);
++    for (child = visual->children; child; child = child->next_sibling)
++        dcomp_visual_set_target_hwnd(child, target_hwnd);
++}
++
++/* =====================================================================
++ * IDCompositionTarget
++ * ===================================================================== */
++
++/* Property name for storing target pointer on HWND (Phase 5 subclass) */
++static const WCHAR dcomp_target_prop[] = L"__wine_dcomp_target";
++
++struct dcomp_target
++{
++    IDCompositionTarget IDCompositionTarget_iface;
++    LONG refcount;
++    HWND hwnd;
++    struct dcomp_visual *root_visual;
++    struct dcomp_device *device;          /* back-pointer for target list management */
++    struct dcomp_target *next_target;     /* singly-linked list in dcomp_device */
++    /* Presentation state for surface content → HWND blitting */
++    HDC comp_dc;
++    HBITMAP comp_bitmap;
++    DWORD *comp_bits;                     /* DIB section pixel buffer */
++    UINT comp_width, comp_height;
++    /* WndProc subclass for WM_ERASEBKGND / WM_PAINT protection (Phase 5) */
++    WNDPROC orig_wndproc;
++};
++
++static inline struct dcomp_target *impl_from_IDCompositionTarget(IDCompositionTarget *iface)
++{
++    return CONTAINING_RECORD(iface, struct dcomp_target, IDCompositionTarget_iface);
++}
++
++static HRESULT STDMETHODCALLTYPE dcomp_target_QueryInterface(IDCompositionTarget *iface,
++        REFIID iid, void **out)
++{
++    struct dcomp_target *target = impl_from_IDCompositionTarget(iface);
++
++    TRACE("iface %p, iid %s, out %p.\n", iface, debugstr_guid(iid), out);
++
++    if (IsEqualGUID(iid, &IID_IUnknown)
++            || IsEqualGUID(iid, &IID_IDCompositionTarget))
++    {
++        *out = &target->IDCompositionTarget_iface;
++        IDCompositionTarget_AddRef(*out);
++        return S_OK;
++    }
++
++    FIXME("unsupported iid %s.\n", debugstr_guid(iid));
++    *out = NULL;
++    return E_NOINTERFACE;
++}
++
++static ULONG STDMETHODCALLTYPE dcomp_target_AddRef(IDCompositionTarget *iface)
++{
++    struct dcomp_target *target = impl_from_IDCompositionTarget(iface);
++    ULONG refcount = InterlockedIncrement(&target->refcount);
++
++    TRACE("%p, refcount %lu.\n", iface, refcount);
++    return refcount;
++}
++
++static ULONG STDMETHODCALLTYPE dcomp_target_Release(IDCompositionTarget *iface)
++{
++    struct dcomp_target *target = impl_from_IDCompositionTarget(iface);
++    ULONG refcount = InterlockedDecrement(&target->refcount);
++
++    TRACE("%p, refcount %lu.\n", iface, refcount);
++
++    if (!refcount)
++    {
++        /* Remove from device's target list */
++        if (target->device)
++            dcomp_device_remove_target(target->device, target);
++
++        /* Remove WndProc subclass (Phase 5) */
++        if (target->orig_wndproc && target->hwnd && IsWindow(target->hwnd))
++        {
++            SetWindowLongPtrW(target->hwnd, GWLP_WNDPROC, (LONG_PTR)target->orig_wndproc);
++            RemovePropW(target->hwnd, dcomp_target_prop);
++            FIXME("Removed WndProc subclass from hwnd %p.\n", target->hwnd);
++        }
++
++        /* Clean up presentation state */
++        if (target->comp_bitmap)
++        {
++            SelectObject(target->comp_dc, NULL);
++            DeleteObject(target->comp_bitmap);
++        }
++        if (target->comp_dc)
++            DeleteDC(target->comp_dc);
++
++        free(target);
++    }
++    return refcount;
++}
++
++static HRESULT STDMETHODCALLTYPE dcomp_target_SetRoot(IDCompositionTarget *iface,
++        IDCompositionVisual *visual)
++{
++    struct dcomp_target *target = impl_from_IDCompositionTarget(iface);
++    struct dcomp_visual *visual_impl;
++
++    FIXME("iface %p, visual %p, target hwnd %p.\n", iface, visual, target->hwnd);
++
++    if (!visual)
++        return S_OK;
++
++    visual_impl = impl_from_IDCompositionVisual(visual);
++    target->root_visual = visual_impl;
++    dcomp_visual_set_target_hwnd(visual_impl, target->hwnd);
++    return S_OK;
++}
++
++static const IDCompositionTargetVtbl dcomp_target_vtbl =
++{
++    dcomp_target_QueryInterface,
++    dcomp_target_AddRef,
++    dcomp_target_Release,
++    dcomp_target_SetRoot,
++};
++
++/* =====================================================================
++ * IDCompositionDevice
++ * ===================================================================== */
++
++struct dcomp_device
++{
++    IDCompositionDevice IDCompositionDevice_iface;
++    IDCompositionDesktopDevice IDCompositionDesktopDevice_iface;
++    LONG refcount;
++    IUnknown *rendering_device;   /* IDXGIDevice from DCompositionCreateDevice */
++    ID3D11Device *d3d11_device;   /* QI from rendering_device, lazy-init */
++    ID2D1Device *d2d1_device;     /* QI from rendering_device if it is ID2D1Device */
++    struct dcomp_target *targets; /* singly-linked list of targets for Commit */
++};
++
++static inline struct dcomp_device *impl_from_IDCompositionDevice(IDCompositionDevice *iface)
++{
++    return CONTAINING_RECORD(iface, struct dcomp_device, IDCompositionDevice_iface);
++}
++
++static inline struct dcomp_device *impl_from_IDCompositionDesktopDevice(IDCompositionDesktopDevice *iface)
++{
++    return CONTAINING_RECORD(iface, struct dcomp_device, IDCompositionDesktopDevice_iface);
++}
++
++static HRESULT STDMETHODCALLTYPE dcomp_device_QueryInterface(IDCompositionDevice *iface,
++        REFIID iid, void **out)
++{
++    struct dcomp_device *device = impl_from_IDCompositionDevice(iface);
++
++    TRACE("iface %p, iid %s, out %p.\n", iface, debugstr_guid(iid), out);
++
++    if (IsEqualGUID(iid, &IID_IUnknown)
++            || IsEqualGUID(iid, &IID_IDCompositionDevice))
++    {
++        *out = &device->IDCompositionDevice_iface;
++        IDCompositionDevice_AddRef(*out);
++        return S_OK;
++    }
++
++    if (IsEqualGUID(iid, &IID_IDCompositionDevice2)
++            || IsEqualGUID(iid, &IID_IDCompositionDesktopDevice))
++    {
++        *out = &device->IDCompositionDesktopDevice_iface;
++        IDCompositionDesktopDevice_AddRef(*out);
++        return S_OK;
++    }
++
++    FIXME("unsupported iid %s.\n", debugstr_guid(iid));
++    *out = NULL;
++    return E_NOINTERFACE;
++}
++
++static ULONG STDMETHODCALLTYPE dcomp_device_AddRef(IDCompositionDevice *iface)
++{
++    struct dcomp_device *device = impl_from_IDCompositionDevice(iface);
++    ULONG refcount = InterlockedIncrement(&device->refcount);
++
++    TRACE("%p, refcount %lu.\n", iface, refcount);
++    return refcount;
++}
++
++static ULONG STDMETHODCALLTYPE dcomp_device_Release(IDCompositionDevice *iface)
++{
++    struct dcomp_device *device = impl_from_IDCompositionDevice(iface);
++    ULONG refcount = InterlockedDecrement(&device->refcount);
++
++    TRACE("%p, refcount %lu.\n", iface, refcount);
++
++    if (!refcount)
++    {
++        if (device->d2d1_device)
++            ID2D1Device_Release(device->d2d1_device);
++        if (device->d3d11_device)
++            ID3D11Device_Release(device->d3d11_device);
++        if (device->rendering_device)
++            IUnknown_Release(device->rendering_device);
++        free(device);
++    }
++
++    return refcount;
++}
++
++static void dcomp_commit_visual_tree(HWND target_hwnd, struct dcomp_visual *root)
++{
++    struct dcomp_visual *child;
++    WCHAR prop_name[64];
++    unsigned int idx = 0;
++
++    if (!root || !root->children || !target_hwnd)
++    {
++        if (target_hwnd)
++            SetPropW(target_hwnd, L"__wine_dcomp_child_count", (HANDLE)0);
++        return;
++    }
++
++    for (child = root->children; child && idx < 16; child = child->next_sibling)
++    {
++        HWND child_comp_wnd;
++
++        if (!child->content && !child->surface_content)
++            continue;
++
++        /* Surface content: store bits pointer and size directly.
++         * No window indirection needed — wined3d reads bits directly. */
++        if (child->surface_content)
++        {
++            struct dcomp_surface *surf = child->surface_content;
++
++            swprintf(prop_name, ARRAY_SIZE(prop_name),
++                    L"__wine_dcomp_child_%u_wnd", idx);
++            SetPropW(target_hwnd, prop_name, (HANDLE)0);
++
++            swprintf(prop_name, ARRAY_SIZE(prop_name),
++                    L"__wine_dcomp_child_%u_bits", idx);
++            SetPropW(target_hwnd, prop_name, (HANDLE)surf->bits);
++
++            swprintf(prop_name, ARRAY_SIZE(prop_name),
++                    L"__wine_dcomp_child_%u_size", idx);
++            SetPropW(target_hwnd, prop_name, (HANDLE)(ULONG_PTR)MAKELPARAM(surf->width, surf->height));
++
++            /* Pack offset as two signed 16-bit values */
++            {
++                int ox = (int)child->offset_x;
++                int oy = (int)child->offset_y;
++                swprintf(prop_name, ARRAY_SIZE(prop_name),
++                        L"__wine_dcomp_child_%u_offset", idx);
++                SetPropW(target_hwnd, prop_name, (HANDLE)(ULONG_PTR)MAKELPARAM(ox, oy));
++            }
++
++            {
++                static unsigned int surf_log;
++                ++surf_log;
++                if (surf_log <= 10)
++                    FIXME("Commit surface child #%u: %ux%u bits=%p at (%d,%d).\n",
++                            idx, surf->width, surf->height, surf->bits,
++                            (int)child->offset_x, (int)child->offset_y);
++            }
++
++            ++idx;
++            continue;
++        }
++
++        /* Swapchain content: look up the child's composition window */
++        /* Look up the child's composition window (same mechanism as try_reparent) */
++        swprintf(prop_name, ARRAY_SIZE(prop_name),
++                L"__wine_dcomp_wnd_%I64x", (UINT_PTR)child->content);
++        child_comp_wnd = (HWND)GetPropW(GetDesktopWindow(), prop_name);
++        if (!child_comp_wnd)
++            continue;
++
++        swprintf(prop_name, ARRAY_SIZE(prop_name),
++                L"__wine_dcomp_child_%u_wnd", idx);
++        SetPropW(target_hwnd, prop_name, (HANDLE)child_comp_wnd);
++
++        /* Pack offset as two signed 16-bit values */
++        {
++            int ox = (int)child->offset_x;
++            int oy = (int)child->offset_y;
++            swprintf(prop_name, ARRAY_SIZE(prop_name),
++                    L"__wine_dcomp_child_%u_offset", idx);
++            SetPropW(target_hwnd, prop_name, (HANDLE)(ULONG_PTR)MAKELPARAM(ox, oy));
++        }
++
++        ++idx;
++    }
++
++    SetPropW(target_hwnd, L"__wine_dcomp_child_count", (HANDLE)(ULONG_PTR)idx);
++
++    {
++        static unsigned int commit_count;
++        if (++commit_count <= 5)
++            FIXME("Commit #%u: serialized %u child visuals for target %p.\n",
++                    commit_count, idx, target_hwnd);
++    }
++}
++
++static void dcomp_device_remove_target(struct dcomp_device *device, struct dcomp_target *target)
++{
++    struct dcomp_target **pp = &device->targets;
++    while (*pp && *pp != target)
++        pp = &(*pp)->next_target;
++    if (*pp)
++        *pp = target->next_target;
++    target->next_target = NULL;
++    target->device = NULL;
++}
++
++static void dcomp_target_ensure_comp_dc(struct dcomp_target *target, UINT width, UINT height)
++{
++    BITMAPINFO bmi;
++
++    /* Already have a matching DIB section */
++    if (target->comp_dc && target->comp_width == width && target->comp_height == height)
++        return;
++
++    /* Clean up old */
++    if (target->comp_bitmap)
++    {
++        SelectObject(target->comp_dc, NULL);
++        DeleteObject(target->comp_bitmap);
++        target->comp_bitmap = NULL;
++        target->comp_bits = NULL;
++    }
++    if (target->comp_dc)
++    {
++        DeleteDC(target->comp_dc);
++        target->comp_dc = NULL;
++    }
++
++    memset(&bmi, 0, sizeof(bmi));
++    bmi.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
++    bmi.bmiHeader.biWidth = width;
++    bmi.bmiHeader.biHeight = -(int)height;  /* top-down DIB */
++    bmi.bmiHeader.biPlanes = 1;
++    bmi.bmiHeader.biBitCount = 32;
++    bmi.bmiHeader.biCompression = BI_RGB;
++
++    target->comp_dc = CreateCompatibleDC(NULL);
++    if (!target->comp_dc)
++        return;
++
++    target->comp_bitmap = CreateDIBSection(target->comp_dc, &bmi,
++            DIB_RGB_COLORS, (void **)&target->comp_bits, NULL, 0);
++    if (!target->comp_bitmap)
++    {
++        DeleteDC(target->comp_dc);
++        target->comp_dc = NULL;
++        return;
++    }
++
++    SelectObject(target->comp_dc, target->comp_bitmap);
++    target->comp_width = width;
++    target->comp_height = height;
++
++    FIXME("Created comp DC %p with %ux%u DIB for target hwnd %p.\n",
++            target->comp_dc, width, height, target->hwnd);
++}
++
++/* Phase 5: WndProc subclass — suppresses WM_ERASEBKGND to prevent white-on-open.
++ * WM_PAINT is forwarded to the original WndProc so that VSTGUI can call
++ * BeginDraw → Render → EndDraw → Commit in response to paint requests. */
++static LRESULT CALLBACK dcomp_target_wndproc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam)
++{
++    struct dcomp_target *target = (struct dcomp_target *)GetPropW(hwnd, dcomp_target_prop);
++    WNDPROC orig_wndproc;
++
++    if (!target)
++        return DefWindowProcW(hwnd, msg, wparam, lparam);
++
++    orig_wndproc = target->orig_wndproc;
++
++    switch (msg)
++    {
++    case WM_ERASEBKGND:
++        /* Suppress background erasure — our BitBlt content should persist.
++         * Without this, the white class brush overwrites the composed frame
++         * after window events (resize, show, focus change) → white-on-open. */
++        return 1;
++
++    case WM_NCDESTROY:
++        /* Window is being destroyed — clean up subclass and forward */
++        SetWindowLongPtrW(hwnd, GWLP_WNDPROC, (LONG_PTR)orig_wndproc);
++        RemovePropW(hwnd, dcomp_target_prop);
++        target->orig_wndproc = NULL;
++        return CallWindowProcW(orig_wndproc, hwnd, msg, wparam, lparam);
++    }
++
++    return CallWindowProcW(orig_wndproc, hwnd, msg, wparam, lparam);
++}
++
++static HRESULT STDMETHODCALLTYPE dcomp_device_Commit(IDCompositionDevice *iface)
++{
++    struct dcomp_device *device = impl_from_IDCompositionDevice(iface);
++    struct dcomp_target *target;
++    static unsigned int commit_log;
++
++    for (target = device->targets; target; target = target->next_target)
++    {
++        struct dcomp_surface *surface;
++        HDC hdc;
++
++        if (!target->root_visual || !target->root_visual->surface_content)
++            continue;
++
++        surface = target->root_visual->surface_content;
++        if (!surface->bits || !surface->width || !surface->height)
++            continue;
++
++        /* Ensure we have a compatible DIB section for presentation */
++        dcomp_target_ensure_comp_dc(target, surface->width, surface->height);
++        if (!target->comp_bits)
++            continue;
++
++        /* Copy surface bits to DIB section */
++        memcpy(target->comp_bits, surface->bits,
++                surface->width * surface->height * sizeof(DWORD));
++
++        /* Composite child visual surfaces on top (premultiplied alpha over) */
++        {
++            struct dcomp_visual *child;
++            static unsigned int child_comp_log;
++
++            for (child = target->root_visual->children; child; child = child->next_sibling)
++            {
++                struct dcomp_surface *child_surf = child->surface_content;
++                int ox, oy, src_x, src_y, dst_x, dst_y, copy_w, copy_h, y, x;
++                DWORD *dst_row, *src_row;
++
++                if (!child_surf || !child_surf->bits || !child_surf->width || !child_surf->height)
++                    continue;
++
++                ox = (int)child->offset_x;
++                oy = (int)child->offset_y;
++
++                /* Clip to destination bounds */
++                src_x = (ox < 0) ? -ox : 0;
++                src_y = (oy < 0) ? -oy : 0;
++                dst_x = (ox < 0) ? 0 : ox;
++                dst_y = (oy < 0) ? 0 : oy;
++                copy_w = min((int)child_surf->width - src_x, (int)surface->width - dst_x);
++                copy_h = min((int)child_surf->height - src_y, (int)surface->height - dst_y);
++
++                if (copy_w <= 0 || copy_h <= 0)
++                    continue;
++
++                if (++child_comp_log <= 5)
++                    FIXME("Compositing child visual %ux%u at (%d,%d) onto %ux%u root.\n",
++                            child_surf->width, child_surf->height, ox, oy,
++                            surface->width, surface->height);
++
++                for (y = 0; y < copy_h; y++)
++                {
++                    dst_row = (DWORD *)target->comp_bits + (dst_y + y) * surface->width + dst_x;
++                    src_row = (DWORD *)child_surf->bits + (src_y + y) * child_surf->width + src_x;
++                    for (x = 0; x < copy_w; x++)
++                    {
++                        DWORD s = src_row[x];
++                        BYTE sa = (s >> 24);
++                        if (sa == 0xff)
++                        {
++                            dst_row[x] = s;
++                        }
++                        else if (sa > 0)
++                        {
++                            /* Premultiplied alpha: out = src + dst * (1 - sa/255) */
++                            DWORD d = dst_row[x];
++                            BYTE ia = 255 - sa;
++                            dst_row[x] = ((min(sa + (((d >> 24) * ia + 127) / 255), 255u)) << 24)
++                                       | ((((s >> 16) & 0xff) + ((((d >> 16) & 0xff) * ia + 127) / 255)) << 16)
++                                       | ((((s >> 8) & 0xff) + ((((d >> 8) & 0xff) * ia + 127) / 255)) << 8)
++                                       | (((s & 0xff) + (((d & 0xff) * ia + 127) / 255)));
++                        }
++                    }
++                }
++            }
++        }
++
++        /* BitBlt to the target window */
++        hdc = GetDC(target->hwnd);
++        if (hdc)
++        {
++            BitBlt(hdc, 0, 0, surface->width, surface->height,
++                    target->comp_dc, 0, 0, SRCCOPY);
++            ReleaseDC(target->hwnd, hdc);
++        }
++
++        if (++commit_log <= 5)
++            FIXME("Commit: presented %ux%u surface to hwnd %p.\n",
++                    surface->width, surface->height, target->hwnd);
++
++        /* Also serialize child visual tree (for mixed surface+swapchain scenarios) */
++        dcomp_commit_visual_tree(target->hwnd, target->root_visual);
++    }
++
++    return S_OK;
++}
++
++static HRESULT STDMETHODCALLTYPE dcomp_device_WaitForCommitCompletion(IDCompositionDevice *iface)
++{
++    TRACE("iface %p.\n", iface);
++    return S_OK;
++}
++
++static HRESULT STDMETHODCALLTYPE dcomp_device_GetFrameStatistics(IDCompositionDevice *iface,
++        DCOMPOSITION_FRAME_STATISTICS *statistics)
++{
++    FIXME("iface %p, statistics %p stub!\n", iface, statistics);
++
++    if (statistics)
++        memset(statistics, 0, sizeof(*statistics));
++    return S_OK;
++}
++
++static HRESULT STDMETHODCALLTYPE dcomp_device_CreateTargetForHwnd(IDCompositionDevice *iface,
++        HWND hwnd, BOOL topmost, IDCompositionTarget **target)
++{
++    struct dcomp_target *object;
++
++    TRACE("iface %p, hwnd %p, topmost %d, target %p.\n", iface, hwnd, topmost, target);
++
++    if (!target)
++        return E_INVALIDARG;
++
++    if (!(object = calloc(1, sizeof(*object))))
++        return E_OUTOFMEMORY;
++
++    object->IDCompositionTarget_iface.lpVtbl = &dcomp_target_vtbl;
++    object->refcount = 1;
++    object->hwnd = hwnd;
++
++    /* Link target into device's list for Commit iteration */
++    {
++        struct dcomp_device *device = impl_from_IDCompositionDevice(iface);
++        object->device = device;
++        object->next_target = device->targets;
++        device->targets = object;
++    }
++
++    /* Phase 5: Subclass target HWND for WM_ERASEBKGND / WM_PAINT protection.
++     * Kill the class background brush to prevent white flicker, then install
++     * our WndProc that suppresses erasure and re-blits the cached DIB frame. */
++    SetClassLongPtrW(hwnd, GCLP_HBRBACKGROUND, 0);
++    SetPropW(hwnd, dcomp_target_prop, (HANDLE)object);
++    object->orig_wndproc = (WNDPROC)SetWindowLongPtrW(hwnd,
++            GWLP_WNDPROC, (LONG_PTR)dcomp_target_wndproc);
++
++    FIXME("Created composition target %p for hwnd %p (subclassed, orig_wndproc %p).\n",
++            object, hwnd, object->orig_wndproc);
++
++    *target = &object->IDCompositionTarget_iface;
++    return S_OK;
++}
++
++static HRESULT STDMETHODCALLTYPE dcomp_device_CreateVisual(IDCompositionDevice *iface,
++        IDCompositionVisual **visual)
++{
++    struct dcomp_visual *object;
++
++    TRACE("iface %p, visual %p.\n", iface, visual);
++
++    if (!visual)
++        return E_INVALIDARG;
++
++    if (!(object = calloc(1, sizeof(*object))))
++        return E_OUTOFMEMORY;
++
++    object->IDCompositionVisual_iface.lpVtbl = (const IDCompositionVisualVtbl *)&dcomp_visual_vtbl;
++    object->refcount = 1;
++
++    TRACE("Created composition visual %p.\n", object);
++
++    *visual = &object->IDCompositionVisual_iface;
++    return S_OK;
++}
++
++/* Typedef for D3D11CreateDevice loaded via GetProcAddress (no hard d3d11 import). */
++typedef HRESULT (WINAPI *pD3D11CreateDevice)(IDXGIAdapter *, D3D_DRIVER_TYPE, HMODULE,
++        UINT, const D3D_FEATURE_LEVEL *, UINT, UINT, ID3D11Device **,
++        D3D_FEATURE_LEVEL *, ID3D11DeviceContext **);
++
++static HRESULT dcomp_device_create_standalone_d3d11(ID3D11Device **out)
++{
++    pD3D11CreateDevice create_fn;
++    HMODULE d3d11_mod;
++    HRESULT hr;
++
++    d3d11_mod = LoadLibraryW(L"d3d11.dll");
++    if (!d3d11_mod)
++    {
++        FIXME("Failed to load d3d11.dll for standalone D3D11 device.\n");
++        return E_FAIL;
++    }
++
++    create_fn = (pD3D11CreateDevice)GetProcAddress(d3d11_mod, "D3D11CreateDevice");
++    if (!create_fn)
++    {
++        FIXME("Failed to find D3D11CreateDevice in d3d11.dll.\n");
++        FreeLibrary(d3d11_mod);
++        return E_FAIL;
++    }
++
++    hr = create_fn(NULL, D3D_DRIVER_TYPE_HARDWARE, NULL,
++            D3D11_CREATE_DEVICE_BGRA_SUPPORT, NULL, 0,
++            D3D11_SDK_VERSION, out, NULL, NULL);
++    if (FAILED(hr))
++    {
++        FIXME("D3D11CreateDevice(HARDWARE) failed: %#lx, trying WARP.\n", hr);
++        hr = create_fn(NULL, D3D_DRIVER_TYPE_WARP, NULL,
++                D3D11_CREATE_DEVICE_BGRA_SUPPORT, NULL, 0,
++                D3D11_SDK_VERSION, out, NULL, NULL);
++    }
++    if (FAILED(hr))
++        FIXME("D3D11CreateDevice failed: %#lx.\n", hr);
++    else
++        FIXME("Created standalone D3D11 device %p for DComp surface rendering.\n", *out);
++
++    /* Keep d3d11.dll loaded — it's already in-process anyway. */
++    return hr;
++}
++
++static HRESULT dcomp_device_get_d3d11(struct dcomp_device *device, ID3D11Device **out)
++{
++    IDXGIDevice *dxgi_device;
++    HRESULT hr;
++
++    if (device->d3d11_device)
++    {
++        *out = device->d3d11_device;
++        ID3D11Device_AddRef(*out);
++        return S_OK;
++    }
++
++    if (!device->rendering_device)
++    {
++        FIXME("No rendering device — creating standalone D3D11 device.\n");
++        goto create_standalone;
++    }
++
++    /* Try 1: QI the rendering device for IDXGIDevice, then for ID3D11Device */
++    hr = IUnknown_QueryInterface(device->rendering_device,
++            &IID_IDXGIDevice, (void **)&dxgi_device);
++    if (SUCCEEDED(hr))
++    {
++        hr = IDXGIDevice_QueryInterface(dxgi_device,
++                &IID_ID3D11Device, (void **)&device->d3d11_device);
++        IDXGIDevice_Release(dxgi_device);
++        if (SUCCEEDED(hr))
++            goto done;
++    }
++
++    /* Try 2: Maybe it IS the D3D11 device directly */
++    hr = IUnknown_QueryInterface(device->rendering_device,
++            &IID_ID3D11Device, (void **)&device->d3d11_device);
++    if (SUCCEEDED(hr))
++        goto done;
++
++    /* Try 3: Rendering device is likely an ID2D1Device (VSTGUI pattern) —
++     * we cannot extract the underlying D3D11 device through public APIs.
++     * Create a standalone D3D11 device for our surface textures. */
++    FIXME("Cannot QI rendering device for ID3D11Device (%#lx) — creating standalone.\n", hr);
++
++create_standalone:
++    hr = dcomp_device_create_standalone_d3d11(&device->d3d11_device);
++    if (FAILED(hr))
++        return hr;
++
++done:
++    *out = device->d3d11_device;
++    ID3D11Device_AddRef(*out);
++    return S_OK;
++}
++
++static HRESULT STDMETHODCALLTYPE dcomp_device_CreateSurface(IDCompositionDevice *iface,
++        UINT width, UINT height, DXGI_FORMAT pixel_format, DXGI_ALPHA_MODE alpha_mode,
++        IDCompositionSurface **surface)
++{
++    struct dcomp_device *device = impl_from_IDCompositionDevice(iface);
++    struct dcomp_surface *object;
++    HRESULT hr;
++
++    FIXME("iface %p, %ux%u, format %#x, alpha %#x, surface %p.\n",
++            iface, width, height, pixel_format, alpha_mode, surface);
++
++    if (!surface)
++        return E_INVALIDARG;
++
++    *surface = NULL;
++
++    if (device->d2d1_device)
++    {
++        hr = dcomp_surface_create(NULL, device->d2d1_device, width, height,
++                pixel_format, alpha_mode, FALSE, &object);
++    }
++    else
++    {
++        ID3D11Device *d3d11_device;
++        hr = dcomp_device_get_d3d11(device, &d3d11_device);
++        if (FAILED(hr))
++            return hr;
++        hr = dcomp_surface_create(d3d11_device, NULL, width, height,
++                pixel_format, alpha_mode, FALSE, &object);
++        ID3D11Device_Release(d3d11_device);
++    }
++    if (FAILED(hr))
++        return hr;
++
++    object->device_iface = &device->IDCompositionDevice_iface;
++    *surface = &object->IDCompositionSurface_iface;
++    return S_OK;
++}
++
++static HRESULT STDMETHODCALLTYPE dcomp_device_CreateVirtualSurface(IDCompositionDevice *iface,
++        UINT width, UINT height, DXGI_FORMAT pixel_format, DXGI_ALPHA_MODE alpha_mode,
++        IDCompositionVirtualSurface **surface)
++{
++    struct dcomp_device *device = impl_from_IDCompositionDevice(iface);
++    struct dcomp_surface *object;
++    HRESULT hr;
++
++    FIXME("iface %p, %ux%u, format %#x, alpha %#x, surface %p.\n",
++            iface, width, height, pixel_format, alpha_mode, surface);
++
++    if (!surface)
++        return E_INVALIDARG;
++
++    *surface = NULL;
++
++    if (device->d2d1_device)
++    {
++        hr = dcomp_surface_create(NULL, device->d2d1_device, width, height,
++                pixel_format, alpha_mode, TRUE, &object);
++    }
++    else
++    {
++        ID3D11Device *d3d11_device;
++        hr = dcomp_device_get_d3d11(device, &d3d11_device);
++        if (FAILED(hr))
++            return hr;
++        hr = dcomp_surface_create(d3d11_device, NULL, width, height,
++                pixel_format, alpha_mode, TRUE, &object);
++        ID3D11Device_Release(d3d11_device);
++    }
++    if (FAILED(hr))
++        return hr;
++
++    object->device_iface = &device->IDCompositionDevice_iface;
++    *surface = (IDCompositionVirtualSurface *)&object->IDCompositionSurface_iface;
++    return S_OK;
++}
++
++static HRESULT STDMETHODCALLTYPE dcomp_device_CreateSurfaceFromHandle(IDCompositionDevice *iface,
++        HANDLE handle, IUnknown **surface)
++{
++    FIXME("iface %p, handle %p, surface %p stub!\n", iface, handle, surface);
++    return E_NOTIMPL;
++}
++
++static HRESULT STDMETHODCALLTYPE dcomp_device_CreateSurfaceFromHwnd(IDCompositionDevice *iface,
++        HWND hwnd, IUnknown **surface)
++{
++    FIXME("iface %p, hwnd %p, surface %p stub!\n", iface, hwnd, surface);
++    return E_NOTIMPL;
++}
++
++static HRESULT STDMETHODCALLTYPE dcomp_device_CreateTranslateTransform(IDCompositionDevice *iface,
++        IDCompositionTranslateTransform **transform)
++{
++    FIXME("iface %p, transform %p stub!\n", iface, transform);
++    return E_NOTIMPL;
++}
++
++static HRESULT STDMETHODCALLTYPE dcomp_device_CreateScaleTransform(IDCompositionDevice *iface,
++        IDCompositionScaleTransform **transform)
++{
++    FIXME("iface %p, transform %p stub!\n", iface, transform);
++    return E_NOTIMPL;
++}
++
++static HRESULT STDMETHODCALLTYPE dcomp_device_CreateRotateTransform(IDCompositionDevice *iface,
++        IDCompositionRotateTransform **transform)
++{
++    FIXME("iface %p, transform %p stub!\n", iface, transform);
++    return E_NOTIMPL;
++}
++
++static HRESULT STDMETHODCALLTYPE dcomp_device_CreateSkewTransform(IDCompositionDevice *iface,
++        IDCompositionSkewTransform **transform)
++{
++    FIXME("iface %p, transform %p stub!\n", iface, transform);
++    return E_NOTIMPL;
++}
++
++static HRESULT STDMETHODCALLTYPE dcomp_device_CreateMatrixTransform(IDCompositionDevice *iface,
++        IDCompositionMatrixTransform **transform)
++{
++    FIXME("iface %p, transform %p stub!\n", iface, transform);
++    return E_NOTIMPL;
++}
++
++static HRESULT STDMETHODCALLTYPE dcomp_device_CreateTransformGroup(IDCompositionDevice *iface,
++        IDCompositionTransform **transforms, UINT elements,
++        IDCompositionTransform **transform_group)
++{
++    FIXME("iface %p, transforms %p, elements %u, group %p stub!\n",
++            iface, transforms, elements, transform_group);
++    return E_NOTIMPL;
++}
++
++static HRESULT STDMETHODCALLTYPE dcomp_device_CreateTranslateTransform3D(IDCompositionDevice *iface,
++        IDCompositionTranslateTransform3D **transform_3d)
++{
++    FIXME("iface %p, transform %p stub!\n", iface, transform_3d);
++    return E_NOTIMPL;
++}
++
++static HRESULT STDMETHODCALLTYPE dcomp_device_CreateScaleTransform3D(IDCompositionDevice *iface,
++        IDCompositionScaleTransform3D **transform_3d)
++{
++    FIXME("iface %p, transform %p stub!\n", iface, transform_3d);
++    return E_NOTIMPL;
++}
++
++static HRESULT STDMETHODCALLTYPE dcomp_device_CreateRotateTransform3D(IDCompositionDevice *iface,
++        IDCompositionRotateTransform3D **transform_3d)
++{
++    FIXME("iface %p, transform %p stub!\n", iface, transform_3d);
++    return E_NOTIMPL;
++}
++
++static HRESULT STDMETHODCALLTYPE dcomp_device_CreateMatrixTransform3D(IDCompositionDevice *iface,
++        IDCompositionMatrixTransform3D **transform_3d)
++{
++    FIXME("iface %p, transform %p stub!\n", iface, transform_3d);
++    return E_NOTIMPL;
++}
++
++static HRESULT STDMETHODCALLTYPE dcomp_device_CreateTransform3DGroup(IDCompositionDevice *iface,
++        IDCompositionTransform3D **transforms_3d, UINT elements,
++        IDCompositionTransform3D **transform_3d_group)
++{
++    FIXME("iface %p, transforms %p, elements %u, group %p stub!\n",
++            iface, transforms_3d, elements, transform_3d_group);
++    return E_NOTIMPL;
++}
++
++static HRESULT STDMETHODCALLTYPE dcomp_device_CreateEffectGroup(IDCompositionDevice *iface,
++        IDCompositionEffectGroup **effect_group)
++{
++    FIXME("iface %p, effect_group %p stub!\n", iface, effect_group);
++    return E_NOTIMPL;
++}
++
++static HRESULT STDMETHODCALLTYPE dcomp_device_CreateRectangleClip(IDCompositionDevice *iface,
++        IDCompositionRectangleClip **clip)
++{
++    FIXME("iface %p, clip %p stub!\n", iface, clip);
++    return E_NOTIMPL;
++}
++
++static HRESULT STDMETHODCALLTYPE dcomp_device_CreateAnimation(IDCompositionDevice *iface,
++        IDCompositionAnimation **animation)
++{
++    FIXME("iface %p, animation %p stub!\n", iface, animation);
++    return E_NOTIMPL;
++}
++
++static HRESULT STDMETHODCALLTYPE dcomp_device_CheckDeviceState(IDCompositionDevice *iface,
++        BOOL *valid)
++{
++    TRACE("iface %p, valid %p.\n", iface, valid);
++
++    if (valid)
++        *valid = TRUE;
++    return S_OK;
++}
++
++static const IDCompositionDeviceVtbl dcomp_device_vtbl =
++{
++    dcomp_device_QueryInterface,
++    dcomp_device_AddRef,
++    dcomp_device_Release,
++    dcomp_device_Commit,
++    dcomp_device_WaitForCommitCompletion,
++    dcomp_device_GetFrameStatistics,
++    dcomp_device_CreateTargetForHwnd,
++    dcomp_device_CreateVisual,
++    dcomp_device_CreateSurface,
++    dcomp_device_CreateVirtualSurface,
++    dcomp_device_CreateSurfaceFromHandle,
++    dcomp_device_CreateSurfaceFromHwnd,
++    dcomp_device_CreateTranslateTransform,
++    dcomp_device_CreateScaleTransform,
++    dcomp_device_CreateRotateTransform,
++    dcomp_device_CreateSkewTransform,
++    dcomp_device_CreateMatrixTransform,
++    dcomp_device_CreateTransformGroup,
++    dcomp_device_CreateTranslateTransform3D,
++    dcomp_device_CreateScaleTransform3D,
++    dcomp_device_CreateRotateTransform3D,
++    dcomp_device_CreateMatrixTransform3D,
++    dcomp_device_CreateTransform3DGroup,
++    dcomp_device_CreateEffectGroup,
++    dcomp_device_CreateRectangleClip,
++    dcomp_device_CreateAnimation,
++    dcomp_device_CheckDeviceState,
++};
++
++/* =====================================================================
++ * IDCompositionDesktopDevice (inherits IDCompositionDevice2)
++ *
++ * All methods delegate to the shared dcomp_device implementation.
++ * The first parameter is IDCompositionDesktopDevice* so we need
++ * thin wrappers that recover the dcomp_device from the correct offset.
++ * ===================================================================== */
++
++static HRESULT STDMETHODCALLTYPE dcomp_desktop_device_QueryInterface(
++        IDCompositionDesktopDevice *iface, REFIID iid, void **out)
++{
++    struct dcomp_device *device = impl_from_IDCompositionDesktopDevice(iface);
++    return dcomp_device_QueryInterface(&device->IDCompositionDevice_iface, iid, out);
++}
++
++static ULONG STDMETHODCALLTYPE dcomp_desktop_device_AddRef(IDCompositionDesktopDevice *iface)
++{
++    struct dcomp_device *device = impl_from_IDCompositionDesktopDevice(iface);
++    return dcomp_device_AddRef(&device->IDCompositionDevice_iface);
++}
++
++static ULONG STDMETHODCALLTYPE dcomp_desktop_device_Release(IDCompositionDesktopDevice *iface)
++{
++    struct dcomp_device *device = impl_from_IDCompositionDesktopDevice(iface);
++    return dcomp_device_Release(&device->IDCompositionDevice_iface);
++}
++
++static HRESULT STDMETHODCALLTYPE dcomp_desktop_device_Commit(IDCompositionDesktopDevice *iface)
++{
++    struct dcomp_device *device = impl_from_IDCompositionDesktopDevice(iface);
++    return dcomp_device_Commit(&device->IDCompositionDevice_iface);
++}
++
++static HRESULT STDMETHODCALLTYPE dcomp_desktop_device_WaitForCommitCompletion(
++        IDCompositionDesktopDevice *iface)
++{
++    struct dcomp_device *device = impl_from_IDCompositionDesktopDevice(iface);
++    return dcomp_device_WaitForCommitCompletion(&device->IDCompositionDevice_iface);
++}
++
++static HRESULT STDMETHODCALLTYPE dcomp_desktop_device_GetFrameStatistics(
++        IDCompositionDesktopDevice *iface, DCOMPOSITION_FRAME_STATISTICS *statistics)
++{
++    struct dcomp_device *device = impl_from_IDCompositionDesktopDevice(iface);
++    return dcomp_device_GetFrameStatistics(&device->IDCompositionDevice_iface, statistics);
++}
++
++static HRESULT STDMETHODCALLTYPE dcomp_desktop_device_CreateVisual(
++        IDCompositionDesktopDevice *iface, IDCompositionVisual2 **visual)
++{
++    struct dcomp_device *device = impl_from_IDCompositionDesktopDevice(iface);
++
++    FIXME("iface %p, visual %p — delegating to v1 CreateVisual.\n", iface, visual);
++
++    /* IDCompositionVisual2 extends IDCompositionVisual with SetOpacityMode
++     * and SetBackFaceVisibility. Our visual implements the v1 vtable which
++     * is layout-compatible for all methods VSTGUI actually calls. */
++    return dcomp_device_CreateVisual(&device->IDCompositionDevice_iface,
++            (IDCompositionVisual **)visual);
++}
++
++static HRESULT STDMETHODCALLTYPE dcomp_desktop_device_CreateSurfaceFactory(
++        IDCompositionDesktopDevice *iface, IUnknown *rendering_device,
++        IDCompositionSurfaceFactory **surface_factory)
++{
++    struct dcomp_device *device = impl_from_IDCompositionDesktopDevice(iface);
++    struct dcomp_surface_factory *object;
++
++    FIXME("iface %p, rendering_device %p, surface_factory %p.\n",
++            iface, rendering_device, surface_factory);
++
++    if (!surface_factory)
++        return E_INVALIDARG;
++
++    *surface_factory = NULL;
++
++    if (!(object = calloc(1, sizeof(*object))))
++        return E_OUTOFMEMORY;
++
++    object->IDCompositionSurfaceFactory_iface.lpVtbl = &dcomp_surface_factory_vtbl;
++    object->refcount = 1;
++    object->device_iface = &device->IDCompositionDevice_iface;
++    IDCompositionDevice_AddRef(object->device_iface);
++
++    FIXME("Created surface factory %p for device %p.\n", object, device);
++
++    *surface_factory = &object->IDCompositionSurfaceFactory_iface;
++    return S_OK;
++}
++
++static HRESULT STDMETHODCALLTYPE dcomp_desktop_device_CreateSurface(
++        IDCompositionDesktopDevice *iface, UINT width, UINT height,
++        DXGI_FORMAT pixel_format, DXGI_ALPHA_MODE alpha_mode,
++        IDCompositionSurface **surface)
++{
++    struct dcomp_device *device = impl_from_IDCompositionDesktopDevice(iface);
++    return dcomp_device_CreateSurface(&device->IDCompositionDevice_iface,
++            width, height, pixel_format, alpha_mode, surface);
++}
++
++static HRESULT STDMETHODCALLTYPE dcomp_desktop_device_CreateVirtualSurface(
++        IDCompositionDesktopDevice *iface, UINT width, UINT height,
++        DXGI_FORMAT pixel_format, DXGI_ALPHA_MODE alpha_mode,
++        IDCompositionVirtualSurface **surface)
++{
++    struct dcomp_device *device = impl_from_IDCompositionDesktopDevice(iface);
++    return dcomp_device_CreateVirtualSurface(&device->IDCompositionDevice_iface,
++            width, height, pixel_format, alpha_mode, surface);
++}
++
++static HRESULT STDMETHODCALLTYPE dcomp_desktop_device_CreateTranslateTransform(
++        IDCompositionDesktopDevice *iface, IDCompositionTranslateTransform **transform)
++{
++    FIXME("iface %p, transform %p stub!\n", iface, transform);
++    return E_NOTIMPL;
++}
++
++static HRESULT STDMETHODCALLTYPE dcomp_desktop_device_CreateScaleTransform(
++        IDCompositionDesktopDevice *iface, IDCompositionScaleTransform **transform)
++{
++    FIXME("iface %p, transform %p stub!\n", iface, transform);
++    return E_NOTIMPL;
++}
++
++static HRESULT STDMETHODCALLTYPE dcomp_desktop_device_CreateRotateTransform(
++        IDCompositionDesktopDevice *iface, IDCompositionRotateTransform **transform)
++{
++    FIXME("iface %p, transform %p stub!\n", iface, transform);
++    return E_NOTIMPL;
++}
++
++static HRESULT STDMETHODCALLTYPE dcomp_desktop_device_CreateSkewTransform(
++        IDCompositionDesktopDevice *iface, IDCompositionSkewTransform **transform)
++{
++    FIXME("iface %p, transform %p stub!\n", iface, transform);
++    return E_NOTIMPL;
++}
++
++static HRESULT STDMETHODCALLTYPE dcomp_desktop_device_CreateMatrixTransform(
++        IDCompositionDesktopDevice *iface, IDCompositionMatrixTransform **transform)
++{
++    FIXME("iface %p, transform %p stub!\n", iface, transform);
++    return E_NOTIMPL;
++}
++
++static HRESULT STDMETHODCALLTYPE dcomp_desktop_device_CreateTransformGroup(
++        IDCompositionDesktopDevice *iface, IDCompositionTransform **transforms,
++        UINT elements, IDCompositionTransform **transform_group)
++{
++    FIXME("iface %p, transforms %p, elements %u, group %p stub!\n",
++            iface, transforms, elements, transform_group);
++    return E_NOTIMPL;
++}
++
++static HRESULT STDMETHODCALLTYPE dcomp_desktop_device_CreateTranslateTransform3D(
++        IDCompositionDesktopDevice *iface, IDCompositionTranslateTransform3D **transform_3d)
++{
++    FIXME("iface %p, transform %p stub!\n", iface, transform_3d);
++    return E_NOTIMPL;
++}
++
++static HRESULT STDMETHODCALLTYPE dcomp_desktop_device_CreateScaleTransform3D(
++        IDCompositionDesktopDevice *iface, IDCompositionScaleTransform3D **transform_3d)
++{
++    FIXME("iface %p, transform %p stub!\n", iface, transform_3d);
++    return E_NOTIMPL;
++}
++
++static HRESULT STDMETHODCALLTYPE dcomp_desktop_device_CreateRotateTransform3D(
++        IDCompositionDesktopDevice *iface, IDCompositionRotateTransform3D **transform_3d)
++{
++    FIXME("iface %p, transform %p stub!\n", iface, transform_3d);
++    return E_NOTIMPL;
++}
++
++static HRESULT STDMETHODCALLTYPE dcomp_desktop_device_CreateMatrixTransform3D(
++        IDCompositionDesktopDevice *iface, IDCompositionMatrixTransform3D **transform_3d)
++{
++    FIXME("iface %p, transform %p stub!\n", iface, transform_3d);
++    return E_NOTIMPL;
++}
++
++static HRESULT STDMETHODCALLTYPE dcomp_desktop_device_CreateTransform3DGroup(
++        IDCompositionDesktopDevice *iface, IDCompositionTransform3D **transforms_3d,
++        UINT elements, IDCompositionTransform3D **transform_3d_group)
++{
++    FIXME("iface %p, transforms %p, elements %u, group %p stub!\n",
++            iface, transforms_3d, elements, transform_3d_group);
++    return E_NOTIMPL;
++}
++
++static HRESULT STDMETHODCALLTYPE dcomp_desktop_device_CreateEffectGroup(
++        IDCompositionDesktopDevice *iface, IDCompositionEffectGroup **effect_group)
++{
++    FIXME("iface %p, effect_group %p stub!\n", iface, effect_group);
++    return E_NOTIMPL;
++}
++
++static HRESULT STDMETHODCALLTYPE dcomp_desktop_device_CreateRectangleClip(
++        IDCompositionDesktopDevice *iface, IDCompositionRectangleClip **clip)
++{
++    FIXME("iface %p, clip %p stub!\n", iface, clip);
++    return E_NOTIMPL;
++}
++
++static HRESULT STDMETHODCALLTYPE dcomp_desktop_device_CreateAnimation(
++        IDCompositionDesktopDevice *iface, IDCompositionAnimation **animation)
++{
++    FIXME("iface %p, animation %p stub!\n", iface, animation);
++    return E_NOTIMPL;
++}
++
++static HRESULT STDMETHODCALLTYPE dcomp_desktop_device_CreateTargetForHwnd(
++        IDCompositionDesktopDevice *iface, HWND hwnd, BOOL topmost,
++        IDCompositionTarget **target)
++{
++    struct dcomp_device *device = impl_from_IDCompositionDesktopDevice(iface);
++    return dcomp_device_CreateTargetForHwnd(&device->IDCompositionDevice_iface,
++            hwnd, topmost, target);
++}
++
++static HRESULT STDMETHODCALLTYPE dcomp_desktop_device_CreateSurfaceFromHandle(
++        IDCompositionDesktopDevice *iface, HANDLE handle, IUnknown **surface)
++{
++    FIXME("iface %p, handle %p, surface %p stub!\n", iface, handle, surface);
++    if (surface)
++        *surface = NULL;
++    return E_NOTIMPL;
++}
++
++static HRESULT STDMETHODCALLTYPE dcomp_desktop_device_CreateSurfaceFromHwnd(
++        IDCompositionDesktopDevice *iface, HWND hwnd, IUnknown **surface)
++{
++    FIXME("iface %p, hwnd %p, surface %p stub!\n", iface, hwnd, surface);
++    if (surface)
++        *surface = NULL;
++    return E_NOTIMPL;
++}
++
++static const IDCompositionDesktopDeviceVtbl dcomp_desktop_device_vtbl =
++{
++    /* IUnknown */
++    dcomp_desktop_device_QueryInterface,
++    dcomp_desktop_device_AddRef,
++    dcomp_desktop_device_Release,
++    /* IDCompositionDevice2 */
++    dcomp_desktop_device_Commit,
++    dcomp_desktop_device_WaitForCommitCompletion,
++    dcomp_desktop_device_GetFrameStatistics,
++    dcomp_desktop_device_CreateVisual,
++    dcomp_desktop_device_CreateSurfaceFactory,
++    dcomp_desktop_device_CreateSurface,
++    dcomp_desktop_device_CreateVirtualSurface,
++    dcomp_desktop_device_CreateTranslateTransform,
++    dcomp_desktop_device_CreateScaleTransform,
++    dcomp_desktop_device_CreateRotateTransform,
++    dcomp_desktop_device_CreateSkewTransform,
++    dcomp_desktop_device_CreateMatrixTransform,
++    dcomp_desktop_device_CreateTransformGroup,
++    dcomp_desktop_device_CreateTranslateTransform3D,
++    dcomp_desktop_device_CreateScaleTransform3D,
++    dcomp_desktop_device_CreateRotateTransform3D,
++    dcomp_desktop_device_CreateMatrixTransform3D,
++    dcomp_desktop_device_CreateTransform3DGroup,
++    dcomp_desktop_device_CreateEffectGroup,
++    dcomp_desktop_device_CreateRectangleClip,
++    dcomp_desktop_device_CreateAnimation,
++    /* IDCompositionDesktopDevice */
++    dcomp_desktop_device_CreateTargetForHwnd,
++    dcomp_desktop_device_CreateSurfaceFromHandle,
++    dcomp_desktop_device_CreateSurfaceFromHwnd,
++};
++
++/* =====================================================================
++ * Entry points
++ * ===================================================================== */
++
++static HRESULT dcomp_device_create(IUnknown *rendering_device, REFIID iid, void **device)
++{
++    struct dcomp_device *object;
++    HRESULT hr;
++
++    if (!(object = calloc(1, sizeof(*object))))
++        return E_OUTOFMEMORY;
++
++    object->IDCompositionDevice_iface.lpVtbl = &dcomp_device_vtbl;
++    object->IDCompositionDesktopDevice_iface.lpVtbl = &dcomp_desktop_device_vtbl;
++    object->refcount = 1;
++
++    if (rendering_device)
++    {
++        object->rendering_device = rendering_device;
++        IUnknown_AddRef(rendering_device);
++
++        /* Try to QI for ID2D1Device — VSTGUI passes an ID2D1Device as the
++         * rendering_device. If successful, we use the D2D1 bitmap path so
++         * that DeviceContexts and resources are on the same device chain. */
++        hr = IUnknown_QueryInterface(rendering_device,
++                &IID_ID2D1Device, (void **)&object->d2d1_device);
++        if (SUCCEEDED(hr))
++            FIXME("Rendering device is ID2D1Device %p — using D2D1 bitmap path.\n",
++                    object->d2d1_device);
++    }
++
++    FIXME("Created dcomp device %p (rendering_device %p, d2d1_device %p).\n",
++            object, rendering_device, object->d2d1_device);
++
++    return IDCompositionDevice_QueryInterface(&object->IDCompositionDevice_iface, iid, device);
++}
++
++HRESULT WINAPI DCompositionCreateDevice(IDXGIDevice *dxgi_device, REFIID iid, void **device)
++{
++    TRACE("dxgi_device %p, iid %s, device %p.\n", dxgi_device, debugstr_guid(iid), device);
++
++    return dcomp_device_create((IUnknown *)dxgi_device, iid, device);
++}
++
++HRESULT WINAPI DCompositionCreateDevice2(IUnknown *rendering_device, REFIID iid, void **device)
++{
++    TRACE("rendering_device %p, iid %s, device %p.\n", rendering_device, debugstr_guid(iid), device);
++
++    return dcomp_device_create(rendering_device, iid, device);
++}
++
++HRESULT WINAPI DCompositionCreateDevice3(IUnknown *rendering_device, REFIID iid, void **device)
++{
++    TRACE("rendering_device %p, iid %s, device %p.\n", rendering_device, debugstr_guid(iid), device);
++
++    return dcomp_device_create(rendering_device, iid, device);
++}
++
++BOOL WINAPI DllMain(HINSTANCE inst, DWORD reason, void *reserved)
++{
++    switch (reason)
++    {
++    case DLL_PROCESS_ATTACH:
++        dcomp_heap = HeapCreate(0, 0, 0);
++        if (!dcomp_heap) return FALSE;
++        DisableThreadLibraryCalls(inst);
++        break;
++    case DLL_PROCESS_DETACH:
++        if (reserved) break;
++        if (dcomp_heap)
++        {
++            HeapDestroy(dcomp_heap);
++            dcomp_heap = NULL;
++        }
++        break;
++    }
++    return TRUE;
+ }
+diff --git a/dlls/dxgi/device.c b/dlls/dxgi/device.c
+index 4f6d6210284..6d12a4ff1fb 100644
+--- a/dlls/dxgi/device.c
++++ b/dlls/dxgi/device.c
+@@ -469,6 +469,8 @@ static HRESULT STDMETHODCALLTYPE dxgi_swapchain_factory_create_swapchain(IWineDX
+         return hr;
+     }
+ 
++    object->alpha_mode = desc->AlphaMode;
++
+     TRACE("Created swapchain %p.\n", object);
+ 
+     *swapchain = (IDXGISwapChain1 *)&object->IDXGISwapChain4_iface;
+diff --git a/dlls/dxgi/dxgi_private.h b/dlls/dxgi/dxgi_private.h
+index ed82d366799..d483f4faf33 100644
+--- a/dlls/dxgi/dxgi_private.h
++++ b/dlls/dxgi/dxgi_private.h
+@@ -185,6 +185,7 @@ struct d3d11_swapchain
+     IDXGIOutput *target;
+     LONG present_count;
+     LONG in_set_fullscreen_state;
++    DXGI_ALPHA_MODE alpha_mode;
+ };
+ 
+ HRESULT d3d11_swapchain_init(struct d3d11_swapchain *swapchain, struct dxgi_device *device,
+diff --git a/dlls/dxgi/factory.c b/dlls/dxgi/factory.c
+index c6bb47fa9dd..556bf7b9cee 100644
+--- a/dlls/dxgi/factory.c
++++ b/dlls/dxgi/factory.c
+@@ -387,13 +387,533 @@ static void STDMETHODCALLTYPE dxgi_factory_UnregisterOcclusionStatus(IWineDXGIFa
+     FIXME("iface %p, cookie %#lx stub!\n", iface, cookie);
+ }
+ 
++#define WM_WINE_DCOMP_SET_TARGET (WM_USER + 0x100)
++#define WM_WINE_DCOMP_SET_CHILD_MODE (WM_USER + 0x101)
++
++static inline struct d3d11_swapchain *d3d11_swapchain_from_IDXGISwapChain4(IDXGISwapChain4 *iface)
++{
++    return CONTAINING_RECORD(iface, struct d3d11_swapchain, IDXGISwapChain4_iface);
++}
++
++#define DCOMP_REBLIT_TIMER_ID 0xDC01
++#define DCOMP_POPUP_REBLIT_TIMER_ID 0xDC02
++
++/* Re-blit composition content from persistent buffer to window.
++ * Called on WM_PAINT, focus changes, timer tick, and other events
++ * that may cause the window surface to be overwritten. */
++static void dcomp_reblit_comp_buffer(HWND hwnd, const char *reason)
++{
++    HDC comp_dc = (HDC)GetPropW(hwnd, L"__wine_dcomp_comp_dc");
++    LPARAM dims = (LPARAM)GetPropW(hwnd, L"__wine_dcomp_comp_size");
++
++    if (comp_dc && dims)
++    {
++        unsigned int w = LOWORD(dims);
++        unsigned int h = HIWORD(dims);
++        HDC hdc = GetDC(hwnd);
++        if (hdc)
++        {
++            static unsigned int reblit_count;
++            ++reblit_count;
++            if (reblit_count <= 5 || !(reblit_count % 200))
++                FIXME("Re-blit #%u: hwnd %p %ux%u reason=%s.\n",
++                        reblit_count, hwnd, w, h, reason);
++            BitBlt(hdc, 0, 0, w, h, comp_dc, 0, 0, SRCCOPY);
++            ReleaseDC(hwnd, hdc);
++        }
++    }
++    else
++    {
++        static unsigned int null_count;
++        ++null_count;
++        if (null_count <= 3)
++            FIXME("Re-blit skipped: hwnd %p comp_dc=%p dims=%#Ix reason=%s.\n",
++                    hwnd, comp_dc, (ULONG_PTR)dims, reason);
++    }
++}
++
++/* Count of currently subclassed DComp target windows.  Used to distinguish
++ * the first (primary) target from secondary targets (popups, tooltips).
++ * Primary target gets full mode (timer + periodic Present), secondary targets
++ * get lightweight popup mode.  Incremented after subclassing, decremented
++ * in WM_NCDESTROY of both wndprocs.  Thread-safe via Interlocked ops. */
++static LONG dcomp_subclassed_target_count;
++
++/* Lightweight subclass for DComp popup windows (menus, tooltips).
++ * Only blocks WM_ERASEBKGND and re-blits composition content on WM_PAINT.
++ * NO timer, NO periodic Present â avoids dual-swapchain
++ * interference that causes main plugin window to flicker. */
++static LRESULT CALLBACK dcomp_popup_wndproc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam)
++{
++    WNDPROC orig = (WNDPROC)GetPropW(hwnd, L"__wine_dcomp_orig_wndproc");
++
++    switch (msg)
++    {
++        case WM_ERASEBKGND:
++            return 1;
++
++        case WM_PAINT:
++        {
++            PAINTSTRUCT ps;
++            HDC comp_dc = (HDC)GetPropW(hwnd, L"__wine_dcomp_comp_dc");
++            LPARAM dims = (LPARAM)GetPropW(hwnd, L"__wine_dcomp_comp_size");
++
++            BeginPaint(hwnd, &ps);
++            if (comp_dc && dims)
++            {
++                unsigned int w = LOWORD(dims);
++                unsigned int h = HIWORD(dims);
++                BitBlt(ps.hdc, 0, 0, w, h, comp_dc, 0, 0, SRCCOPY);
++            }
++            EndPaint(hwnd, &ps);
++            ValidateRect(hwnd, NULL);
++            return 0;
++        }
++
++        case WM_TIMER:
++            if (wparam == DCOMP_POPUP_REBLIT_TIMER_ID)
++            {
++                /* Lightweight reblit: just BitBlt from comp_dc, no Present,
++                 * no swapchain interaction.  Keeps the window surface fresh
++                 * so Expose events (e.g. tooltip close) show current content
++                 * instead of stale frames. */
++                dcomp_reblit_comp_buffer(hwnd, "popup-timer");
++                return 0;
++            }
++            break;
++
++        case WM_NCDESTROY:
++        {
++            LRESULT result;
++            IDXGISwapChain4 *sc = (IDXGISwapChain4 *)GetPropW(hwnd, L"__wine_dcomp_swapchain");
++
++            InterlockedDecrement(&dcomp_subclassed_target_count);
++            KillTimer(hwnd, DCOMP_POPUP_REBLIT_TIMER_ID);
++
++            /* Before the popup window is destroyed, switch the swapchain back
++             * to its composition window.  This drains the CS queue (no more
++             * presents to the dead popup), releases the popup's DC, and
++             * rebinds to a valid window.  Without this, the GL context stays
++             * bound to the destroyed popup's drawable → page fault. */
++            if (sc)
++            {
++                struct d3d11_swapchain *swapchain = d3d11_swapchain_from_IDXGISwapChain4(sc);
++                WCHAR prop_name[64];
++                HWND comp_wnd;
++
++                swprintf(prop_name, ARRAY_SIZE(prop_name),
++                        L"__wine_dcomp_wnd_%I64x", (UINT_PTR)sc);
++                comp_wnd = (HWND)GetPropW(GetDesktopWindow(), prop_name);
++
++                wined3d_swapchain_set_prefer_gl_present(swapchain->wined3d_swapchain, FALSE);
++                wined3d_swapchain_set_force_gdi_present(swapchain->wined3d_swapchain, TRUE);
++
++                if (comp_wnd && IsWindow(comp_wnd))
++                {
++                    wined3d_swapchain_set_device_window(swapchain->wined3d_swapchain, comp_wnd);
++                    FIXME("DComp popup %p destroyed, switched back to comp_wnd %p.\n",
++                            hwnd, comp_wnd);
++                }
++                else
++                {
++                    FIXME("DComp popup %p destroyed, comp_wnd not found.\n", hwnd);
++                }
++            }
++
++            result = orig ? CallWindowProcW(orig, hwnd, msg, wparam, lparam)
++                         : DefWindowProcW(hwnd, msg, wparam, lparam);
++            RemovePropW(hwnd, L"__wine_dcomp_orig_wndproc");
++            RemovePropW(hwnd, L"__wine_dcomp_swapchain");
++            RemovePropW(hwnd, L"__wine_dcomp_comp_dc");
++            RemovePropW(hwnd, L"__wine_dcomp_comp_size");
++            return result;
++        }
++    }
++
++    return orig ? CallWindowProcW(orig, hwnd, msg, wparam, lparam)
++                : DefWindowProcW(hwnd, msg, wparam, lparam);
++}
++
++/* Subclass WndProc for composition target windows (plugin's HWND).
++ * Blocks WM_ERASEBKGND and re-blits composition content on events
++ * that can overwrite the window surface (paint, focus, expose).
++ * Uses a periodic timer as fallback since WM_ACTIVATE does not
++ * reach child windows when the top-level parent loses focus. */
++static LRESULT CALLBACK dcomp_target_wndproc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam)
++{
++    WNDPROC orig = (WNDPROC)GetPropW(hwnd, L"__wine_dcomp_orig_wndproc");
++
++    switch (msg)
++    {
++        case WM_ERASEBKGND:
++            return 1;
++
++        case WM_PAINT:
++        {
++            PAINTSTRUCT ps;
++            HDC comp_dc = (HDC)GetPropW(hwnd, L"__wine_dcomp_comp_dc");
++            LPARAM dims = (LPARAM)GetPropW(hwnd, L"__wine_dcomp_comp_size");
++
++            BeginPaint(hwnd, &ps);
++            if (comp_dc && dims)
++            {
++                unsigned int w = LOWORD(dims);
++                unsigned int h = HIWORD(dims);
++                BitBlt(ps.hdc, 0, 0, w, h, comp_dc, 0, 0, SRCCOPY);
++                {
++                    static unsigned int paint_count;
++                    ++paint_count;
++                    if (paint_count <= 5 || !(paint_count % 200))
++                        FIXME("WM_PAINT #%u: hwnd %p %ux%u, comp_dc=%p.\n",
++                                paint_count, hwnd, w, h, comp_dc);
++                }
++            }
++            else
++            {
++                static unsigned int paint_null;
++                ++paint_null;
++                if (paint_null <= 3)
++                    FIXME("WM_PAINT: no comp buffer for hwnd %p (dc=%p dims=%#Ix).\n",
++                            hwnd, comp_dc, (ULONG_PTR)dims);
++            }
++            EndPaint(hwnd, &ps);
++            ValidateRect(hwnd, NULL);
++            return 0;
++        }
++
++        case WM_TIMER:
++            if (wparam == DCOMP_REBLIT_TIMER_ID)
++            {
++                IDXGISwapChain4 *sc = (IDXGISwapChain4 *)GetPropW(hwnd, L"__wine_dcomp_swapchain");
++
++                if (sc)
++                {
++                    /* Present(0,0) without dirty rects.  The expensive GPU
++                     * readback + StretchBlt is skipped in swapchain_blit_gdi
++                     * when the composition buffer is already up-to-date
++                     * (no new rendering since the last Present1).  We still
++                     * call Present so JUCE's SwapChain event loop gets its
++                     * frame-ready signal — without it, input events stall. */
++                    IDXGISwapChain4_Present(sc, 0, 0);
++
++                }
++                else
++                {
++                    dcomp_reblit_comp_buffer(hwnd, "timer");
++                }
++                return 0;
++            }
++            break;
++
++        case WM_WINDOWPOSCHANGED:
++        {
++            const WINDOWPOS *wp = (const WINDOWPOS *)lparam;
++            LRESULT result = orig ? CallWindowProcW(orig, hwnd, msg, wparam, lparam)
++                                  : DefWindowProcW(hwnd, msg, wparam, lparam);
++            /* Only reblit when the window was actually moved, resized, or shown.
++             * Pure Z-order changes (e.g. popup menu appearing above) do not
++             * require a reblit and would compete with Timer Present, causing
++             * visible flickering (Prophecy hamburger menu hover). */
++            if (wp && (!(wp->flags & SWP_NOMOVE) || !(wp->flags & SWP_NOSIZE)
++                    || (wp->flags & SWP_SHOWWINDOW)))
++            {
++                dcomp_reblit_comp_buffer(hwnd, "windowposchanged");
++            }
++            return result;
++        }
++
++        case WM_SHOWWINDOW:
++        case WM_ACTIVATE:
++        case WM_CHILDACTIVATE:
++        case WM_MOUSEACTIVATE:
++        {
++            LRESULT result = orig ? CallWindowProcW(orig, hwnd, msg, wparam, lparam)
++                                  : DefWindowProcW(hwnd, msg, wparam, lparam);
++            dcomp_reblit_comp_buffer(hwnd, msg == WM_ACTIVATE ? "activate" :
++                    msg == WM_SHOWWINDOW ? "showwindow" :
++                    msg == WM_CHILDACTIVATE ? "childactivate" : "mouseactivate");
++            return result;
++        }
++
++        case WM_NCDESTROY:
++        {
++            LRESULT result;
++            InterlockedDecrement(&dcomp_subclassed_target_count);
++            KillTimer(hwnd, DCOMP_REBLIT_TIMER_ID);
++            result = orig ? CallWindowProcW(orig, hwnd, msg, wparam, lparam)
++                         : DefWindowProcW(hwnd, msg, wparam, lparam);
++            RemovePropW(hwnd, L"__wine_dcomp_orig_wndproc");
++            RemovePropW(hwnd, L"__wine_dcomp_comp_dc");
++            RemovePropW(hwnd, L"__wine_dcomp_comp_size");
++            return result;
++        }
++    }
++
++    return orig ? CallWindowProcW(orig, hwnd, msg, wparam, lparam)
++                : DefWindowProcW(hwnd, msg, wparam, lparam);
++}
++
++static LRESULT CALLBACK dcomp_swapchain_wndproc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam)
++{
++    switch (msg)
++    {
++        case WM_ERASEBKGND:
++            return 1;
++        case WM_NCHITTEST:
++            return HTTRANSPARENT;
++        case WM_PAINT:
++        {
++            PAINTSTRUCT ps;
++            BeginPaint(hwnd, &ps);
++            EndPaint(hwnd, &ps);
++            return 0;
++        }
++        case WM_WINE_DCOMP_SET_TARGET:
++        {
++            HWND target_hwnd = (HWND)lparam;
++            IDXGISwapChain4 *iface = (IDXGISwapChain4 *)GetPropW(hwnd, L"__wine_dcomp_swapchain");
++            if (iface && target_hwnd)
++            {
++                struct d3d11_swapchain *swapchain = d3d11_swapchain_from_IDXGISwapChain4(iface);
++                struct wined3d_swapchain_desc wined3d_desc;
++                RECT rc;
++
++                wined3d_swapchain_get_desc(swapchain->wined3d_swapchain, &wined3d_desc);
++                {
++                    RECT wr;
++                    HWND phwnd = GetParent(target_hwnd);
++                    GetClientRect(target_hwnd, &rc);
++                    GetWindowRect(target_hwnd, &wr);
++                    FIXME("DComp: target %p client=%ldx%ld screen=(%ld,%ld)-(%ld,%ld)"
++                            " parent=%p sc=%ux%u.\n",
++                            target_hwnd, rc.right, rc.bottom,
++                            wr.left, wr.top, wr.right, wr.bottom,
++                            phwnd, wined3d_desc.backbuffer_width,
++                            wined3d_desc.backbuffer_height);
++                    if (phwnd)
++                    {
++                        RECT pr;
++                        GetWindowRect(phwnd, &pr);
++                        FIXME("DComp: parent %p screen=(%ld,%ld)-(%ld,%ld).\n",
++                                phwnd, pr.left, pr.top, pr.right, pr.bottom);
++                    }
++                }
++
++                /* Switch swapchain device window from comp_wnd to target_hwnd.
++                 * The GL context rebinds lazily via context_gl_update_window.
++                 *
++                 * Top-level popup windows (WS_POPUP, parent == Desktop) have an
++                 * X11 whole_window, so GL can create a client_window drawable and
++                 * use glXSwapBuffers directly — no GPU readback or CPU copies.
++                 * win32u's get_window_unused_drawable() calls p_surface_create
++                 * on-demand when wglMakeCurrent needs a drawable for the popup.
++                 *
++                 * Child windows (embedded plugins) have no whole_window, so GL
++                 * swap would write to an invisible drawable.  Force GDI blit for
++                 * those — it writes to the window surface via comp_dc. */
++                {
++                    HWND target_parent_toplevel = GetAncestor(target_hwnd, GA_PARENT);
++                    BOOL is_toplevel = !target_parent_toplevel
++                            || target_parent_toplevel == GetDesktopWindow();
++
++                    wined3d_swapchain_set_device_window(swapchain->wined3d_swapchain, target_hwnd);
++
++                    if (is_toplevel)
++                    {
++                        wined3d_swapchain_set_force_gdi_present(swapchain->wined3d_swapchain, FALSE);
++                        wined3d_swapchain_set_prefer_gl_present(swapchain->wined3d_swapchain, TRUE);
++                        FIXME("DComp: target %p is top-level, using GL present (no GDI readback).\n",
++                                target_hwnd);
++                    }
++                    else
++                    {
++                        wined3d_swapchain_set_force_gdi_present(swapchain->wined3d_swapchain, TRUE);
++                    }
++                }
++
++                /* Set premultiplied alpha blending if the swapchain uses it.
++                 * This makes GDI blit use AlphaBlend instead of StretchBlt,
++                 * allowing proper compositing of transparent areas. */
++                if (swapchain->alpha_mode == DXGI_ALPHA_MODE_PREMULTIPLIED)
++                    wined3d_swapchain_set_premultiplied_alpha(swapchain->wined3d_swapchain, TRUE);
++
++                ShowWindow(hwnd, SW_HIDE);
++
++                /* Detect popup mode via subclassed target count.
++                 * First target (count == 0) gets full mode with timer +
++                 * Present.  Subsequent targets get lightweight popup
++                 * mode to avoid dual-swapchain interference. */
++                {
++                    BOOL is_popup_mode = FALSE;
++                    LONG target_style = GetWindowLongW(target_hwnd, GWL_STYLE);
++                    HWND target_parent = GetParent(target_hwnd);
++
++                    FIXME("DComp popup-detect: target %p style=0x%08lx parent=%p count=%ld.\n",
++                            target_hwnd, (unsigned long)target_style, target_parent,
++                            dcomp_subclassed_target_count);
++
++                    if (dcomp_subclassed_target_count > 0)
++                        is_popup_mode = TRUE;
++
++                    if (is_popup_mode)
++                    {
++                        /* Lightweight popup mode: subclass with minimal wndproc
++                         * (WM_ERASEBKGND + WM_PAINT only), no timer. */
++                        WNDPROC orig = (WNDPROC)SetWindowLongPtrW(target_hwnd, GWLP_WNDPROC,
++                                (LONG_PTR)dcomp_popup_wndproc);
++                        if (orig)
++                        {
++                            SetPropW(target_hwnd, L"__wine_dcomp_orig_wndproc", (HANDLE)orig);
++                            SetPropW(target_hwnd, L"__wine_dcomp_swapchain", (HANDLE)iface);
++                            SetTimer(target_hwnd, DCOMP_POPUP_REBLIT_TIMER_ID, 200, NULL);
++                            InterlockedIncrement(&dcomp_subclassed_target_count);
++                            FIXME("DComp POPUP mode: target %p, orig wndproc %p, sc=%p (reblit timer 200ms).\n",
++                                    target_hwnd, orig, iface);
++                        }
++                        else
++                        {
++                            FIXME("DComp popup: SetWindowLongPtrW FAILED for target %p, err %lu.\n",
++                                    target_hwnd, GetLastError());
++                        }
++                    }
++                    else
++                    {
++                        /* Full mode: subclass + timer + periodic Present for main window */
++                        WNDPROC orig = (WNDPROC)SetWindowLongPtrW(target_hwnd, GWLP_WNDPROC,
++                                (LONG_PTR)dcomp_target_wndproc);
++                        if (orig)
++                        {
++                            SetPropW(target_hwnd, L"__wine_dcomp_orig_wndproc", (HANDLE)orig);
++                            SetPropW(target_hwnd, L"__wine_dcomp_swapchain", (HANDLE)iface);
++                            SetTimer(target_hwnd, DCOMP_REBLIT_TIMER_ID, 200, NULL);
++                            InterlockedIncrement(&dcomp_subclassed_target_count);
++                            FIXME("DComp: subclassed target %p, orig wndproc %p, timer started, sc=%p.\n",
++                                    target_hwnd, orig, iface);
++                        }
++                        else
++                        {
++                            FIXME("DComp: SetWindowLongPtrW FAILED for target %p, err %lu.\n",
++                                    target_hwnd, GetLastError());
++                        }
++                    }
++                }
++
++                /* Prevent black flickering between GL presents */
++                SetClassLongPtrW(target_hwnd, GCLP_HBRBACKGROUND, 0);
++                {
++                    HWND phwnd = GetParent(target_hwnd);
++                    if (phwnd)
++                        SetWindowLongW(phwnd, GWL_STYLE,
++                                GetWindowLongW(phwnd, GWL_STYLE) | WS_CLIPCHILDREN);
++                }
++                ValidateRect(target_hwnd, NULL);
++
++                GetClientRect(target_hwnd, &rc);
++                FIXME("DComp: target %p now %ldx%ld, swapchain switched.\n",
++                        target_hwnd, rc.right, rc.bottom);
++            }
++            return 0;
++        }
++
++        case WM_WINE_DCOMP_SET_CHILD_MODE:
++        {
++            IDXGISwapChain4 *iface = (IDXGISwapChain4 *)GetPropW(hwnd, L"__wine_dcomp_swapchain");
++            if (iface)
++            {
++                struct d3d11_swapchain *swapchain = d3d11_swapchain_from_IDXGISwapChain4(iface);
++
++                /* Enable GDI present so child renders into a comp buffer
++                 * (CreateDIBSection) instead of GL-swapping to the hidden window.
++                 * The root visual reads the child's comp_bits for compositing. */
++                wined3d_swapchain_set_force_gdi_present(swapchain->wined3d_swapchain, TRUE);
++
++                if (swapchain->alpha_mode == DXGI_ALPHA_MODE_PREMULTIPLIED)
++                    wined3d_swapchain_set_premultiplied_alpha(swapchain->wined3d_swapchain, TRUE);
++
++                /* Mark this window as a child visual's comp window */
++                SetPropW(hwnd, L"__wine_dcomp_is_child", (HANDLE)(ULONG_PTR)1);
++
++                FIXME("DComp child mode: hwnd %p, sc %p, alpha_mode %u.\n",
++                        hwnd, iface, swapchain->alpha_mode);
++            }
++            return 0;
++        }
++    }
++    return DefWindowProcW(hwnd, msg, wparam, lparam);
++}
++
++static BOOL dcomp_register_window_class(void)
++{
++    static BOOL registered;
++    WNDCLASSW wc;
++
++    if (registered)
++        return TRUE;
++
++    memset(&wc, 0, sizeof(wc));
++    wc.lpfnWndProc = dcomp_swapchain_wndproc;
++    wc.style = CS_OWNDC;
++    wc.lpszClassName = L"WineDCompSwapchain";
++    wc.hInstance = GetModuleHandleW(NULL);
++
++    if (!RegisterClassW(&wc) && GetLastError() != ERROR_CLASS_ALREADY_EXISTS)
++    {
++        ERR("Failed to register WineDCompSwapchain class, error %lu.\n", GetLastError());
++        return FALSE;
++    }
++
++    registered = TRUE;
++    return TRUE;
++}
++
+ static HRESULT STDMETHODCALLTYPE dxgi_factory_CreateSwapChainForComposition(IWineDXGIFactory *iface,
+         IUnknown *device, const DXGI_SWAP_CHAIN_DESC1 *desc, IDXGIOutput *output, IDXGISwapChain1 **swapchain)
+ {
+-    FIXME("iface %p, device %p, desc %p, output %p, swapchain %p stub!\n",
++    WCHAR prop_name[64];
++    HWND window;
++    HRESULT hr;
++
++    TRACE("iface %p, device %p, desc %p, output %p, swapchain %p.\n",
+             iface, device, desc, output, swapchain);
+ 
+-    return E_NOTIMPL;
++    if (!device || !desc || !swapchain)
++    {
++        WARN("Invalid pointer.\n");
++        return DXGI_ERROR_INVALID_CALL;
++    }
++
++    if (!dcomp_register_window_class())
++        return E_FAIL;
++
++    window = CreateWindowExW(WS_EX_NOPARENTNOTIFY,
++            L"WineDCompSwapchain", L"DComp Swapchain",
++            WS_CHILD, 0, 0, desc->Width, desc->Height,
++            GetDesktopWindow(), NULL, GetModuleHandleW(NULL), NULL);
++    if (!window)
++    {
++        ERR("Failed to create composition window, error %lu.\n", GetLastError());
++        return E_FAIL;
++    }
++
++    hr = dxgi_factory_CreateSwapChainForHwnd(iface, device, window,
++            desc, NULL, output, swapchain);
++    if (SUCCEEDED(hr))
++    {
++        swprintf(prop_name, ARRAY_SIZE(prop_name),
++                L"__wine_dcomp_wnd_%I64x", (UINT_PTR)*swapchain);
++        SetPropW(GetDesktopWindow(), prop_name, (HANDLE)window);
++        /* Store back-reference for WM_WINE_DCOMP_SET_TARGET handler */
++        SetPropW(window, L"__wine_dcomp_swapchain", (HANDLE)*swapchain);
++        FIXME("Created composition window %p (%ux%u) for swapchain %p.\n",
++                window, desc->Width, desc->Height, *swapchain);
++    }
++    else
++    {
++        ERR("CreateSwapChainForHwnd failed, hr %#lx.\n", hr);
++        DestroyWindow(window);
++    }
++
++    return hr;
+ }
+ 
+ static UINT STDMETHODCALLTYPE dxgi_factory_GetCreationFlags(IWineDXGIFactory *iface)
+diff --git a/dlls/dxgi/output.c b/dlls/dxgi/output.c
+index e828ed0d9d8..6f91126625e 100644
+--- a/dlls/dxgi/output.c
++++ b/dlls/dxgi/output.c
+@@ -366,11 +366,10 @@ static HRESULT STDMETHODCALLTYPE dxgi_output_WaitForVBlank(IDXGIOutput6 *iface)
+     static BOOL once = FALSE;
+ 
+     if (!once++)
+-        FIXME("iface %p stub!\n", iface);
+-    else
+-        TRACE("iface %p stub!\n", iface);
++        FIXME("iface %p semi-stub, sleeping 16ms.\n", iface);
+ 
+-    return E_NOTIMPL;
++    Sleep(16);
++    return S_OK;
+ }
+ 
+ static HRESULT STDMETHODCALLTYPE dxgi_output_TakeOwnership(IDXGIOutput6 *iface, IUnknown *device, BOOL exclusive)
+diff --git a/dlls/dxgi/swapchain.c b/dlls/dxgi/swapchain.c
+index 1186527d899..93ec4f5dc76 100644
+--- a/dlls/dxgi/swapchain.c
++++ b/dlls/dxgi/swapchain.c
+@@ -682,7 +682,7 @@ static HRESULT STDMETHODCALLTYPE d3d11_swapchain_GetDesc1(IDXGISwapChain4 *iface
+     desc->BufferCount = wined3d_desc.backbuffer_count;
+     desc->Scaling = DXGI_SCALING_STRETCH;
+     desc->SwapEffect = dxgi_swap_effect_from_wined3d(wined3d_desc.swap_effect);
+-    desc->AlphaMode = DXGI_ALPHA_MODE_IGNORE;
++    desc->AlphaMode = swapchain->alpha_mode;
+     desc->Flags = dxgi_swapchain_flags_from_wined3d(wined3d_desc.flags);
+ 
+     return S_OK;
+@@ -749,8 +749,17 @@ static HRESULT STDMETHODCALLTYPE d3d11_swapchain_Present1(IDXGISwapChain4 *iface
+     TRACE("iface %p, sync_interval %u, flags %#x, present_parameters %p.\n",
+             iface, sync_interval, flags, present_parameters);
+ 
+-    if (present_parameters)
+-        FIXME("Ignored present parameters %p.\n", present_parameters);
++    /* Pass dirty rects to wined3d for partial GDI blit (DComp composition). */
++    if (present_parameters && present_parameters->DirtyRectsCount > 0
++            && present_parameters->pDirtyRects)
++    {
++        wined3d_swapchain_set_dirty_rects(swapchain->wined3d_swapchain,
++                present_parameters->pDirtyRects, present_parameters->DirtyRectsCount);
++    }
++    else
++    {
++        wined3d_swapchain_set_dirty_rects(swapchain->wined3d_swapchain, NULL, 0);
++    }
+ 
+     return d3d11_swapchain_present(swapchain, sync_interval, flags);
+ }
+diff --git a/dlls/wined3d/cs.c b/dlls/wined3d/cs.c
+index 050da34e3b0..534ef5770db 100644
+--- a/dlls/wined3d/cs.c
++++ b/dlls/wined3d/cs.c
+@@ -726,6 +726,24 @@ static void wined3d_cs_exec_present(struct wined3d_cs *cs, const void *data)
+ 
+     swapchain->swapchain_ops->swapchain_present(swapchain, &op->src_rect, &op->dst_rect, op->swap_interval, op->flags);
+ 
++    /* FLIP_SEQUENTIAL: copy the just-presented content back into back_buffer[0]
++     * so the app can do incremental rendering (DirtyRects). After rotation,
++     * back_buffers[N-1] has the presented frame; copy it to back_buffers[0].
++     * This MUST happen in the CS thread (not from DXGI) to avoid a race with
++     * the frame latency event that wakes the app. */
++    if ((desc->swap_effect == WINED3D_SWAP_EFFECT_FLIP_SEQUENTIAL
++            || desc->swap_effect == WINED3D_SWAP_EFFECT_FLIP_DISCARD)
++            && desc->backbuffer_count >= 2)
++    {
++        struct wined3d_texture *copy_src = swapchain->back_buffers[desc->backbuffer_count - 1];
++        struct wined3d_texture *copy_dst = swapchain->back_buffers[0];
++        RECT copy_rect;
++
++        SetRect(&copy_rect, 0, 0, copy_dst->resource.width, copy_dst->resource.height);
++        wined3d_device_context_blt(&cs->c, copy_dst, 0, &copy_rect,
++                copy_src, 0, &copy_rect, 0, NULL, WINED3D_TEXF_POINT);
++    }
++
+     /* Discard buffers if the swap effect allows it. */
+     back_buffer = swapchain->back_buffers[desc->backbuffer_count - 1];
+     if (desc->swap_effect == WINED3D_SWAP_EFFECT_DISCARD || desc->swap_effect == WINED3D_SWAP_EFFECT_FLIP_DISCARD)
+diff --git a/dlls/wined3d/swapchain.c b/dlls/wined3d/swapchain.c
+index 6d602b5b782..a5518efad2c 100644
+--- a/dlls/wined3d/swapchain.c
++++ b/dlls/wined3d/swapchain.c
+@@ -47,6 +47,24 @@ void wined3d_swapchain_cleanup(struct wined3d_swapchain *swapchain)
+ 
+     TRACE("Destroying swapchain %p.\n", swapchain);
+ 
++    if (swapchain->comp_dc)
++    {
++        SelectObject(swapchain->comp_dc, swapchain->comp_old_bitmap);
++        DeleteObject(swapchain->comp_bitmap);
++        DeleteDC(swapchain->comp_dc);
++        swapchain->comp_dc = NULL;
++        swapchain->comp_bits = NULL;
++    }
++
++    if (swapchain->surface_bits)
++    {
++        HeapFree(GetProcessHeap(), 0, swapchain->surface_bits);
++        swapchain->surface_bits = NULL;
++        swapchain->surface_width = 0;
++        swapchain->surface_height = 0;
++        swapchain->surface_valid = FALSE;
++    }
++
+     wined3d_swapchain_state_cleanup(&swapchain->state);
+     wined3d_swapchain_set_gamma_ramp(swapchain, 0, &swapchain->orig_gamma);
+ 
+@@ -213,6 +231,57 @@ void CDECL wined3d_swapchain_set_window(struct wined3d_swapchain *swapchain, HWN
+         WARN("Failed to retrieve device context, trying swapchain backup.\n");
+ }
+ 
++void CDECL wined3d_swapchain_set_device_window(struct wined3d_swapchain *swapchain, HWND window)
++{
++    TRACE("Setting swapchain %p device window from %p to %p.\n",
++            swapchain, swapchain->state.device_window, window);
++
++    swapchain->state.device_window = window;
++    swapchain->state.desc.device_window = window;
++    wined3d_swapchain_set_window(swapchain, window);
++}
++
++void CDECL wined3d_swapchain_set_force_gdi_present(struct wined3d_swapchain *swapchain, BOOL force)
++{
++    TRACE("swapchain %p, force %d.\n", swapchain, force);
++
++    if (force)
++        swapchain->state.desc.flags |= WINED3D_SWAPCHAIN_FORCE_GDI_PRESENT;
++    else
++        swapchain->state.desc.flags &= ~WINED3D_SWAPCHAIN_FORCE_GDI_PRESENT;
++}
++
++void CDECL wined3d_swapchain_set_prefer_gl_present(struct wined3d_swapchain *swapchain, BOOL prefer)
++{
++    TRACE("swapchain %p, prefer %d.\n", swapchain, prefer);
++
++    if (prefer)
++        swapchain->state.desc.flags |= WINED3D_SWAPCHAIN_PREFER_GL_PRESENT;
++    else
++        swapchain->state.desc.flags &= ~WINED3D_SWAPCHAIN_PREFER_GL_PRESENT;
++}
++
++void CDECL wined3d_swapchain_set_premultiplied_alpha(struct wined3d_swapchain *swapchain, BOOL premultiplied)
++{
++    TRACE("swapchain %p, premultiplied %d.\n", swapchain, premultiplied);
++
++    if (premultiplied)
++        swapchain->state.desc.flags |= WINED3D_SWAPCHAIN_PREMULTIPLIED_ALPHA;
++    else
++        swapchain->state.desc.flags &= ~WINED3D_SWAPCHAIN_PREMULTIPLIED_ALPHA;
++}
++
++void CDECL wined3d_swapchain_set_dirty_rects(struct wined3d_swapchain *swapchain,
++        const RECT *rects, unsigned int count)
++{
++    if (count > ARRAY_SIZE(swapchain->present_dirty_rects))
++        count = ARRAY_SIZE(swapchain->present_dirty_rects);
++
++    if (rects && count)
++        memcpy(swapchain->present_dirty_rects, rects, count * sizeof(*rects));
++    swapchain->present_dirty_rect_count = count;
++}
++
+ HRESULT CDECL wined3d_swapchain_present(struct wined3d_swapchain *swapchain,
+         const RECT *src_rect, const RECT *dst_rect, HWND dst_window_override,
+         unsigned int swap_interval, uint32_t flags)
+@@ -431,6 +500,202 @@ HRESULT CDECL wined3d_swapchain_get_gamma_ramp(const struct wined3d_swapchain *s
+ 
+ /* The is a fallback for cases where we e.g. can't create a GL context or
+  * Vulkan swapchain for the swapchain window. */
++
++/* Merge pixels from src into dst, copying only where source alpha is non-zero.
++ * This preserves existing composition buffer content under transparent areas
++ * left by Clear(transparent) + partial redraw (JUCE/Serum2 pattern).
++ * Used in the "no-dirty full blit" path for SEQUENTIAL swapchains where the
++ * app calls Present() without Present1() dirty rects. */
++static void comp_buffer_alpha_merge(DWORD *dst_bits, unsigned int dst_pitch,
++        const DWORD *src_bits, unsigned int src_pitch,
++        int width, int height)
++{
++    int x, y;
++
++    for (y = 0; y < height; ++y)
++    {
++        const DWORD *src_row = (const DWORD *)((const char *)src_bits
++                + (unsigned int)y * src_pitch);
++        DWORD *dst_row = (DWORD *)((char *)dst_bits
++                + (unsigned int)y * dst_pitch);
++
++        for (x = 0; x < width; ++x)
++        {
++            if (src_row[x] & 0xff000000)
++                dst_row[x] = src_row[x];
++        }
++    }
++}
++
++/* Copy pixels from src to dst, but only where source alpha is non-zero.
++ * This preserves existing composition buffer content under transparent
++ * areas of the back buffer (after Clear(transparent) + partial redraw).
++ * DComp plugins rely on the compositor preserving unmodified regions. */
++static void comp_buffer_alpha_copy(DWORD *dst_bits, unsigned int dst_pitch,
++        const DWORD *src_bits, unsigned int src_pitch,
++        int dst_x, int dst_y, int src_x, int src_y,
++        int width, int height)
++{
++    /* Copy all pixels from backbuffer to comp buffer, including transparent
++     * ones. The old code skipped alpha==0 pixels to preserve comp buffer
++     * content, but this caused stale content because Clear(transparent) +
++     * partial redraw left transparent pixels that never overwrote the old
++     * comp buffer. */
++    int y;
++
++    for (y = 0; y < height; ++y)
++    {
++        const DWORD *src_row = (const DWORD *)((const char *)src_bits
++                + (unsigned int)(src_y + y) * src_pitch) + src_x;
++        DWORD *dst_row = (DWORD *)((char *)dst_bits
++                + (unsigned int)(dst_y + y) * dst_pitch) + dst_x;
++
++        memcpy(dst_row, src_row, width * sizeof(DWORD));
++    }
++}
++
++/* Porter-Duff Over: C_out = C_src + C_dst * (1 - alpha_src)
++ * Both src and dst are premultiplied alpha BGRA. */
++static void composite_over_premul(DWORD *dst, const DWORD *src,
++        unsigned int dst_stride, unsigned int src_stride,
++        int dst_x, int dst_y, int src_w, int src_h,
++        int dst_total_w, int dst_total_h)
++{
++    int y, x;
++    int x_end = dst_x + src_w;
++    int y_end = dst_y + src_h;
++
++    /* Clip to destination bounds */
++    int sx_start = 0, sy_start = 0;
++    if (dst_x < 0) { sx_start = -dst_x; dst_x = 0; }
++    if (dst_y < 0) { sy_start = -dst_y; dst_y = 0; }
++    if (x_end > dst_total_w) x_end = dst_total_w;
++    if (y_end > dst_total_h) y_end = dst_total_h;
++
++    for (y = dst_y; y < y_end; ++y)
++    {
++        DWORD *dp = dst + y * dst_stride + dst_x;
++        const DWORD *sp = src + (sy_start + y - dst_y) * src_stride + sx_start;
++        int width = x_end - dst_x;
++
++        for (x = 0; x < width; ++x)
++        {
++            DWORD s = sp[x];
++            unsigned int sa = (s >> 24) & 0xff;
++
++            if (sa == 0)
++                continue;  /* Fully transparent — skip */
++
++            if (sa == 255)
++            {
++                dp[x] = s;  /* Fully opaque — overwrite */
++                continue;
++            }
++
++            /* Blend: premultiplied over */
++            {
++                DWORD d = dp[x];
++                unsigned int inv_sa = 255 - sa;
++                unsigned int rb = ((d & 0x00ff00ff) * inv_sa + 128);
++                unsigned int g  = ((d & 0x0000ff00) * inv_sa + 128);
++                unsigned int da = ((d >> 24) * inv_sa + 128);
++
++                rb = (rb + ((rb >> 8) & 0x00ff00ff)) >> 8;
++                g  = (g  + ((g  >> 8) & 0x0000ff00)) >> 8;
++                da = (da + (da >> 8)) >> 8;
++
++                dp[x] = (s & 0x00ff00ff) + (rb & 0x00ff00ff)
++                      + ((s & 0x0000ff00) + (g & 0x0000ff00))
++                      + (((sa + da) > 255 ? 255 : (sa + da)) << 24);
++            }
++        }
++    }
++}
++
++/* Composite child visuals onto root's comp buffer.
++ * Reads child info from window properties set by dcomp Commit(). */
++static void swapchain_composite_children(struct wined3d_swapchain *swapchain,
++        unsigned int dst_w, unsigned int dst_h)
++{
++    ULONG_PTR child_count_val;
++    unsigned int child_count, i;
++    WCHAR prop_name[64];
++
++    if (!swapchain->comp_bits)
++        return;
++
++    child_count_val = (ULONG_PTR)GetPropW(swapchain->win_handle,
++            L"__wine_dcomp_child_count");
++    child_count = (unsigned int)child_count_val;
++    if (!child_count)
++        return;
++
++    for (i = 0; i < child_count && i < 16; ++i)
++    {
++        HWND child_wnd;
++        DWORD *child_bits;
++        LPARAM child_dims, child_offset;
++        unsigned int cw, ch;
++        int ox, oy;
++
++        swprintf(prop_name, ARRAY_SIZE(prop_name),
++                L"__wine_dcomp_child_%u_wnd", i);
++        child_wnd = (HWND)GetPropW(swapchain->win_handle, prop_name);
++        if (!child_wnd)
++            continue;
++
++        /* Two paths: swapchain children have a window with comp_bits,
++         * surface children have direct bits stored as properties on target. */
++        if (child_wnd)
++        {
++            child_bits = (DWORD *)GetPropW(child_wnd, L"__wine_dcomp_comp_bits");
++            child_dims = (LPARAM)GetPropW(child_wnd, L"__wine_dcomp_comp_size");
++        }
++        else
++        {
++            /* Direct-bits path for DComp surface children */
++            swprintf(prop_name, ARRAY_SIZE(prop_name),
++                    L"__wine_dcomp_child_%u_bits", i);
++            child_bits = (DWORD *)GetPropW(swapchain->win_handle, prop_name);
++            swprintf(prop_name, ARRAY_SIZE(prop_name),
++                    L"__wine_dcomp_child_%u_size", i);
++            child_dims = (LPARAM)GetPropW(swapchain->win_handle, prop_name);
++        }
++        if (!child_bits || !child_dims)
++            continue;
++
++        cw = LOWORD(child_dims);
++        ch = HIWORD(child_dims);
++
++        swprintf(prop_name, ARRAY_SIZE(prop_name),
++                L"__wine_dcomp_child_%u_offset", i);
++        child_offset = (LPARAM)GetPropW(swapchain->win_handle, prop_name);
++        ox = (short)LOWORD(child_offset);
++        oy = (short)HIWORD(child_offset);
++
++        {
++            static unsigned int comp_log_count;
++            ++comp_log_count;
++            if (comp_log_count <= 10 || !(comp_log_count % 500))
++                FIXME("Composite child #%u: wnd=%p bits=%p %ux%u at (%d,%d) onto %ux%u.\n",
++                        i, child_wnd, child_bits, cw, ch, ox, oy, dst_w, dst_h);
++        }
++
++        /* Flush GDI operations on child's comp_dc before reading bits */
++        if (child_wnd)
++        {
++            HDC child_dc = (HDC)GetPropW(child_wnd, L"__wine_dcomp_comp_dc");
++            if (child_dc)
++                GdiFlush();
++        }
++
++        composite_over_premul(swapchain->comp_bits, child_bits,
++                dst_w, cw,
++                ox, oy, cw, ch,
++                dst_w, dst_h);
++    }
++}
++
+ static void swapchain_blit_gdi(struct wined3d_swapchain *swapchain,
+         struct wined3d_context *context, const RECT *src_rect, const RECT *dst_rect)
+ {
+@@ -451,6 +716,7 @@ static void swapchain_blit_gdi(struct wined3d_swapchain *swapchain,
+     if (!once++)
+         FIXME("Using GDI present.\n");
+ 
++
+     format = back_buffer->resource.format;
+     if (!format->ddi_format)
+     {
+@@ -482,10 +748,262 @@ static void swapchain_blit_gdi(struct wined3d_swapchain *swapchain,
+ 
+     TRACE("Created source DC %p, bitmap %p for backbuffer %p.\n", src_dc, bitmap, back_buffer);
+ 
+-    if (!StretchBlt(swapchain->dc, dst_rect->left, dst_rect->top, dst_rect->right - dst_rect->left,
+-            dst_rect->bottom - dst_rect->top, src_dc, src_rect->left, src_rect->top,
+-            src_rect->right - src_rect->left, src_rect->bottom - src_rect->top, SRCCOPY))
+-        ERR("Failed to blit.\n");
++    if ((swapchain->state.desc.flags & WINED3D_SWAPCHAIN_PREMULTIPLIED_ALPHA)
++            || swapchain->state.desc.swap_effect == WINED3D_SWAP_EFFECT_FLIP_SEQUENTIAL
++            || swapchain->state.desc.swap_effect == WINED3D_SWAP_EFFECT_SEQUENTIAL)
++    {
++        unsigned int dst_w = dst_rect->right - dst_rect->left;
++        unsigned int dst_h = dst_rect->bottom - dst_rect->top;
++        unsigned int src_w = src_rect->right - src_rect->left;
++        unsigned int src_h = src_rect->bottom - src_rect->top;
++
++        /* Ensure persistent composition buffer exists and is the right size. */
++        if (!swapchain->comp_dc || swapchain->comp_width != dst_w
++                || swapchain->comp_height != dst_h
++                || swapchain->last_blit_window != swapchain->win_handle)
++        {
++            BITMAPINFO bmi;
++
++            if (swapchain->comp_dc)
++            {
++                SelectObject(swapchain->comp_dc, swapchain->comp_old_bitmap);
++                DeleteObject(swapchain->comp_bitmap);
++                DeleteDC(swapchain->comp_dc);
++            }
++
++            memset(&bmi, 0, sizeof(bmi));
++            bmi.bmiHeader.biSize = sizeof(bmi.bmiHeader);
++            bmi.bmiHeader.biWidth = dst_w;
++            bmi.bmiHeader.biHeight = -(int)dst_h; /* top-down */
++            bmi.bmiHeader.biPlanes = 1;
++            bmi.bmiHeader.biBitCount = 32;
++            bmi.bmiHeader.biCompression = BI_RGB;
++
++            swapchain->comp_dc = CreateCompatibleDC(swapchain->dc);
++            swapchain->comp_bitmap = CreateDIBSection(swapchain->comp_dc, &bmi,
++                    DIB_RGB_COLORS, (void **)&swapchain->comp_bits, NULL, 0);
++            swapchain->comp_old_bitmap = SelectObject(swapchain->comp_dc, swapchain->comp_bitmap);
++            swapchain->comp_width = dst_w;
++            swapchain->comp_height = dst_h;
++            swapchain->last_blit_window = swapchain->win_handle;
++
++            /* Allocate/resize per-visual surface buffer BEFORE copying into it.
++             * Must happen before the memcpy below to avoid buffer overflow when
++             * the new comp buffer is larger than the old surface_bits allocation. */
++            if (!swapchain->surface_bits || swapchain->surface_width != dst_w
++                    || swapchain->surface_height != dst_h)
++            {
++                HeapFree(GetProcessHeap(), 0, swapchain->surface_bits);
++                swapchain->surface_bits = HeapAlloc(GetProcessHeap(), HEAP_ZERO_MEMORY,
++                        dst_w * dst_h * sizeof(DWORD));
++                swapchain->surface_width = dst_w;
++                swapchain->surface_height = dst_h;
++                swapchain->surface_valid = FALSE;
++            }
++
++            /* First frame: full copy to comp buffer AND surface_bits. */
++            StretchBlt(swapchain->comp_dc, 0, 0, dst_w, dst_h,
++                    src_dc, src_rect->left, src_rect->top, src_w, src_h, SRCCOPY);
++            if (swapchain->surface_bits && swapchain->comp_bits)
++            {
++                GdiFlush();
++                memcpy(swapchain->surface_bits, swapchain->comp_bits,
++                        dst_w * dst_h * sizeof(DWORD));
++                swapchain->surface_valid = TRUE;
++            }
++
++            swapchain->comp_buffer_dirty = TRUE;
++        }
++        else if (swapchain->present_dirty_rect_count > 0)
++        {
++            /* Dirty rects: accumulate only changed regions into comp buffer.
++             * Use alpha-aware copy to preserve existing content under transparent
++             * areas — DComp plugins Clear(transparent) every frame and only redraw
++             * changed elements, relying on the compositor to preserve the rest. */
++            unsigned int i;
++            BOOL is_full_frame = FALSE;
++            BOOL use_alpha_copy = swapchain->comp_bits && src_w == dst_w
++                    && src_h == dst_h && format->byte_count == 4;
++
++            if (use_alpha_copy)
++                GdiFlush();
++
++            for (i = 0; i < swapchain->present_dirty_rect_count; ++i)
++            {
++                const RECT *dr = &swapchain->present_dirty_rects[i];
++                int sx = dr->left;
++                int sy = dr->top;
++                int sw = dr->right - dr->left;
++                int sh = dr->bottom - dr->top;
++                int dx = src_w ? sx * (int)dst_w / (int)src_w : sx;
++                int dy = src_h ? sy * (int)dst_h / (int)src_h : sy;
++                int dw = src_w ? sw * (int)dst_w / (int)src_w : sw;
++                int dh = src_h ? sh * (int)dst_h / (int)src_h : sh;
++
++                if (sx == 0 && sy == 0 && (unsigned int)sw >= src_w && (unsigned int)sh >= src_h)
++                    is_full_frame = TRUE;
++
++                if (use_alpha_copy)
++                {
++                    /* Write to per-visual surface_bits if available. */
++                    {
++                        DWORD *target = swapchain->surface_bits ? swapchain->surface_bits : swapchain->comp_bits;
++                        unsigned int stride = swapchain->surface_bits ? swapchain->surface_width * 4 : swapchain->comp_width * 4;
++                        comp_buffer_alpha_copy(target, stride,
++                                back_buffer->resource.heap_memory, row_pitch,
++                                dx, dy, sx, sy, dw, dh);
++                    }
++                }
++                else
++                {
++                    StretchBlt(swapchain->comp_dc, dx, dy, dw, dh,
++                            src_dc, sx, sy, sw, sh, SRCCOPY);
++                }
++            }
++            {
++                static unsigned int dirty_blit_count;
++                ++dirty_blit_count;
++                if (dirty_blit_count <= 10 || !(dirty_blit_count % 500))
++                {
++                    const RECT *dr0 = &swapchain->present_dirty_rects[0];
++                    FIXME("Dirty blit #%u: win %p, %u rects, r0=(%ld,%ld)-(%ld,%ld) %s, buf=%ux%u.\n",
++                            dirty_blit_count, swapchain->win_handle,
++                            swapchain->present_dirty_rect_count,
++                            dr0->left, dr0->top, dr0->right, dr0->bottom,
++                            is_full_frame ? "FULL-FRAME" : "partial",
++                            src_w, src_h);
++                }
++                /* Log all rects for multi-rect blits (> 2 rects = likely UI change, not cursor blink). */
++                if (swapchain->present_dirty_rect_count > 2
++                        && (dirty_blit_count <= 50 || !(dirty_blit_count % 100)))
++                {
++                    unsigned int j;
++                    LONG union_l = LONG_MAX, union_t = LONG_MAX, union_r = 0, union_b = 0;
++                    unsigned long total_area = 0;
++                    for (j = 0; j < swapchain->present_dirty_rect_count; ++j)
++                    {
++                        const RECT *r = &swapchain->present_dirty_rects[j];
++                        if (r->left < union_l) union_l = r->left;
++                        if (r->top < union_t) union_t = r->top;
++                        if (r->right > union_r) union_r = r->right;
++                        if (r->bottom > union_b) union_b = r->bottom;
++                        total_area += (unsigned long)(r->right - r->left) * (r->bottom - r->top);
++                        FIXME("  r[%u]=(%ld,%ld)-(%ld,%ld) %ldx%ld\n",
++                                j, r->left, r->top, r->right, r->bottom,
++                                r->right - r->left, r->bottom - r->top);
++                    }
++                    FIXME("  union=(%ld,%ld)-(%ld,%ld) area=%lu/%lu (%.0f%%)\n",
++                            union_l, union_t, union_r, union_b,
++                            total_area, (unsigned long)src_w * src_h,
++                            100.0 * total_area / ((unsigned long)src_w * src_h));
++                }
++            }
++            swapchain->comp_buffer_dirty = TRUE;
++            /* Ensure surface_bits has latest root visual data after dirty-rect update. */
++            if (swapchain->surface_bits && swapchain->comp_bits)
++            {
++                if (!use_alpha_copy)
++                {
++                    /* StretchBlt wrote to comp_dc — sync back to surface_bits. */
++                    GdiFlush();
++                    memcpy(swapchain->surface_bits, swapchain->comp_bits,
++                            swapchain->surface_width * swapchain->surface_height * sizeof(DWORD));
++                }
++                swapchain->surface_valid = TRUE;
++            }
++        }
++        else
++        {
++            /* No dirty rects (Present without Present1, or timer-triggered).
++             * Do a full blit from backbuffer to comp buffer so that any
++             * D3D11/D2D1 rendering since the last Present becomes visible.
++             * This is the composition-swapchain equivalent of a
++             * full-window present. */
++            BOOL use_alpha_merge = (swapchain->state.desc.swap_effect == WINED3D_SWAP_EFFECT_SEQUENTIAL)
++                    && !(swapchain->state.desc.flags & WINED3D_SWAPCHAIN_PREMULTIPLIED_ALPHA)
++                    && swapchain->comp_bits && swapchain->surface_bits
++                    && src_w == dst_w && src_h == dst_h
++                    && format->byte_count == 4;
++
++            if (use_alpha_merge)
++            {
++                /* SEQUENTIAL swapchain without dirty rects: the app (JUCE/Serum2)
++                 * calls Clear(transparent) every frame and only redraws dirty
++                 * elements. Merge only non-transparent pixels into surface_bits
++                 * so that the previous frame content is preserved where the app
++                 * cleared to transparent. Phase 3 will copy surface_bits to
++                 * comp_bits for the final BitBlt to the window. */
++                GdiFlush();
++                comp_buffer_alpha_merge(swapchain->surface_bits, swapchain->surface_width * 4,
++                        back_buffer->resource.heap_memory, row_pitch,
++                        dst_w, dst_h);
++                swapchain->surface_valid = TRUE;
++            }
++            else
++            {
++                StretchBlt(swapchain->comp_dc, 0, 0, dst_w, dst_h,
++                        src_dc, src_rect->left, src_rect->top, src_w, src_h, SRCCOPY);
++                if (swapchain->surface_bits && swapchain->comp_bits)
++                {
++                    GdiFlush();
++                    memcpy(swapchain->surface_bits, swapchain->comp_bits,
++                            dst_w * dst_h * sizeof(DWORD));
++                    swapchain->surface_valid = TRUE;
++                }
++            }
++            swapchain->comp_buffer_dirty = FALSE;
++        }
++
++        /* Phase 3 Compositor: rebuild comp_bits from clean root surface_bits,
++         * then composite child visuals on top. */
++        if (!GetPropW(swapchain->win_handle, L"__wine_dcomp_is_child"))
++        {
++            if (swapchain->surface_valid && swapchain->surface_bits && swapchain->comp_bits)
++            {
++                GdiFlush();
++                memcpy(swapchain->comp_bits, swapchain->surface_bits,
++                        swapchain->surface_width * swapchain->surface_height * sizeof(DWORD));
++            }
++            swapchain_composite_children(swapchain, dst_w, dst_h);
++        }
++
++        /* Child visuals: only update comp buffer, skip window blit.
++         * The root visual reads our comp_bits directly. */
++        if (GetPropW(swapchain->win_handle, L"__wine_dcomp_is_child"))
++        {
++            /* Child visuals: only update comp buffer, skip window blit. */
++        }
++        else
++        {
++            /* Always BitBlt full comp buffer to window — survives any surface reset. */
++            BitBlt(swapchain->dc, dst_rect->left, dst_rect->top, dst_w, dst_h,
++                    swapchain->comp_dc, 0, 0, SRCCOPY);
++        }
++
++        /* Store comp_dc as window property so WM_PAINT can re-blit. */
++        SetPropW(swapchain->win_handle, L"__wine_dcomp_comp_dc", (HANDLE)swapchain->comp_dc);
++        {
++            /* Store dimensions as a single LPARAM-sized value. */
++            LPARAM dims = MAKELPARAM(dst_w, dst_h);
++            SetPropW(swapchain->win_handle, L"__wine_dcomp_comp_size", (HANDLE)dims);
++        }
++        /* Expose surface_bits so root can composite per-visual layers. */
++        SetPropW(swapchain->win_handle, L"__wine_dcomp_comp_bits",
++                (HANDLE)(swapchain->surface_bits ? swapchain->surface_bits : swapchain->comp_bits));
++
++        swapchain->present_dirty_rect_count = 0;
++    }
++    else
++    {
++        if (!StretchBlt(swapchain->dc, dst_rect->left, dst_rect->top,
++                dst_rect->right - dst_rect->left, dst_rect->bottom - dst_rect->top,
++                src_dc, src_rect->left, src_rect->top,
++                src_rect->right - src_rect->left, src_rect->bottom - src_rect->top, SRCCOPY))
++            ERR("Failed to blit.\n");
++    }
++
++    /* Suppress spurious WM_PAINT after writing to the window surface. */
++    ValidateRect(swapchain->win_handle, NULL);
+ 
+     destroy_desc.hDc = src_dc;
+     destroy_desc.hBitmap = bitmap;
+@@ -641,9 +1159,34 @@ static void swapchain_gl_present(struct wined3d_swapchain *swapchain,
+     TRACE("Presenting DC %p.\n", context_gl->dc);
+ 
+     pixel_format = &wined3d_adapter_gl(swapchain->device->adapter)->pixel_formats[context_gl->pixel_format - 1];
+-    if (context_gl->dc == wined3d_device_gl(swapchain->device)->backup_dc
++
++    /* PREFER_GL_PRESENT overrides FLIP_SEQUENTIAL/SEQUENTIAL/partial checks
++     * for top-level popup windows with a GL-capable X11 drawable.  The GL
++     * context must have successfully bound (not backup_dc) and FORCE_GDI
++     * must not be set.  This eliminates the GPU readback + CPU copies that
++     * the GDI present path requires (~5-10ms per frame). */
++    if ((swapchain->state.desc.flags & WINED3D_SWAPCHAIN_PREFER_GL_PRESENT)
++            && !(swapchain->state.desc.flags & WINED3D_SWAPCHAIN_FORCE_GDI_PRESENT)
++            && context_gl->dc != wined3d_device_gl(swapchain->device)->backup_dc)
++    {
++        static unsigned int gl_present_count;
++        gl_info = context_gl->gl_info;
++
++        if (!(gl_present_count++ % 60))
++            FIXME("GL popup present #%u: dc %p, win %p.\n",
++                    gl_present_count, context_gl->dc, swapchain->win_handle);
++
++        swapchain_gl_set_swap_interval(swapchain, context_gl, swap_interval);
++        wined3d_texture_load_location(back_buffer, 0, context, back_buffer->resource.draw_binding);
++        swapchain_blit(swapchain, context, src_rect, dst_rect);
++        gl_info->gl_ops.wgl.p_wglSwapBuffers(context_gl->dc);
++    }
++    else if (context_gl->dc == wined3d_device_gl(swapchain->device)->backup_dc
++            || (swapchain->state.desc.flags & WINED3D_SWAPCHAIN_FORCE_GDI_PRESENT)
+             || (pixel_format->swap_method != WGL_SWAP_COPY_ARB
+-            && swapchain_present_is_partial_copy(swapchain, dst_rect)))
++            && swapchain_present_is_partial_copy(swapchain, dst_rect))
++            || swapchain->state.desc.swap_effect == WINED3D_SWAP_EFFECT_FLIP_SEQUENTIAL
++            || swapchain->state.desc.swap_effect == WINED3D_SWAP_EFFECT_SEQUENTIAL)
+     {
+         swapchain_blit_gdi(swapchain, context, src_rect, dst_rect);
+     }
+@@ -667,6 +1210,7 @@ static void swapchain_gl_present(struct wined3d_swapchain *swapchain,
+         gl_info->gl_ops.wgl.p_wglSwapBuffers(context_gl->dc);
+     }
+ 
++
+     if (context->d3d_info->fences)
+         wined3d_context_gl_submit_command_fence(context_gl);
+ 
+diff --git a/dlls/wined3d/wined3d.spec b/dlls/wined3d/wined3d.spec
+index e84fc04bbba..4f98441f482 100644
+--- a/dlls/wined3d/wined3d.spec
++++ b/dlls/wined3d/wined3d.spec
+@@ -316,6 +316,11 @@
+ @ cdecl wined3d_swapchain_set_max_frame_latency(ptr long)
+ @ cdecl wined3d_swapchain_set_palette(ptr ptr)
+ @ cdecl wined3d_swapchain_set_window(ptr ptr)
++@ cdecl wined3d_swapchain_set_device_window(ptr ptr)
++@ cdecl wined3d_swapchain_set_force_gdi_present(ptr long)
++@ cdecl wined3d_swapchain_set_prefer_gl_present(ptr long)
++@ cdecl wined3d_swapchain_set_dirty_rects(ptr ptr long)
++@ cdecl wined3d_swapchain_set_premultiplied_alpha(ptr long)
+ 
+ @ cdecl wined3d_swapchain_state_create(ptr ptr ptr ptr ptr)
+ @ cdecl wined3d_swapchain_state_destroy(ptr)
+diff --git a/dlls/wined3d/wined3d_private.h b/dlls/wined3d/wined3d_private.h
+index 42d41368751..d8c41ece1f2 100644
+--- a/dlls/wined3d/wined3d_private.h
++++ b/dlls/wined3d/wined3d_private.h
+@@ -4127,6 +4127,27 @@ struct wined3d_swapchain
+     struct wined3d_swapchain_state state;
+     HWND win_handle;
+     HDC dc;
++
++    /* DComp dirty rect tracking for Present1 */
++    RECT present_dirty_rects[16];
++    unsigned int present_dirty_rect_count;
++    HWND last_blit_window;
++
++    /* DComp composition buffer (persistent, for dirty-rect accumulation) */
++    HDC comp_dc;
++    HBITMAP comp_bitmap;
++    HGDIOBJ comp_old_bitmap;
++    DWORD *comp_bits;
++    unsigned int comp_width;
++    unsigned int comp_height;
++
++    /* Per-visual surface buffer (persistent, separate from comp_buffer) */
++    DWORD *surface_bits;
++    unsigned int surface_width;
++    unsigned int surface_height;
++    BOOL surface_valid;
++
++    BOOL comp_buffer_dirty;
+ };
+ 
+ void wined3d_swapchain_activate(struct wined3d_swapchain *swapchain, BOOL activate);
+diff --git a/dlls/winex11.drv/init.c b/dlls/winex11.drv/init.c
+index cf032cb3bf9..bac7ca20ab1 100644
+--- a/dlls/winex11.drv/init.c
++++ b/dlls/winex11.drv/init.c
+@@ -222,8 +222,15 @@ static BOOL needs_client_window_clipping( HWND hwnd )
+ 
+ static BOOL needs_offscreen_rendering( HWND hwnd, BOOL raw )
+ {
++    static const WCHAR dcomp_target_propW[] =
++        {'_','_','w','i','n','e','_','d','c','o','m','p','_','t','a','r','g','e','t',0};
++
+     if (!raw && NtUserGetDpiForWindow( hwnd ) != NtUserGetWinMonitorDpi( hwnd, MDT_RAW_DPI )) return TRUE; /* needs DPI scaling */
+-    if (NtUserGetAncestor( hwnd, GA_PARENT ) != NtUserGetDesktopWindow()) return TRUE; /* child window, needs compositing */
++    if (NtUserGetAncestor( hwnd, GA_PARENT ) != NtUserGetDesktopWindow())
++    {
++        if (NtUserGetProp( hwnd, dcomp_target_propW )) return FALSE;
++        return TRUE; /* child window, needs compositing */
++    }
+     if (NtUserGetWindowRelative( hwnd, GW_CHILD )) return needs_client_window_clipping( hwnd ); /* window has children, needs compositing */
+     return FALSE;
+ }
+diff --git a/include/wine/wined3d.h b/include/wine/wined3d.h
+index 6f250863681..773892f8b4c 100644
+--- a/include/wine/wined3d.h
++++ b/include/wine/wined3d.h
+@@ -923,6 +923,9 @@ enum wined3d_memory_segment_group
+ /* Allow the swapchain flag, but not actual locking */
+ #define WINED3D_SWAPCHAIN_ALLOW_MS_LOCKABLE_BACKBUFFER          0x00200000u
+ #define WINED3D_SWAPCHAIN_FRAME_LATENCY_WAITABLE_OBJECT         0x00400000u
++#define WINED3D_SWAPCHAIN_FORCE_GDI_PRESENT                     0x00800000u
++#define WINED3D_SWAPCHAIN_PREMULTIPLIED_ALPHA                   0x01000000u
++#define WINED3D_SWAPCHAIN_PREFER_GL_PRESENT                     0x02000000u
+ 
+ #define WINED3DDP_MAXTEXCOORD                                   8
+ 
+@@ -2936,6 +2939,12 @@ HRESULT __cdecl wined3d_swapchain_set_gamma_ramp(const struct wined3d_swapchain
+ HRESULT __cdecl wined3d_swapchain_set_max_frame_latency(struct wined3d_swapchain *swapchain, unsigned int latency);
+ void __cdecl wined3d_swapchain_set_palette(struct wined3d_swapchain *swapchain, struct wined3d_palette *palette);
+ void __cdecl wined3d_swapchain_set_window(struct wined3d_swapchain *swapchain, HWND window);
++void __cdecl wined3d_swapchain_set_device_window(struct wined3d_swapchain *swapchain, HWND window);
++void __cdecl wined3d_swapchain_set_force_gdi_present(struct wined3d_swapchain *swapchain, BOOL force);
++void __cdecl wined3d_swapchain_set_prefer_gl_present(struct wined3d_swapchain *swapchain, BOOL prefer);
++void __cdecl wined3d_swapchain_set_dirty_rects(struct wined3d_swapchain *swapchain,
++        const RECT *rects, unsigned int count);
++void __cdecl wined3d_swapchain_set_premultiplied_alpha(struct wined3d_swapchain *swapchain, BOOL premultiplied);
+ 
+ HRESULT __cdecl wined3d_swapchain_state_create(const struct wined3d_swapchain_desc *desc,
+         HWND window, struct wined3d *wined3d, struct wined3d_swapchain_state_parent *state_parent,

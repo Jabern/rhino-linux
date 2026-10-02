@@ -1,0 +1,337 @@
+diff --git a/dlls/vcomp/main.c b/dlls/vcomp/main.c
+index 6a12da8d458..822afe46569 100644
+--- a/dlls/vcomp/main.c
++++ b/dlls/vcomp/main.c
+@@ -81,8 +81,8 @@ struct vcomp_thread_data
+     /* dynamic */
+     unsigned int            dynamic;
+     unsigned int            dynamic_type;
+-    unsigned int            dynamic_begin;
+-    unsigned int            dynamic_end;
++    ULONG64                 dynamic_begin;
++    ULONG64                 dynamic_end;
+ };
+ 
+ struct vcomp_team_data
+@@ -112,12 +112,16 @@ struct vcomp_task_data
+     int                     section_index;
+ 
+     /* dynamic */
++    /* sequence lock: even values encode the committed generation
++     * (generation == value / 2), odd values mean a thread is currently
++     * initializing the loop. */
+     unsigned int            dynamic;
+-    unsigned int            dynamic_first;
+-    unsigned int            dynamic_last;
+-    unsigned int            dynamic_iterations;
+-    int                     dynamic_step;
+-    unsigned int            dynamic_chunksize;
++    ULONG64                 dynamic_first;      /* first iteration value (constant) */
++    ULONG64                 dynamic_last;       /* last iteration value (constant) */
++    ULONG64                 dynamic_iterations; /* total number of iterations (constant) */
++    LONG64                  dynamic_step;       /* normalized step (constant) */
++    ULONG64                 dynamic_chunksize;  /* chunk size (constant) */
++    ULONG64                 dynamic_next;       /* consumed-iteration cursor (atomic) */
+ };
+ 
+ extern void CDECL _vcomp_fork_call_wrapper(void *wrapper, int nargs, void **args);
+@@ -231,6 +235,17 @@ static short interlocked_xchg_add16(short *dest, short incr)
+ 
+ #endif  /* __i386__ || __x86_64__ */
+ 
++/* Load the dynamic scheduling sequence number with acquire semantics.  The
++ * atomic acquire load is required (rather than a plain load) so that the
++ * compiler cannot cache or reorder it, which would otherwise defeat the
++ * sequence-lock revalidation in _vcomp_for_dynamic_next_i8.  On x86 this
++ * still compiles to a single plain load thanks to the total-store-order
++ * memory model. */
++static inline unsigned int vcomp_dynamic_seq(struct vcomp_task_data *task_data)
++{
++    return __atomic_load_n(&task_data->dynamic, __ATOMIC_ACQUIRE);
++}
++
+ static inline struct vcomp_thread_data *vcomp_get_thread_data(void)
+ {
+     return (struct vcomp_thread_data *)TlsGetValue(vcomp_context_tls);
+@@ -269,7 +284,7 @@ static struct vcomp_thread_data *vcomp_init_thread_data(void)
+     thread_data->fork_threads   = 0;
+     thread_data->single         = 1;
+     thread_data->section        = 1;
+-    thread_data->dynamic        = 1;
++    thread_data->dynamic        = 0;
+     thread_data->dynamic_type   = 0;
+ 
+     vcomp_set_thread_data(thread_data);
+@@ -1270,10 +1285,10 @@ void CDECL _vcomp_for_static_end(void)
+     /* nothing to do here */
+ }
+ 
+-void CDECL _vcomp_for_dynamic_init(unsigned int flags, unsigned int first, unsigned int last,
+-                                   int step, unsigned int chunksize)
++void CDECL _vcomp_for_dynamic_init_i8(unsigned int flags, ULONG64 first, ULONG64 last,
++                                      LONG64 step, ULONG64 chunksize)
+ {
+-    unsigned int iterations, per_thread, remaining;
++    ULONG64 iterations, per_thread, remaining;
+     struct vcomp_thread_data *thread_data = vcomp_init_thread_data();
+     struct vcomp_team_data *team_data = thread_data->team;
+     struct vcomp_task_data *task_data = thread_data->task;
+@@ -1281,7 +1296,8 @@ void CDECL _vcomp_for_dynamic_init(unsigned int flags, unsigned int first, unsig
+     int thread_num = thread_data->thread_num;
+     unsigned int type = flags & ~VCOMP_DYNAMIC_FLAGS_INCREMENT;
+ 
+-    TRACE("(%u, %u, %u, %d, %u)\n", flags, first, last, step, chunksize);
++    TRACE("(%u, %s, %s, %s, %s)\n", flags, wine_dbgstr_longlong(first), wine_dbgstr_longlong(last),
++          wine_dbgstr_longlong(step), wine_dbgstr_longlong(chunksize));
+ 
+     if (step <= 0)
+     {
+@@ -1318,6 +1334,8 @@ void CDECL _vcomp_for_dynamic_init(unsigned int flags, unsigned int first, unsig
+     }
+     else
+     {
++        unsigned int gen;
++
+         if (type != VCOMP_DYNAMIC_FLAGS_CHUNKED &&
+             type != VCOMP_DYNAMIC_FLAGS_GUIDED)
+         {
+@@ -1325,23 +1343,62 @@ void CDECL _vcomp_for_dynamic_init(unsigned int flags, unsigned int first, unsig
+             type = VCOMP_DYNAMIC_FLAGS_GUIDED;
+         }
+ 
+-        EnterCriticalSection(&vcomp_section);
+-        thread_data->dynamic++;
++        gen = ++thread_data->dynamic;
+         thread_data->dynamic_type = type;
+-        if ((int)(thread_data->dynamic - task_data->dynamic) > 0)
++
++        /*
++         * Publish the loop parameters exactly once, without taking the global
++         * critical section.
++         *
++         * task_data->dynamic is used as a sequence lock: even values encode
++         * the committed generation (generation == value / 2), odd values mean
++         * a thread is currently initializing the loop.  The first thread to
++         * reach this generation claims the writer slot (compare-and-swap from
++         * an even to an odd value), writes the constant loop parameters and
++         * resets the iteration cursor, then publishes the new even generation
++         * with InterlockedExchange.  That final exchange is a full memory
++         * barrier, so any reader that observes the new generation also
++         * observes every field written above it.
++         */
++        for (;;)
+         {
+-            task_data->dynamic              = thread_data->dynamic;
+-            task_data->dynamic_first        = first;
+-            task_data->dynamic_last         = last;
+-            task_data->dynamic_iterations   = iterations;
+-            task_data->dynamic_step         = step;
+-            task_data->dynamic_chunksize    = chunksize;
++            unsigned int seq = vcomp_dynamic_seq(task_data);
++
++            if (seq >= 2 * gen)
++                return;  /* already initialized by another thread */
++
++            if (seq & 1)
++            {
++                /* Another thread is initializing this generation. */
++                YieldProcessor();
++                continue;
++            }
++
++            if ((unsigned int)InterlockedCompareExchange((LONG *)&task_data->dynamic,
++                                                         seq + 1, seq) == seq)
++            {
++                task_data->dynamic_first      = first;
++                task_data->dynamic_last       = last;
++                task_data->dynamic_iterations = iterations;
++                task_data->dynamic_step       = step;
++                task_data->dynamic_chunksize  = chunksize;
++                task_data->dynamic_next       = 0;
++                InterlockedExchange((LONG *)&task_data->dynamic, 2 * gen);
++                return;
++            }
++
++            YieldProcessor();
+         }
+-        LeaveCriticalSection(&vcomp_section);
+     }
+ }
+ 
+-int CDECL _vcomp_for_dynamic_next(unsigned int *begin, unsigned int *end)
++void CDECL _vcomp_for_dynamic_init(unsigned int flags, unsigned int first, unsigned int last,
++                                   int step, unsigned int chunksize)
++{
++    _vcomp_for_dynamic_init_i8(flags, first, last, step, chunksize);
++}
++
++int CDECL _vcomp_for_dynamic_next_i8(ULONG64 *begin, ULONG64 *end)
+ {
+     struct vcomp_thread_data *thread_data = vcomp_init_thread_data();
+     struct vcomp_task_data *task_data = thread_data->task;
+@@ -1360,31 +1417,91 @@ int CDECL _vcomp_for_dynamic_next(unsigned int *begin, unsigned int *end)
+     else if (thread_data->dynamic_type == VCOMP_DYNAMIC_FLAGS_CHUNKED ||
+              thread_data->dynamic_type == VCOMP_DYNAMIC_FLAGS_GUIDED)
+     {
+-        unsigned int iterations = 0;
+-        EnterCriticalSection(&vcomp_section);
+-        if (thread_data->dynamic == task_data->dynamic &&
+-            task_data->dynamic_iterations != 0)
++        ULONG64 total, first, last, chunksize, consumed, remaining, iterations;
++        LONG64 step;
++
++        /*
++         * Take a consistent snapshot of the loop under the sequence lock.
++         *
++         * The loop parameters and the iteration cursor are only constant
++         * while the committed generation (task_data->dynamic / 2) matches the
++         * generation this thread entered.  With 'nowait' another thread may
++         * already have advanced to the next loop and re-initialized the
++         * shared task_data fields, so the fields must not be trusted unless
++         * the sequence number is unchanged after they have been read.
++         */
++        for (;;)
+         {
+-            iterations = min(task_data->dynamic_iterations, task_data->dynamic_chunksize);
++            ULONG64 current;
++            unsigned int seq;
++
++            /* Acquire the sequence lock, spinning while another thread is
++             * still initializing the loop (this only happens at the start of
++             * a loop). */
++            seq = vcomp_dynamic_seq(task_data);
++            while (seq & 1)
++            {
++                YieldProcessor();
++                seq = vcomp_dynamic_seq(task_data);
++            }
++
++            /* With 'nowait' our generation may already have moved on; there
++             * is then no work left for this thread. */
++            if (thread_data->dynamic != (seq >> 1))
++                return 0;
++
++            total     = task_data->dynamic_iterations;
++            first     = task_data->dynamic_first;
++            last      = task_data->dynamic_last;
++            step      = task_data->dynamic_step;
++            chunksize = task_data->dynamic_chunksize;
++            consumed  = task_data->dynamic_next;
++
++            /* Bail out if the generation changed while the fields above were
++             * being read, i.e. the snapshot may be torn. */
++            if (vcomp_dynamic_seq(task_data) != seq)
++                continue;
++
++            if (consumed >= total)
++                return 0;
++
++            remaining  = total - consumed;
++            iterations = min(remaining, chunksize);
+             if (thread_data->dynamic_type == VCOMP_DYNAMIC_FLAGS_GUIDED &&
+-                task_data->dynamic_iterations > num_threads * task_data->dynamic_chunksize)
++                remaining > (ULONG64)num_threads * chunksize)
++                iterations = (remaining + num_threads - 1) / num_threads;
++
++            current = InterlockedCompareExchange64((LONG64 *)&task_data->dynamic_next,
++                                                   consumed + iterations, consumed);
++            if (current == consumed)
+             {
+-                iterations = (task_data->dynamic_iterations + num_threads - 1) / num_threads;
++                *begin = first + consumed * step;
++                *end   = *begin + (iterations - 1) * step;
++                if (consumed + iterations == total)
++                    *end = last;
++                return 1;
+             }
+-            *begin = task_data->dynamic_first;
+-            *end   = task_data->dynamic_first + (iterations - 1) * task_data->dynamic_step;
+-            task_data->dynamic_iterations -= iterations;
+-            task_data->dynamic_first      += iterations * task_data->dynamic_step;
+-            if (!task_data->dynamic_iterations)
+-                *end = task_data->dynamic_last;
++
++            /* Another thread claimed a chunk first; retry with a fresh
++             * snapshot so that a concurrent generation change is detected. */
+         }
+-        LeaveCriticalSection(&vcomp_section);
+-        return iterations != 0;
+     }
+ 
+     return 0;
+ }
+ 
++int CDECL _vcomp_for_dynamic_next(unsigned int *begin, unsigned int *end)
++{
++    ULONG64 b, e;
++    int ret = _vcomp_for_dynamic_next_i8(&b, &e);
++    if (ret)
++    {
++        *begin = (unsigned int)b;
++        *end   = (unsigned int)e;
++    }
++    return ret;
++}
++
+ int CDECL omp_in_parallel(void)
+ {
+     TRACE("()\n");
+@@ -1472,7 +1589,7 @@ void WINAPIV _vcomp_fork(BOOL ifval, int nargs, void *wrapper, ...)
+     thread_data.fork_threads    = 0;
+     thread_data.single          = 1;
+     thread_data.section         = 1;
+-    thread_data.dynamic         = 1;
++    thread_data.dynamic         = 0;
+     thread_data.dynamic_type    = 0;
+     list_init(&thread_data.entry);
+     InitializeConditionVariable(&thread_data.cond);
+@@ -1493,7 +1610,7 @@ void WINAPIV _vcomp_fork(BOOL ifval, int nargs, void *wrapper, ...)
+             data->fork_threads  = 0;
+             data->single        = 1;
+             data->section       = 1;
+-            data->dynamic       = 1;
++            data->dynamic       = 0;
+             data->dynamic_type  = 0;
+             list_remove(&data->entry);
+             list_add_tail(&thread_data.entry, &data->entry);
+@@ -1517,7 +1634,7 @@ void WINAPIV _vcomp_fork(BOOL ifval, int nargs, void *wrapper, ...)
+             data->fork_threads  = 0;
+             data->single        = 1;
+             data->section       = 1;
+-            data->dynamic       = 1;
++            data->dynamic       = 0;
+             data->dynamic_type  = 0;
+             InitializeConditionVariable(&data->cond);
+ 
+diff --git a/dlls/vcomp/vcomp.spec b/dlls/vcomp/vcomp.spec
+index 1a981a6c6c1..4f027a5e011 100644
+--- a/dlls/vcomp/vcomp.spec
++++ b/dlls/vcomp/vcomp.spec
+@@ -56,9 +56,9 @@
+ @ cdecl _vcomp_enter_critsect(ptr)
+ @ cdecl _vcomp_flush()
+ @ cdecl _vcomp_for_dynamic_init(long long long long long)
+-@ stub _vcomp_for_dynamic_init_i8
++@ cdecl _vcomp_for_dynamic_init_i8(long int64 int64 int64 int64)
+ @ cdecl _vcomp_for_dynamic_next(ptr ptr)
+-@ stub _vcomp_for_dynamic_next_i8
++@ cdecl _vcomp_for_dynamic_next_i8(ptr ptr)
+ @ cdecl _vcomp_for_static_end()
+ @ cdecl _vcomp_for_static_init(long long long long ptr ptr ptr ptr ptr)
+ @ cdecl _vcomp_for_static_init_i8(int64 int64 int64 int64 ptr ptr ptr ptr ptr)
+diff --git a/dlls/vcomp140/vcomp140.spec b/dlls/vcomp140/vcomp140.spec
+index d39aeb1f347..382f7be87a0 100644
+--- a/dlls/vcomp140/vcomp140.spec
++++ b/dlls/vcomp140/vcomp140.spec
+@@ -57,9 +57,9 @@
+ @ cdecl _vcomp_enter_critsect(ptr)
+ @ cdecl _vcomp_flush()
+ @ cdecl _vcomp_for_dynamic_init(long long long long long)
+-@ stub _vcomp_for_dynamic_init_i8
++@ cdecl _vcomp_for_dynamic_init_i8(long int64 int64 int64 int64)
+ @ cdecl _vcomp_for_dynamic_next(ptr ptr)
+-@ stub _vcomp_for_dynamic_next_i8
++@ cdecl _vcomp_for_dynamic_next_i8(ptr ptr)
+ @ cdecl _vcomp_for_static_end()
+ @ cdecl _vcomp_for_static_init(long long long long ptr ptr ptr ptr ptr)
+ @ cdecl _vcomp_for_static_init_i8(int64 int64 int64 int64 ptr ptr ptr ptr ptr)
