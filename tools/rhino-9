@@ -156,7 +156,9 @@ export DXVK_STATE_CACHE=1
 export DXVK_STATE_CACHE_PATH="${XDG_CACHE_HOME:-$HOME/.cache}/dxvk"
 mkdir -p "$DXVK_STATE_CACHE_PATH"
 
-# Driver selection: X11 with XDamage presentation
+# Driver selection: Force X11/XWayland driver to avoid experimental winewayland.drv black box bugs
+unset WAYLAND_DISPLAY
+export DISPLAY="${DISPLAY:-:0}"
 export RHINO_GRAPHICS_DRIVER="${RHINO_GRAPHICS_DRIVER:-x11}"
 
 # ==============================================================================

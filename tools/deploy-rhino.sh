@@ -134,6 +134,10 @@ Windows Registry Editor Version 5.00
 "d3d10core"="builtin"
 "dcomp"="builtin"
 
+; Force X11/XWayland driver for mature 32bpp alpha blending and XDamage presentation
+[HKEY_CURRENT_USER\Software\Wine\Drivers]
+"Graphics"="x11"
+
 ; Windows version reporting
 [HKEY_LOCAL_MACHINE\Software\Microsoft\Windows NT\CurrentVersion]
 "CurrentBuild"="19045"
