@@ -67,6 +67,7 @@ case "${1:-}" in
         exit 0
         ;;
     --fresh)
+        # Credit: ItHasLegs/rhino8-wine for the wineserver restart idea to handle stale http.sys state
         echo "Restarting wineserver for clean http.sys state..."
         WINEPREFIX="$WINEPREFIX" "$WINESERVER_BIN" -k 2>/dev/null || true
         sleep 1

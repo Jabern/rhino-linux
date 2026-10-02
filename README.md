@@ -87,6 +87,10 @@ cd /path/to/rhino-linux
 ./tools/deploy-rhino.sh --prefix ~/.wine-rhino --wine /opt/wine-rhino/bin/wine
 ```
 
+## Credits & Acknowledgements
+
+- Thanks to [ItHasLegs](https://github.com/ItHasLegs/rhino8-wine) for researching the early `uxtheme` dark-mode crash (now upstream in Wine 11.14) and for the `--fresh` wineserver restart concept to clear stale HTTP state for Cloud Zoo OAuth licensing.
+
 ## License
 
 - Patches in `patches/` follow Wine's LGPL 2.1+ license.
