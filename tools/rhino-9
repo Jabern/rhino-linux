@@ -58,12 +58,19 @@ case "${1:-}" in
         echo ""
         echo "Options:"
         echo "  -h, --help       Show this help message"
+        echo "  --fresh          Restart wineserver before launch (fixes Cloud Zoo port 1717)"
         echo "  --stop           Stop all processes in the Rhino Wine prefix"
         echo ""
         echo "Environment:"
         echo "  RHINO_PREFIX     Target Wine prefix (default: ~/.wine-rhino)"
         echo "  WINE             Path to Wine binary"
         exit 0
+        ;;
+    --fresh)
+        echo "Restarting wineserver for clean http.sys state..."
+        WINEPREFIX="$WINEPREFIX" "$WINESERVER_BIN" -k 2>/dev/null || true
+        sleep 1
+        shift
         ;;
     --stop)
         echo "Stopping Rhino Wine prefix ($WINEPREFIX)..."
