@@ -12,7 +12,8 @@
 #   --deps                  Check and install distro dependencies
 #   --prefix <PATH>         Wine prefix directory (default: ~/.wine-rhino)
 #   --wine <PATH>           Path to custom patched Wine binary
-#   --build-wine            Clone Wine and build with all 18 patches automatically
+#   --build-wine            Build Wine from source with all 18 patches
+#   --no-download           Do not download pre-built Wine (use existing or build)
 #   --wine-src <DIR>        Use existing Wine source directory to patch & build
 #   --installer <PATH>      Path to Rhino installer executable (.exe)
 #   --run                   Launch Rhino immediately after setup
@@ -37,10 +38,13 @@ NC='\033[0m' # No Color
 NON_INTERACTIVE=0
 INSTALL_DEPS=0
 BUILD_WINE=0
+NO_DOWNLOAD=0
 WINE_SRC_DIR=""
 CUSTOM_WINE=""
 RHINO_INSTALLER=""
 RUN_RHINO=0
+WINE_INSTALL_DIR="$HOME/.local/share/wine-rhino"
+WINE_RELEASE_URL="https://github.com/Jabern/rhino-linux/releases/download/v1.0.0/wine-rhino-11.18-x86_64.tar.xz"
 
 # Default Prefix
 TARGET_PREFIX="${RHINO_PREFIX:-${WINEPREFIX:-}}"
@@ -117,7 +121,8 @@ Options:
   --deps                  Install distro packages
   --prefix <PATH>         Wine prefix directory (default: ~/.wine-rhino)
   --wine <PATH>           Path to custom Wine binary
-  --build-wine            Clone and build Wine with patches
+  --build-wine            Build Wine from source with all 18 patches
+  --no-download           Do not download pre-built Wine (use existing or build)
   --wine-src <DIR>        Use an existing Wine source directory
   --installer <PATH>      Path to Rhino installer .exe
   --run                   Launch Rhino after setup
@@ -146,6 +151,10 @@ while [[ $# -gt 0 ]]; do
             ;;
         --build-wine)
             BUILD_WINE=1
+            shift
+            ;;
+        --no-download)
+            NO_DOWNLOAD=1
             shift
             ;;
         --wine-src)
@@ -268,14 +277,14 @@ find_existing_wine() {
         WINE_BIN="$CUSTOM_WINE"
     elif [ -n "${WINE:-}" ] && [ -x "$WINE" ]; then
         WINE_BIN="$WINE"
+    elif [ -x "$WINE_INSTALL_DIR/bin/wine" ]; then
+        WINE_BIN="$WINE_INSTALL_DIR/bin/wine"
     elif [ -x "/opt/wine-rhino/bin/wine" ]; then
         WINE_BIN="/opt/wine-rhino/bin/wine"
     elif [ -x "$REPO_DIR/build-wine/wine" ]; then
         WINE_BIN="$REPO_DIR/build-wine/wine"
     elif [ -x "/home/jaberm/src/rhino-lab/build-wine/wine" ]; then
         WINE_BIN="/home/jaberm/src/rhino-lab/build-wine/wine"
-    elif command -v wine >/dev/null 2>&1; then
-        WINE_BIN="$(command -v wine)"
     fi
 
     if [ -n "$WINE_BIN" ]; then
@@ -286,6 +295,42 @@ find_existing_wine() {
         if [ ! -x "$WINESERVER_BIN" ]; then
             WINESERVER_BIN="$(command -v wineserver 2>/dev/null || echo "wineserver")"
         fi
+    fi
+}
+
+download_prebuilt_wine() {
+    echo -e "\n${BOLD}${BLUE}[Step 2/4] Downloading Pre-built Patched Wine...${NC}"
+    local cache_dir="${XDG_CACHE_HOME:-$HOME/.cache}/rhino-linux"
+    local tarball="$cache_dir/wine-rhino-11.18-x86_64.tar.xz"
+
+    mkdir -p "$cache_dir" "$WINE_INSTALL_DIR"
+
+    if [ ! -f "$tarball" ]; then
+        echo -e "Fetching pre-compiled Wine runtime (~63 MB)..."
+        if command -v curl >/dev/null 2>&1; then
+            curl -fL --progress-bar -o "$tarball" "$WINE_RELEASE_URL"
+        elif command -v wget >/dev/null 2>&1; then
+            wget --show-progress -O "$tarball" "$WINE_RELEASE_URL"
+        else
+            echo -e "${RED}Error: curl or wget is required to download pre-built Wine.${NC}"
+            return 1
+        fi
+    else
+        echo -e "Using cached Wine archive: $tarball"
+    fi
+
+    echo -e "Extracting Wine runtime to ${CYAN}$WINE_INSTALL_DIR${NC}..."
+    tar -xf "$tarball" -C "$WINE_INSTALL_DIR"
+
+    WINE_BIN="$WINE_INSTALL_DIR/bin/wine"
+    WINESERVER_BIN="$WINE_INSTALL_DIR/bin/wineserver"
+
+    if [ -x "$WINE_BIN" ]; then
+        echo -e " ${GREEN}[PASS]${NC} Patched Wine ready: $("$WINE_BIN" --version 2>/dev/null || echo "$WINE_BIN")"
+        return 0
+    else
+        echo -e "${RED}Error: Failed to verify extracted Wine binary at $WINE_BIN${NC}"
+        return 1
     fi
 }
 
@@ -334,17 +379,19 @@ find_existing_wine
 if [ "$BUILD_WINE" -eq 1 ]; then
     build_patched_wine
 elif [ -z "$WINE_BIN" ]; then
-    echo -e "\n${BOLD}${YELLOW}[Step 2/4] No Wine binary found on system.${NC}"
-    if [ "$NON_INTERACTIVE" -eq 1 ]; then
-        echo "Auto-triggering Wine source build..."
-        build_patched_wine
-    else
-        read -rp "Would you like to automatically clone & build patched Wine now? [Y/n] " ans
-        if [[ "${ans:-y}" =~ ^[Yy] ]]; then
-            build_patched_wine
+    if [ "$NO_DOWNLOAD" -eq 1 ]; then
+        if command -v wine >/dev/null 2>&1; then
+            WINE_BIN="$(command -v wine)"
+            WINESERVER_BIN="$(command -v wineserver 2>/dev/null || echo "wineserver")"
+            echo -e "\n${BOLD}${YELLOW}[Step 2/4] Using system Wine (unpatched):${NC} $WINE_BIN"
         else
-            echo -e "${RED}Error: Wine binary required to continue. Install Wine or specify --wine <PATH>.${NC}"
+            echo -e "${RED}Error: No Wine binary found and --no-download was specified.${NC}"
             exit 1
+        fi
+    else
+        if ! download_prebuilt_wine; then
+            echo -e "${YELLOW}Download failed. Falling back to source build...${NC}"
+            build_patched_wine
         fi
     fi
 else

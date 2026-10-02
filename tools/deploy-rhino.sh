@@ -37,7 +37,9 @@ fi
 
 WINE_BIN="${WINE:-}"
 if [ -z "$WINE_BIN" ]; then
-    if [ -x "/opt/wine-rhino/bin/wine" ]; then
+    if [ -x "$HOME/.local/share/wine-rhino/bin/wine" ]; then
+        WINE_BIN="$HOME/.local/share/wine-rhino/bin/wine"
+    elif [ -x "/opt/wine-rhino/bin/wine" ]; then
         WINE_BIN="/opt/wine-rhino/bin/wine"
     elif [ -x "$REPO_DIR/build-wine/wine" ]; then
         WINE_BIN="$REPO_DIR/build-wine/wine"

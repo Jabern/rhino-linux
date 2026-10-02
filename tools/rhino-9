@@ -23,13 +23,16 @@ else
     export WINEPREFIX="$HOME/.wine-rhino"
 fi
 
-# Auto-detect Wine binary: check WINE, WINE_BUILD, /opt/wine-rhino, repo build, or system wine
+# Auto-detect Wine binary: check WINE, WINE_BUILD, ~/.local/share/wine-rhino, /opt/wine-rhino, repo build, or system wine
 if [ -n "${WINE:-}" ]; then
     WINE_BIN="$WINE"
     WINESERVER_BIN="$(dirname "$WINE_BIN")/wineserver"
 elif [ -n "${WINE_BUILD:-}" ] && [ -x "$WINE_BUILD/wine" ]; then
     WINE_BIN="$WINE_BUILD/wine"
     WINESERVER_BIN="$WINE_BUILD/server/wineserver"
+elif [ -x "$HOME/.local/share/wine-rhino/bin/wine" ]; then
+    WINE_BIN="$HOME/.local/share/wine-rhino/bin/wine"
+    WINESERVER_BIN="$HOME/.local/share/wine-rhino/bin/wineserver"
 elif [ -x "/opt/wine-rhino/bin/wine" ]; then
     WINE_BIN="/opt/wine-rhino/bin/wine"
     WINESERVER_BIN="/opt/wine-rhino/bin/wineserver"
@@ -50,6 +53,18 @@ fi
 RHINO_DIR="$WINEPREFIX/drive_c/Program Files/Rhino 9 WIP/System"
 
 case "${1:-}" in
+    -h|--help)
+        echo "Usage: rhino-9 [OPTIONS] [file.3dm ...]"
+        echo ""
+        echo "Options:"
+        echo "  -h, --help       Show this help message"
+        echo "  --stop           Stop all processes in the Rhino Wine prefix"
+        echo ""
+        echo "Environment:"
+        echo "  RHINO_PREFIX     Target Wine prefix (default: ~/.wine-rhino)"
+        echo "  WINE             Path to Wine binary"
+        exit 0
+        ;;
     --stop)
         echo "Stopping Rhino Wine prefix ($WINEPREFIX)..."
         WINEPREFIX="$WINEPREFIX" "$WINESERVER_BIN" -k 2>/dev/null || true

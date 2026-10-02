@@ -10,6 +10,8 @@ cd rhino-linux
 ./install.sh
 ```
 
+`./install.sh` automatically downloads our pre-built patched Wine runtime (~63 MB) directly from GitHub Releases, so you **do not** need to compile Wine from source.
+
 To run your Rhino installer directly, pass `--installer`:
 
 ```bash
@@ -27,24 +29,28 @@ rhino-9 model.3dm
 
 ## Dependencies
 
-Make sure you have Vulkan drivers, DXVK, and Wine build tools installed:
+### Runtime Dependencies
+Make sure you have Vulkan drivers and DXVK installed:
 
 - **Arch / Manjaro**:
   ```bash
-  sudo pacman -S --needed wine vulkan-icd-loader vulkan-headers dxvk-bin bison flex mingw-w64-gcc libx11 freetype2 gnutls
+  sudo pacman -S --needed wine vulkan-icd-loader vulkan-headers dxvk-bin libx11 freetype2 gnutls
   ```
 - **Ubuntu / Debian**:
   ```bash
-  sudo apt update && sudo apt install -y wine64 libvulkan1 vulkan-tools build-essential bison flex gcc-mingw-w64 libx11-dev libfreetype-dev libgnutls28-dev dxvk
+  sudo apt update && sudo apt install -y wine64 libvulkan1 vulkan-tools libx11-6 libfreetype6 libgnutls30 dxvk
   ```
 - **Fedora**:
   ```bash
-  sudo dnf install -y wine vulkan-loader-devel gcc make bison flex mingw64-gcc libX11-devel freetype-devel gnutls-devel dxvk
+  sudo dnf install -y wine vulkan-loader libX11 freetype gnutls dxvk
   ```
 - **openSUSE**:
   ```bash
-  sudo zypper install -y wine vulkan-devel gcc make bison flex libX11-devel freetype2-devel libgnutls-devel dxvk
+  sudo zypper install -y wine vulkan libX11 freetype2 libgnutls dxvk
   ```
+
+### Build Dependencies (Optional)
+Only required if you choose to compile Wine from source with `--build-wine` (requires `bison`, `flex`, `gcc`, `mingw-w64`, X11 dev headers).
 
 ## What the patches do
 
