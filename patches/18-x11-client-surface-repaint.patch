@@ -42,28 +42,13 @@ diff -Nur -x '.git*' -x '*.orig' -x '*.rej' a/dlls/win32u/window.c b/dlls/win32u
  BOOL client_surface_get_size( struct client_surface *surface, SIZE *virtual_size, SIZE *monitor_size )
  {
      BOOL updated;
-@@ -5076,6 +5099,26 @@
+@@ -5076,6 +5099,11 @@
          NtUserSetWindowPos( hwnd, HWND_TOP, newPos.left, newPos.top,
                              newPos.right - newPos.left, newPos.bottom - newPos.top, swp );
  
 +    if (cmd == SW_MAXIMIZE)
 +    {
-+        POINT pt, client_pt;
-+        HWND target;
-+        INT hittest;
-+
-+        NtUserGetCursorPos( &pt );
-+        target = window_from_point( hwnd, pt, &hittest, FALSE );
-+        if (!target) target = hwnd;
-+        client_pt = pt;
-+        map_window_points( 0, target, &client_pt, 1, get_thread_dpi() );
-+        NtUserPostMessage( target, WM_MOUSEMOVE, 0, MAKELPARAM(client_pt.x, client_pt.y) );
-+        if (target != hwnd)
-+        {
-+            client_pt = pt;
-+            map_window_points( 0, hwnd, &client_pt, 1, get_thread_dpi() );
-+            NtUserPostMessage( hwnd, WM_MOUSEMOVE, 0, MAKELPARAM(client_pt.x, client_pt.y) );
-+        }
++        NtUserRedrawWindow( hwnd, NULL, NULL, RDW_INVALIDATE | RDW_ERASE | RDW_ALLCHILDREN );
 +    }
 +
      new_style = get_window_long( hwnd, GWL_STYLE );
@@ -72,7 +57,21 @@ diff -Nur -x '.git*' -x '*.orig' -x '*.rej' a/dlls/win32u/window.c b/dlls/win32u
 diff -Nur -x '.git*' -x '*.orig' -x '*.rej' a/dlls/win32u/vulkan.c b/dlls/win32u/vulkan.c
 --- a/dlls/win32u/vulkan.c
 +++ b/dlls/win32u/vulkan.c
-@@ -2000,7 +2000,17 @@
+@@ -1877,6 +1877,14 @@
+     swapchain->extents = create_info->imageExtent;
+     instance->p_insert_object( instance, &swapchain->obj.obj );
+ 
++    if (create_info->oldSwapchain && surface && surface->hwnd)
++    {
++        HWND parent = NtUserGetAncestor( surface->hwnd, GA_PARENT );
++        if (parent && parent != get_desktop_window())
++            NtUserRedrawWindow( parent, NULL, NULL, RDW_INVALIDATE | RDW_ERASE | RDW_ALLCHILDREN );
++        NtUserRedrawWindow( surface->hwnd, NULL, NULL, RDW_INVALIDATE | RDW_ERASE | RDW_ALLCHILDREN );
++    }
++
+     *ret = swapchain->obj.client.swapchain;
+     return VK_SUCCESS;
+@@ -2000,7 +2008,17 @@
  
          client_surface_present( surface->client );
  
@@ -81,10 +80,10 @@ diff -Nur -x '.git*' -x '*.orig' -x '*.rej' a/dlls/win32u/vulkan.c b/dlls/win32u
 +        {
 +            if (swapchain_res == VK_ERROR_OUT_OF_DATE_KHR && surface->hwnd)
 +            {
-+                POINT pt;
-+                NtUserGetCursorPos( &pt );
-+                map_window_points( 0, surface->hwnd, &pt, 1, get_thread_dpi() );
-+                NtUserPostMessage( surface->hwnd, WM_MOUSEMOVE, 0, MAKELPARAM(pt.x, pt.y) );
++                HWND parent = NtUserGetAncestor( surface->hwnd, GA_PARENT );
++                if (parent && parent != get_desktop_window())
++                    NtUserRedrawWindow( parent, NULL, NULL, RDW_INVALIDATE | RDW_ERASE | RDW_ALLCHILDREN );
++                NtUserRedrawWindow( surface->hwnd, NULL, NULL, RDW_INVALIDATE | RDW_ERASE | RDW_ALLCHILDREN );
 +            }
 +            continue;
 +        }
