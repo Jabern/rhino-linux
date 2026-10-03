@@ -24,7 +24,7 @@ This directory contains 19 modular topic patches for Wine to run **McNeel Rhinoc
 | **14** | `14-wine-comctl32-taskdialog.patch` | `comctl32` | Adds `TaskDialogIndirect` enhancements for installers and alert sheets. |
 | **15** | `15-wine-ncrypt-ecdsa-p256.patch` | `ncrypt` | Implements NCrypt ECDSA P-256 key import for Cloud Zoo TLS token exchange. |
 | **16** | `16-winewayland-popups-and-overlays.patch` | `winewayland.drv` | Adds pure Wayland popup and overlay compositing (optional for pure Wayland driver). |
-| **17** | `17-rhino-greet-x11-startup.patch` | `winex11.drv` / `ntdll` | Exports unsuffixed Win64 `GetWindowLongPtr`/`SetWindowLongPtr` and preserves owned layered window restacking for `RhinoGreet`. |
+| **17** | `17-rhino-greet-x11-startup.patch` | `winex11.drv` / `win32u` / `server` | Exports unsuffixed Win64 `GetWindowLongPtr`/`SetWindowLongPtr`, enables managed `WS_EX_LAYERED` splash compositing with constant alpha blending, and preserves owned layered window restacking for native `RhinoGreet` fade transitions. |
 | **18** | `18-x11-client-surface-repaint.patch` | `winex11.drv` | Presents offscreen DXVK client surfaces on idle window mapping via XDamage. |
 | **19** | `19-wine-multimonitor-child-maximize.patch` | `win32u` | Excludes child and MDI windows from monitor-offset calculations when maximized across secondary displays. |
 | **20** | `20-wine-xrandr-primary-anchor.patch` | `winex11.drv` | Anchors primary monitor at root (0,0) in XRandR to prevent coordinate shifts and mouse input desync when Wayland compositors dynamically rotate the primary output. |

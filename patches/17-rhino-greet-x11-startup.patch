@@ -1,6 +1,6 @@
-diff --git a/dlls/user32/user32.spec b/dlls/user32/user32.spec
---- a/dlls/user32/user32.spec
-+++ b/dlls/user32/user32.spec
+diff -Nur -x '.git*' -x '*.orig' -x '*.rej' /tmp/tmpyp2mdp_e/dlls/user32/user32.spec /tmp/tmpzxnrtzfq/dlls/user32/user32.spec
+--- a/dlls/user32/user32.spec	2026-10-03 21:37:41.099655218 +0300
++++ b/dlls/user32/user32.spec	2026-10-03 21:37:41.109597130 +0300
 @@ -707,6 +707,7 @@
  # @ stub GetWindowFeedbackSetting
  @ stdcall GetWindowInfo(long ptr)
@@ -17,9 +17,50 @@ diff --git a/dlls/user32/user32.spec b/dlls/user32/user32.spec
  @ stdcall -arch=win64 SetWindowLongPtrA(long long long)
  @ stdcall -arch=win64 SetWindowLongPtrW(long long long)
  @ stdcall SetWindowLongW(long long long)
-diff --git a/dlls/winex11.drv/window.c b/dlls/winex11.drv/window.c
---- a/dlls/winex11.drv/window.c
-+++ b/dlls/winex11.drv/window.c
+diff -Nur -x '.git*' -x '*.orig' -x '*.rej' /tmp/tmpyp2mdp_e/dlls/win32u/window.c /tmp/tmpzxnrtzfq/dlls/win32u/window.c
+--- a/dlls/win32u/window.c	2026-10-03 21:37:41.089577999 +0300
++++ b/dlls/win32u/window.c	2026-10-03 21:37:41.111439805 +0300
+@@ -1525,6 +1525,7 @@
+     }
+     SERVER_END_REQ;
+     release_win_ptr( win );
++    if (ret != owner) update_window_state( hwnd );
+     return ret;
+ }
+ 
+@@ -2747,7 +2748,7 @@
+     }
+     else
+     {
+-        BLENDFUNCTION src_blend = { AC_SRC_OVER, 0, 255, 0 };
++        BLENDFUNCTION src_blend = blend ? *blend : (BLENDFUNCTION){ AC_SRC_OVER, 0, 255, 0 };
+         RECT rect = new_rects.window, src_rect;
+         HDC hdc = NULL;
+ 
+@@ -4928,7 +4929,7 @@
+ void update_window_state( HWND hwnd )
+ {
+     static const UINT swp_flags = SWP_NOSIZE | SWP_NOMOVE | SWP_NOCLIENTSIZE | SWP_NOCLIENTMOVE |
+-                                  SWP_NOZORDER | SWP_NOACTIVATE | SWP_NOREDRAW;
++                                  SWP_NOZORDER | SWP_NOACTIVATE | SWP_NOREDRAW | SWP_STATECHANGED;
+     UINT context;
+     RECT valid_rects[2], surface_rect;
+     struct window_surface *surface;
+diff -Nur -x '.git*' -x '*.orig' -x '*.rej' /tmp/tmpyp2mdp_e/dlls/winex11.drv/event.c /tmp/tmpzxnrtzfq/dlls/winex11.drv/event.c
+--- a/dlls/winex11.drv/event.c	2026-10-03 21:37:40.015039502 +0300
++++ b/dlls/winex11.drv/event.c	2026-10-03 21:37:41.109965721 +0300
+@@ -1121,7 +1121,7 @@
+     activate = value == NormalState && !data->wm_state_serial && data->current_state.activate;
+     release_win_data( data );
+ 
+-    if (hwnd == NtUserGetForegroundWindow() && activate) set_net_active_window( hwnd, 0 );
++    if (activate) set_net_active_window( hwnd, 0 );
+     NtUserPostMessage( hwnd, WM_WINE_WINDOW_STATE_CHANGED, 0, 0 );
+ }
+ 
+diff -Nur -x '.git*' -x '*.orig' -x '*.rej' /tmp/tmpyp2mdp_e/dlls/winex11.drv/window.c /tmp/tmpzxnrtzfq/dlls/winex11.drv/window.c
+--- a/dlls/winex11.drv/window.c	2026-10-03 21:37:41.076786888 +0300
++++ b/dlls/winex11.drv/window.c	2026-10-03 21:37:41.111215282 +0300
 @@ -387,6 +387,35 @@
      return ret;
  }
@@ -56,7 +97,18 @@ diff --git a/dlls/winex11.drv/window.c b/dlls/winex11.drv/window.c
  /* returns the HWND for the X11 window, or the desktop window if it isn't a Wine window */
  static HWND hwnd_from_window( Display *display, Window window )
  {
-@@ -1120,6 +1149,7 @@ static void set_style_hints( struct x11drv_win_data *data, DWORD style, DWORD ex
+@@ -463,6 +492,10 @@
+     if (ex_style & WS_EX_APPWINDOW) return TRUE;
+     /* windows that own popups are managed */
+     if (has_owned_popups( hwnd )) return TRUE;
++    /* top-level layered popups are managed so that window managers can composite opacity */
++    if ((style & WS_POPUP) && (ex_style & WS_EX_LAYERED) && !(ex_style & WS_EX_TOOLWINDOW) &&
++        !NtUserGetAncestor( hwnd, GA_PARENT ))
++        return TRUE;
+     /* default: not managed */
+     return FALSE;
+ }
+@@ -1120,6 +1153,7 @@
      {
          XSetTransientForHint( data->display, data->whole_window, owner_win );
          group_leader = owner_win;
@@ -64,7 +116,26 @@ diff --git a/dlls/winex11.drv/window.c b/dlls/winex11.drv/window.c
      }
  
      /* Only use dialog type for owned popups. Metacity allows making fullscreen
-@@ -1666,6 +1667,21 @@
+@@ -1128,6 +1162,8 @@
+      */
+     if (((style & WS_POPUP) || (ex_style & WS_EX_DLGMODALFRAME)) && owner)
+         window_set_net_wm_window_type( data, XATOM__NET_WM_WINDOW_TYPE_DIALOG );
++    else if ((ex_style & WS_EX_LAYERED) && (style & WS_POPUP) && !(style & WS_CAPTION))
++        window_set_net_wm_window_type( data, XATOM__NET_WM_WINDOW_TYPE_SPLASH );
+     else
+         window_set_net_wm_window_type( data, XATOM__NET_WM_WINDOW_TYPE_NORMAL );
+ 
+@@ -1520,7 +1556,8 @@
+     if (!data->add_taskbar)
+     {
+         if (data->skip_taskbar || (ex_style & WS_EX_NOACTIVATE)
+-            || (ex_style & WS_EX_TOOLWINDOW && !(ex_style & WS_EX_APPWINDOW)))
++            || (ex_style & WS_EX_TOOLWINDOW && !(ex_style & WS_EX_APPWINDOW))
++            || ((ex_style & WS_EX_LAYERED) && (style & WS_POPUP) && !(style & WS_CAPTION)))
+             new_state |= (1 << NET_WM_STATE_SKIP_TASKBAR) | (1 << NET_WM_STATE_SKIP_PAGER) | (1 << KDE_NET_WM_STATE_SKIP_SWITCHER);
+         else if (!(ex_style & WS_EX_APPWINDOW) && NtUserGetWindowRelative( data->hwnd, GW_OWNER ))
+             new_state |= (1 << NET_WM_STATE_SKIP_TASKBAR);
+@@ -1666,6 +1703,21 @@
      if (!data->managed) data->wm_state_serial = 0;
  }
  
@@ -86,7 +157,7 @@ diff --git a/dlls/winex11.drv/window.c b/dlls/winex11.drv/window.c
  static void window_set_managed( struct x11drv_win_data *data, BOOL new_managed )
  {
      XSetWindowAttributes attr = {.override_redirect = !new_managed};
-@@ -2621,6 +2637,7 @@
+@@ -2621,6 +2673,7 @@
  {
      BOOL same_visual = (data->vis.visualid == vis->visualid);
      Window client_window = data->client_window;
@@ -94,7 +165,7 @@ diff --git a/dlls/winex11.drv/window.c b/dlls/winex11.drv/window.c
  
      if (!data->use_alpha == !use_alpha && same_visual) return;
      data->use_alpha = use_alpha;
-@@ -2634,6 +2651,10 @@
+@@ -2634,6 +2687,10 @@
      create_whole_window( data );
      /* attach the client back to the re-created whole_window */
      attach_client_window( data, client_window );
@@ -105,7 +176,7 @@ diff --git a/dlls/winex11.drv/window.c b/dlls/winex11.drv/window.c
  }
  
  
-@@ -3401,9 +3422,15 @@
+@@ -3401,12 +3458,18 @@
      }
  
      window_set_wm_state( data, get_desired_wm_state( new_style, new_rects ), activate );
@@ -115,14 +186,17 @@ diff --git a/dlls/winex11.drv/window.c b/dlls/winex11.drv/window.c
 -        if (swp_flags & (SWP_FRAMECHANGED | SWP_STATECHANGED)) set_wm_hints( data );
          update_net_wm_states( data );
      }
-+
+ 
 +    if (data->whole_window && (new_style & WS_VISIBLE) &&
 +        ((swp_flags & SWP_SHOWWINDOW) || (activate && !(swp_flags & SWP_NOZORDER))))
 +    {
 +        raise_owned_windows( data );
 +    }
++
+     /* if window was fullscreen and is being hidden, release cursor clipping */
+     was_fullscreen &= data->desired_state.wm_state != NormalState;
  
-@@ -3538,6 +3559,18 @@
+@@ -3538,6 +3601,18 @@
          }
  
          data->layered = TRUE;
@@ -141,15 +215,15 @@ diff --git a/dlls/winex11.drv/window.c b/dlls/winex11.drv/window.c
          release_win_data( data );
      }
      else
-@@ -3561,6 +3594,7 @@
- {
+@@ -3562,6 +3637,7 @@
      struct x11drv_win_data *data;
      HWND parent;
-+
  
++
      if (!(data = get_win_data( hwnd ))) return;
  
-@@ -3575,6 +3609,19 @@
+     if (data->client_window) detach_client_window( data, data->client_window );
+@@ -3575,6 +3651,19 @@
          XFlush( data->display );
      }
  
@@ -169,43 +243,32 @@ diff --git a/dlls/winex11.drv/window.c b/dlls/winex11.drv/window.c
      release_win_data( data );
  }
  
-diff --git a/dlls/winex11.drv/event.c b/dlls/winex11.drv/event.c
---- a/dlls/winex11.drv/event.c
-+++ b/dlls/winex11.drv/event.c
-@@ -1121,7 +1121,7 @@
-     activate = value == NormalState && !data->wm_state_serial && data->current_state.activate;
-     release_win_data( data );
- 
--    if (hwnd == NtUserGetForegroundWindow() && activate) set_net_active_window( hwnd, 0 );
-+    if (activate) set_net_active_window( hwnd, 0 );
-     NtUserPostMessage( hwnd, WM_WINE_WINDOW_STATE_CHANGED, 0, 0 );
- }
- 
-diff --git a/dlls/win32u/window.c b/dlls/win32u/window.c
---- a/dlls/win32u/window.c
-+++ b/dlls/win32u/window.c
-@@ -1525,6 +1554,7 @@
-     }
-     SERVER_END_REQ;
-     release_win_ptr( win );
-+    if (ret != owner) update_window_state( hwnd );
-     return ret;
- }
- 
-@@ -4928,7 +4958,7 @@
- void update_window_state( HWND hwnd )
- {
-     static const UINT swp_flags = SWP_NOSIZE | SWP_NOMOVE | SWP_NOCLIENTSIZE | SWP_NOCLIENTMOVE |
--                                  SWP_NOZORDER | SWP_NOACTIVATE | SWP_NOREDRAW;
-+                                  SWP_NOZORDER | SWP_NOACTIVATE | SWP_NOREDRAW | SWP_STATECHANGED;
-     UINT context;
-     RECT valid_rects[2], surface_rect;
-     struct window_surface *surface;
-diff --git a/server/window.c b/server/window.c
-index 3cd82b0c3fd..c08d884f05a 100644
---- a/server/window.c
-+++ b/server/window.c
-@@ -323,6 +323,79 @@ static struct ratio get_window_dpi( struct window *win )
+diff -Nur -x '.git*' -x '*.orig' -x '*.rej' /tmp/tmpyp2mdp_e/dlls/winex11.drv/x11drv.h /tmp/tmpzxnrtzfq/dlls/winex11.drv/x11drv.h
+--- a/dlls/winex11.drv/x11drv.h	2026-10-03 21:37:41.076954224 +0300
++++ b/dlls/winex11.drv/x11drv.h	2026-10-03 21:37:41.110946161 +0300
+@@ -554,6 +554,7 @@
+     XATOM__NET_WM_WINDOW_TYPE,
+     XATOM__NET_WM_WINDOW_TYPE_DIALOG,
+     XATOM__NET_WM_WINDOW_TYPE_NORMAL,
++    XATOM__NET_WM_WINDOW_TYPE_SPLASH,
+     XATOM__NET_WM_WINDOW_TYPE_UTILITY,
+     XATOM__NET_WORKAREA,
+     XATOM__GTK_WORKAREAS_D0,
+diff -Nur -x '.git*' -x '*.orig' -x '*.rej' /tmp/tmpyp2mdp_e/dlls/winex11.drv/x11drv_main.c /tmp/tmpzxnrtzfq/dlls/winex11.drv/x11drv_main.c
+--- a/dlls/winex11.drv/x11drv_main.c	2026-10-03 21:37:40.015611661 +0300
++++ b/dlls/winex11.drv/x11drv_main.c	2026-10-03 21:37:41.110998785 +0300
+@@ -156,6 +156,7 @@
+     "_NET_WM_WINDOW_TYPE",
+     "_NET_WM_WINDOW_TYPE_DIALOG",
+     "_NET_WM_WINDOW_TYPE_NORMAL",
++    "_NET_WM_WINDOW_TYPE_SPLASH",
+     "_NET_WM_WINDOW_TYPE_UTILITY",
+     "_NET_WORKAREA",
+     "_GTK_WORKAREAS_D0",
+diff -Nur -x '.git*' -x '*.orig' -x '*.rej' /tmp/tmpyp2mdp_e/server/window.c /tmp/tmpzxnrtzfq/server/window.c
+--- a/server/window.c	2026-10-03 21:37:40.340612129 +0300
++++ b/server/window.c	2026-10-03 21:37:41.110561248 +0300
+@@ -323,6 +323,79 @@
      return dpi;
  }
  
@@ -285,7 +348,7 @@ index 3cd82b0c3fd..c08d884f05a 100644
  /* link a window at the right place in the siblings list */
  static int link_window( struct window *win, struct window *previous )
  {
-@@ -356,10 +429,21 @@ static int link_window( struct window *win, struct window *previous )
+@@ -356,10 +429,21 @@
              while (entry != &win->parent->children)
              {
                  struct window *next = LIST_ENTRY( entry, struct window, entry );
@@ -310,7 +373,7 @@ index 3cd82b0c3fd..c08d884f05a 100644
                      break;
                  }
                  entry = entry->next;
-@@ -379,6 +463,7 @@ static int link_window( struct window *win, struct window *previous )
+@@ -379,6 +463,7 @@
      }
  
      win->is_linked = 1;
@@ -318,7 +381,7 @@ index 3cd82b0c3fd..c08d884f05a 100644
      return old_prev != win->entry.prev;
  }
  
-@@ -2415,6 +2500,7 @@ DECL_HANDLER(set_window_owner)
+@@ -2415,6 +2500,7 @@
  
      reply->prev_owner = win->owner;
      reply->full_owner = win->owner = owner ? owner->handle : 0;
