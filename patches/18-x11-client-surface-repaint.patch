@@ -1,6 +1,17 @@
-diff -Nur -x '.git*' -x '*.orig' -x '*.rej' /tmp/tmp3c3xkfht/dlls/win32u/window.c /tmp/tmpth4lsody/dlls/win32u/window.c
---- a/dlls/win32u/window.c	2026-10-03 22:22:40.791372591 +0300
-+++ b/dlls/win32u/window.c	2026-10-03 22:22:40.794942355 +0300
+diff -Nur -x '.git*' -x '*.orig' -x '*.rej' a/include/wine/gdi_driver.h b/include/wine/gdi_driver.h
+--- a/include/wine/gdi_driver.h
++++ b/include/wine/gdi_driver.h
+@@ -278,6 +278,7 @@
+ W32KAPI void client_surface_add_ref( struct client_surface *surface );
+ W32KAPI void client_surface_release( struct client_surface *surface );
+ W32KAPI void client_surface_present( struct client_surface *surface );
++W32KAPI void present_client_surfaces( HWND hwnd );
+ W32KAPI void update_client_surfaces( HWND hwnd );
+ W32KAPI void detach_client_surfaces( HWND hwnd );
+ 
+diff -Nur -x '.git*' -x '*.orig' -x '*.rej' a/dlls/win32u/window.c b/dlls/win32u/window.c
+--- a/dlls/win32u/window.c
++++ b/dlls/win32u/window.c
 @@ -450,6 +450,29 @@
      pthread_mutex_unlock( &surfaces_lock );
  }
@@ -31,22 +42,75 @@ diff -Nur -x '.git*' -x '*.orig' -x '*.rej' /tmp/tmp3c3xkfht/dlls/win32u/window.
  BOOL client_surface_get_size( struct client_surface *surface, SIZE *virtual_size, SIZE *monitor_size )
  {
      BOOL updated;
-@@ -2483,6 +2506,7 @@
-         user_driver->pWindowPosChanged( hwnd, insert_after, owner_hint, swp_flags, &monitor_rects,
-                                         get_driver_window_surface( new_surface, raw_dpi ) );
-         update_client_surfaces( toplevel );
-+        present_client_surfaces( toplevel );
-     }
+@@ -5076,6 +5099,26 @@
+         NtUserSetWindowPos( hwnd, HWND_TOP, newPos.left, newPos.top,
+                             newPos.right - newPos.left, newPos.bottom - newPos.top, swp );
  
-     return ret;
-diff -Nur -x '.git*' -x '*.orig' -x '*.rej' /tmp/tmp3c3xkfht/include/wine/gdi_driver.h /tmp/tmpth4lsody/include/wine/gdi_driver.h
---- a/include/wine/gdi_driver.h	2026-10-03 22:22:39.765194622 +0300
-+++ b/include/wine/gdi_driver.h	2026-10-03 22:22:40.794664886 +0300
-@@ -278,6 +278,7 @@
- W32KAPI void client_surface_add_ref( struct client_surface *surface );
- W32KAPI void client_surface_release( struct client_surface *surface );
- W32KAPI void client_surface_present( struct client_surface *surface );
-+W32KAPI void present_client_surfaces( HWND hwnd );
- W32KAPI void update_client_surfaces( HWND hwnd );
- W32KAPI void detach_client_surfaces( HWND hwnd );
++    if (cmd == SW_MAXIMIZE)
++    {
++        POINT pt, client_pt;
++        HWND target;
++        INT hittest;
++
++        NtUserGetCursorPos( &pt );
++        target = window_from_point( hwnd, pt, &hittest, FALSE );
++        if (!target) target = hwnd;
++        client_pt = pt;
++        map_window_points( 0, target, &client_pt, 1, get_thread_dpi() );
++        NtUserPostMessage( target, WM_MOUSEMOVE, 0, MAKELPARAM(client_pt.x, client_pt.y) );
++        if (target != hwnd)
++        {
++            client_pt = pt;
++            map_window_points( 0, hwnd, &client_pt, 1, get_thread_dpi() );
++            NtUserPostMessage( hwnd, WM_MOUSEMOVE, 0, MAKELPARAM(client_pt.x, client_pt.y) );
++        }
++    }
++
+     new_style = get_window_long( hwnd, GWL_STYLE );
+     if (((style ^ new_style) & WS_MINIMIZE) != 0)
+     {
+diff -Nur -x '.git*' -x '*.orig' -x '*.rej' a/dlls/win32u/vulkan.c b/dlls/win32u/vulkan.c
+--- a/dlls/win32u/vulkan.c
++++ b/dlls/win32u/vulkan.c
+@@ -2000,7 +2000,17 @@
  
+         client_surface_present( surface->client );
+ 
+-        if (swapchain_res < VK_SUCCESS) continue;
++        if (swapchain_res < VK_SUCCESS)
++        {
++            if (swapchain_res == VK_ERROR_OUT_OF_DATE_KHR && surface->hwnd)
++            {
++                POINT pt;
++                NtUserGetCursorPos( &pt );
++                map_window_points( 0, surface->hwnd, &pt, 1, get_thread_dpi() );
++                NtUserPostMessage( surface->hwnd, WM_MOUSEMOVE, 0, MAKELPARAM(pt.x, pt.y) );
++            }
++            continue;
++        }
+         if (!get_surface_rect( surface->hwnd, &client_rect, get_dpi_for_window( surface->hwnd ) ))
+         {
+             WARN( "Swapchain window %p is invalid, returning VK_ERROR_OUT_OF_DATE_KHR\n", surface->hwnd );
+diff -Nur -x '.git*' -x '*.orig' -x '*.rej' a/dlls/winex11.drv/init.c b/dlls/winex11.drv/init.c
+--- a/dlls/winex11.drv/init.c
++++ b/dlls/winex11.drv/init.c
+@@ -494,7 +494,7 @@
+ {
+     struct x11drv_client_surface *surface = impl_from_client_surface( client );
+     HWND hwnd = client->hwnd, toplevel = client->toplevel;
+-    RECT rect_dst = client->monitor_rect, rect_src, rect;
++    RECT rect_dst = client->monitor_rect, rect_src, rect, rect_src_offset;
+     Drawable window;
+     HRGN region;
+ 
+@@ -515,6 +515,10 @@
+         set_dc_drawable( surface->hdc_dst, window, &rect_dst, IncludeInferiors );
+     if (region) NtGdiExtSelectClipRgn( surface->hdc_dst, region, RGN_COPY );
+ 
++    SetRect( &rect_src_offset, 0, 0, rect_src.right - rect_src.left, rect_src.bottom - rect_src.top );
++    if (get_dc_drawable( surface->hdc_src, &rect ) != surface->window || !EqualRect( &rect, &rect_src_offset ))
++        set_dc_drawable( surface->hdc_src, surface->window, &rect_src_offset, IncludeInferiors );
++
+     NtGdiStretchBlt( surface->hdc_dst, 0, 0, rect_dst.right - rect_dst.left, rect_dst.bottom - rect_dst.top,
+                      surface->hdc_src, 0, 0, rect_src.right - rect_src.left, rect_src.bottom - rect_src.top, SRCCOPY, 0 );
+     XFlush( gdi_display );
