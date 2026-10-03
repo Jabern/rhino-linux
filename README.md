@@ -54,13 +54,14 @@ Only required if you choose to compile Wine from source with `--build-wine` (req
 
 ## What the patches do
 
-Stock Wine crashes or has visual glitches with Rhino. These 18 patches fix the main blockers:
+Stock Wine crashes or has visual glitches with Rhino. These 19 patches fix the main blockers:
 
 1. **OpenMP loops (`vcomp140`)**: Wine lacked 64-bit dynamic loop functions (`_vcomp_for_dynamic_init_i8`/`_next_i8`) and stalled under multi-threaded compute. Patch 01 adds lock-free loop scheduling.
 2. **WebView2 & Cloud Zoo (`dcomp`)**: Wine's DirectComposition implementation didn't support visual tree swapchain hosting. Patch 06 lets Edge WebView2 render properly so Cloud Zoo login and web panels don't show blank white boxes.
 3. **Menu & toolbar borders (`winex11.drv`)**: Matches 32bpp visual depth and adds alpha blending so context menus and toolbars don't have solid black boxes around them.
 4. **Viewport presentation (`XDamage`)**: Presents offscreen DXVK surfaces when the viewport maps, preventing blank/black viewports on startup.
 5. **Splash & template screen (`RhinoGreet`)**: Fixes Win64 `GetWindowLongPtr` exports and keeps the startup template window open instead of disappearing behind the main frame.
+6. **Multi-monitor viewports (`win32u`)**: Excludes MDI/child windows from virtual desktop monitor-offset shifts on secondary displays, preventing maximized viewports from flying off-screen into pitch-black space.
 
 ## Building Wine manually
 
@@ -73,7 +74,7 @@ cd ~/src/wine
 git checkout wine-11.18
 
 # 2. Apply patches
-for p in /path/to/rhino-linux/patches/{0[1-9],1[0-5],1[7-8]}-*.patch; do
+for p in /path/to/rhino-linux/patches/{0[1-9],1[0-5],1[7-9]}-*.patch; do
     patch -p1 < "$p"
 done
 

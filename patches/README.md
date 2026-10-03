@@ -1,6 +1,6 @@
 # Wine Patches for Rhinoceros on Linux
 
-This directory contains 18 modular topic patches for Wine to run **McNeel Rhinoceros** on Linux with native performance, hardware-accelerated Direct3D 11 viewports, and full Cloud Zoo licensing support.
+This directory contains 19 modular topic patches for Wine to run **McNeel Rhinoceros** on Linux with native performance, hardware-accelerated Direct3D 11 viewports, and full Cloud Zoo licensing support.
 
 ---
 
@@ -26,6 +26,7 @@ This directory contains 18 modular topic patches for Wine to run **McNeel Rhinoc
 | **16** | `16-winewayland-popups-and-overlays.patch` | `winewayland.drv` | Adds pure Wayland popup and overlay compositing (optional for pure Wayland driver). |
 | **17** | `17-rhino-greet-x11-startup.patch` | `winex11.drv` / `ntdll` | Exports unsuffixed Win64 `GetWindowLongPtr`/`SetWindowLongPtr` and preserves owned layered window restacking for `RhinoGreet`. |
 | **18** | `18-x11-client-surface-repaint.patch` | `winex11.drv` | Presents offscreen DXVK client surfaces on idle window mapping via XDamage. |
+| **19** | `19-wine-multimonitor-child-maximize.patch` | `win32u` | Excludes child and MDI windows from monitor-offset calculations when maximized across secondary displays. |
 
 ---
 
@@ -35,7 +36,7 @@ To apply to an upstream Wine tree (Wine 11.x):
 
 ```bash
 cd /path/to/wine
-for p in /path/to/rhino-linux/patches/{0[1-9],1[0-5],1[7-8]}-*.patch; do
+for p in /path/to/rhino-linux/patches/{0[1-9],1[0-5],1[7-9]}-*.patch; do
     patch -p1 < "$p"
 done
 ```

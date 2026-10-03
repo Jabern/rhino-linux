@@ -1,0 +1,30 @@
+diff --git a/dlls/win32u/window.c b/dlls/win32u/window.c
+index 8c10ea743ed..44c16e87d35 100644
+--- a/dlls/win32u/window.c
++++ b/dlls/win32u/window.c
+@@ -2973,12 +2973,14 @@ static BOOL get_maximized_rect( HWND hwnd, RECT *rect )
+ {
+     MONITORINFO mon_info;
+     DWORD style;
+ 
++    style = get_window_long( hwnd, GWL_STYLE );
++    if (style & WS_CHILD) return FALSE;
++
+     mon_info = monitor_info_from_window( hwnd, MONITOR_DEFAULTTOPRIMARY );
+     *rect = mon_info.rcMonitor;
+ 
+-    style = get_window_long( hwnd, GWL_STYLE );
+-    if (style & WS_MAXIMIZEBOX && (style & WS_CAPTION) == WS_CAPTION && !(style & WS_CHILD))
++    if (style & WS_MAXIMIZEBOX && (style & WS_CAPTION) == WS_CAPTION)
+         *rect = mon_info.rcWork;
+     return TRUE;
+ }
+@@ -4638,7 +4640,7 @@ MINMAXINFO get_min_max_info( HWND hwnd )
+ 
+     /* if the app didn't change the values, adapt them for the current monitor */
+ 
+-    if (get_maximized_rect( hwnd, &rc_max ))
++    if (!(style & WS_CHILD) && get_maximized_rect( hwnd, &rc_max ))
+     {
+         rc_primary = get_primary_monitor_rect( get_thread_dpi() );
+         if (minmax.ptMaxSize.x == (rc_primary.right - rc_primary.left) + 2 * xinc &&

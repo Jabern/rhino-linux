@@ -12,7 +12,7 @@
 #   --deps                  Check and install distro dependencies
 #   --prefix <PATH>         Wine prefix directory (default: ~/.wine-rhino)
 #   --wine <PATH>           Path to custom patched Wine binary
-#   --build-wine            Build Wine from source with all 18 patches
+#   --build-wine            Build Wine from source with all 19 patches
 #   --no-download           Do not download pre-built Wine (use existing or build)
 #   --wine-src <DIR>        Use existing Wine source directory to patch & build
 #   --installer <PATH>      Path to Rhino installer executable (.exe)
@@ -121,7 +121,7 @@ Options:
   --deps                  Install distro packages
   --prefix <PATH>         Wine prefix directory (default: ~/.wine-rhino)
   --wine <PATH>           Path to custom Wine binary
-  --build-wine            Build Wine from source with all 18 patches
+  --build-wine            Build Wine from source with all 19 patches
   --no-download           Do not download pre-built Wine (use existing or build)
   --wine-src <DIR>        Use an existing Wine source directory
   --installer <PATH>      Path to Rhino installer .exe
@@ -346,9 +346,9 @@ build_patched_wine() {
         git clone --depth 1 https://gitlab.winehq.org/wine/wine.git "$src_dir"
     fi
 
-    echo "Applying Rhino 18-patch set to $src_dir..."
+    echo "Applying Rhino 19-patch set to $src_dir..."
     cd "$src_dir"
-    for patch_file in "$REPO_DIR"/patches/{0[1-9],1[0-5],1[7-8]}-*.patch; do
+    for patch_file in "$REPO_DIR"/patches/{0[1-9],1[0-5],1[7-9]}-*.patch; do
         patch_name="$(basename "$patch_file")"
         if patch -p1 --dry-run -R -N < "$patch_file" >/dev/null 2>&1; then
             echo -e " ${GREEN}[ALREADY APPLIED]${NC} $patch_name"
