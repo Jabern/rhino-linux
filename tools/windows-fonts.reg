@@ -322,8 +322,10 @@ Windows Registry Editor Version 5.00
 "Revit_HEB_DWG (TrueType)"="Revit_HEB_DWG.ttf"
 "EDU2N (TrueType)"="edusoft5.ttf"
 " (TrueType)"="SKRSYS.FON"
-"MecSoft_Font-1 (TrueType)"="C:\\Program Files\\Rhino 8\\System\\MecSoft_Font-1.ttf"
-"SLF-RHN Architect Regular (TrueType)"="C:\\Program Files\\Rhino 8\\System\\SLF-RHN Architect.ttf"
+"MecSoft_Font-1 (TrueType)"="MecSoft_Font-1.ttf"
+"SLF-RHN Architect (TrueType)"="SLF-RHN Architect.ttf"
+"SLF-RHN Architect Regular (TrueType)"="SLF-RHN Architect.ttf"
+"Y14.5-2018 (TrueType)"="Y14.5-2018.ttf"
 "SimSun-ExtG (TrueType)"="SimsunExtG.ttf"
 
 [HKEY_LOCAL_MACHINE\Software\Microsoft\Windows NT\CurrentVersion\FontSubstitutes]

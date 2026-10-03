@@ -160,6 +160,13 @@ echo "[3/5] Deploying DXVK configuration..."
 RHINO_SYS_DIR="$TARGET_PREFIX/drive_c/Program Files/Rhino 9 WIP/System"
 if [ -d "$RHINO_SYS_DIR" ]; then
     cp -v "$SCRIPT_DIR/dxvk-rhino.conf" "$RHINO_SYS_DIR/dxvk.conf"
+    # Deploy Rhino-bundled annotation fonts to Windows Fonts directory
+    FONTS_DIR="$TARGET_PREFIX/drive_c/windows/Fonts"
+    if [ -d "$FONTS_DIR" ]; then
+        for font in "$RHINO_SYS_DIR"/*.ttf; do
+            [ -f "$font" ] && cp -u -v "$font" "$FONTS_DIR/" 2>/dev/null || true
+        done
+    fi
     if [ -f "$RHINO_SYS_DIR/RhinoGreet.dll" ] && [ ! -f "$RHINO_SYS_DIR/netcore/RhinoGreet.dll" ]; then
         mkdir -p "$RHINO_SYS_DIR/netcore"
         cp -v "$RHINO_SYS_DIR/RhinoGreet.dll" "$RHINO_SYS_DIR/netcore/RhinoGreet.dll"
