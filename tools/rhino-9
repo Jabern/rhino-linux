@@ -11,10 +11,18 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
 
 # Auto-detect default prefix: check RHINO_PREFIX, WINEPREFIX, ~/.wine-rhino, or rhino-lab prefix
+has_rhino() {
+    [ -n "${1:-}" ] && [ -d "$1/drive_c/Program Files/Rhino 9 WIP/System" ]
+}
+
 if [ -n "${RHINO_PREFIX:-}" ]; then
     export WINEPREFIX="$RHINO_PREFIX"
 elif [ -n "${WINEPREFIX:-}" ]; then
     export WINEPREFIX="$WINEPREFIX"
+elif has_rhino "$HOME/.wine-rhino"; then
+    export WINEPREFIX="$HOME/.wine-rhino"
+elif has_rhino "/home/jaberm/src/rhino-lab/prefix-rhino9"; then
+    export WINEPREFIX="/home/jaberm/src/rhino-lab/prefix-rhino9"
 elif [ -d "$HOME/.wine-rhino" ]; then
     export WINEPREFIX="$HOME/.wine-rhino"
 elif [ -d "/home/jaberm/src/rhino-lab/prefix-rhino9" ]; then
