@@ -1,0 +1,32 @@
+diff --git a/dlls/winex11.drv/xrandr.c b/dlls/winex11.drv/xrandr.c
+index b147b952cab..96450b60d65 100644
+--- a/dlls/winex11.drv/xrandr.c
++++ b/dlls/winex11.drv/xrandr.c
+@@ -633,6 +633,27 @@ static RECT get_primary_rect( XRRScreenResources *resources )
+     RECT first_rect = {0};
+     INT i;
+ 
++    /* Always anchor the primary monitor at (0, 0) so that Wine's virtual desktop
++     * origin (0, 0) is stable and matches X11 root coordinates. If compositors
++     * (or xwayland-satellite) dynamically rotate the XRandR primary output
++     * across monitors on window focus, rotating Wine's primary origin would cause
++     * existing windows and mouse input coordinates to desync by a full monitor width. */
++    for (i = 0; i < resources->ncrtc; ++i)
++    {
++        crtc_info = pXRRGetCrtcInfo( gdi_display, resources, resources->crtcs[i] );
++        if (!crtc_info)
++            continue;
++
++        if (crtc_info->mode && !crtc_info->x && !crtc_info->y)
++        {
++            SetRect( &primary_rect, 0, 0, crtc_info->width, crtc_info->height );
++            pXRRFreeCrtcInfo( crtc_info );
++            return primary_rect;
++        }
++
++        pXRRFreeCrtcInfo( crtc_info );
++    }
++
+     primary_output = pXRRGetOutputPrimary( gdi_display, root_window );
+     if (!primary_output)
+         goto fallback;

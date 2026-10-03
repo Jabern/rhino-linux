@@ -27,6 +27,7 @@ This directory contains 19 modular topic patches for Wine to run **McNeel Rhinoc
 | **17** | `17-rhino-greet-x11-startup.patch` | `winex11.drv` / `ntdll` | Exports unsuffixed Win64 `GetWindowLongPtr`/`SetWindowLongPtr` and preserves owned layered window restacking for `RhinoGreet`. |
 | **18** | `18-x11-client-surface-repaint.patch` | `winex11.drv` | Presents offscreen DXVK client surfaces on idle window mapping via XDamage. |
 | **19** | `19-wine-multimonitor-child-maximize.patch` | `win32u` | Excludes child and MDI windows from monitor-offset calculations when maximized across secondary displays. |
+| **20** | `20-wine-xrandr-primary-anchor.patch` | `winex11.drv` | Anchors primary monitor at root (0,0) in XRandR to prevent coordinate shifts and mouse input desync when Wayland compositors dynamically rotate the primary output. |
 
 ---
 
@@ -36,7 +37,7 @@ To apply to an upstream Wine tree (Wine 11.x):
 
 ```bash
 cd /path/to/wine
-for p in /path/to/rhino-linux/patches/{0[1-9],1[0-5],1[7-9]}-*.patch; do
+for p in /path/to/rhino-linux/patches/{0[1-9],1[0-5],1[7-9],20}-*.patch; do
     patch -p1 < "$p"
 done
 ```
