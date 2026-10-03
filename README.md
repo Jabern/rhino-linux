@@ -54,15 +54,15 @@ Only required if you choose to compile Wine from source with `--build-wine` (req
 
 ## What the patches do
 
-Stock Wine crashes or has visual glitches with Rhino. These 20 patches fix the main blockers:
+Stock Wine experiences crashes, blank web panels, and visual glitches when running Rhino. We maintain 20 targeted patches to resolve these issues across all major subsystems:
 
-1. **OpenMP loops (`vcomp140`)**: Wine lacked 64-bit dynamic loop functions (`_vcomp_for_dynamic_init_i8`/`_next_i8`) and stalled under multi-threaded compute. Patch 01 adds lock-free loop scheduling.
-2. **WebView2 & Cloud Zoo (`dcomp`)**: Wine's DirectComposition implementation didn't support visual tree swapchain hosting. Patch 06 lets Edge WebView2 render properly so Cloud Zoo login and web panels don't show blank white boxes.
-3. **Menu & toolbar borders (`winex11.drv`)**: Matches 32bpp visual depth and adds alpha blending so context menus and toolbars don't have solid black boxes around them.
-4. **Viewport presentation (`XDamage`)**: Presents offscreen DXVK surfaces when the viewport maps, preventing blank/black viewports on startup.
-5. **Splash & template screen (`RhinoGreet`)**: Fixes Win64 `GetWindowLongPtr` exports and keeps the startup template window open instead of disappearing behind the main frame.
-6. **Multi-monitor viewports (`win32u`)**: Excludes MDI/child windows from virtual desktop monitor-offset shifts on secondary displays, preventing maximized viewports from flying off-screen into pitch-black space.
-7. **Multi-monitor Wayland & dynamic outputs (`winex11.drv`)**: Anchors the primary display to root (0,0) under XRandR so Wayland compositors (like Niri / xwayland-satellite) don't shift mouse coordinate origins and freeze inputs when windows cross screens.
+- **Compute & Stability**: Adds 64-bit dynamic OpenMP loop scheduling ([Patch 01](patches/01-vcomp-dynamic-init-next-i8.patch)), NT thread pool worker caps ([Patch 02](patches/02-ntdll-threadpool-worker-leak.patch)), and CPU affinity APIs ([Patch 03](patches/03-set-thread-ideal-processor-ex.patch)).
+- **Cloud Zoo & Licensing**: Implements DirectComposition visual tree swapchain hosting for Microsoft Edge WebView2 ([Patch 06](patches/06-wine-dcomp-webview2-visual-hosting.patch), [Patch 07](patches/07-wine-dcomp-hidden-target-guards.patch)), ECDSA P-256 JWT auth ([Patch 15](patches/15-wine-ncrypt-ecdsa-p256.patch)), and Session 0 RPC services ([Patch 13](patches/13-wine-services-session0.patch)).
+- **UI Chrome & Popups**: Fixes 32bpp depth matching and alpha-blended menu icons ([Patch 04](patches/04-wine-x11-layered-and-depth-match.patch), [Patch 05](patches/05-wine-menu-alpha-blend.patch)), layered child panels ([Patch 08](patches/08-wine-layered-child-windows.patch)), Task Dialogs ([Patch 14](patches/14-wine-comctl32-taskdialog.patch)), and `RhinoGreet` startup window visibility ([Patch 17](patches/17-rhino-greet-x11-startup.patch)).
+- **Viewport & Graphics**: Rebinds X11 client surfaces and forces redraws on Vulkan swapchain recreation to eliminate viewport maximize black bars ([Patch 18](patches/18-x11-client-surface-repaint.patch)), plus DXGI format fallback ([Patch 11](patches/11-wine-dxgi-unknown-swapchain-format.patch)).
+- **Multi-Monitor & Wayland**: Excludes MDI child windows from multi-monitor desktop offset shifts ([Patch 19](patches/19-wine-multimonitor-child-maximize.patch)), anchors XRandR coordinates to prevent Wayland mouse drift ([Patch 20](patches/20-wine-xrandr-primary-anchor.patch)), and adds Wayland popup overlay compositing ([Patch 16](patches/16-winewayland-popups-and-overlays.patch)).
+
+See [docs/patches.md](docs/patches.md) for the detailed technical breakdown and file lists for all 20 patches.
 
 ## Desktop Environments & Window Managers
 
