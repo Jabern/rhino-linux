@@ -4042,27 +4042,6 @@ index 42d41368751..d8c41ece1f2 100644
  };
  
  void wined3d_swapchain_activate(struct wined3d_swapchain *swapchain, BOOL activate);
-diff --git a/dlls/winex11.drv/init.c b/dlls/winex11.drv/init.c
-index cf032cb3bf9..bac7ca20ab1 100644
---- a/dlls/winex11.drv/init.c
-+++ b/dlls/winex11.drv/init.c
-@@ -222,8 +222,15 @@ static BOOL needs_client_window_clipping( HWND hwnd )
- 
- static BOOL needs_offscreen_rendering( HWND hwnd, BOOL raw )
- {
-+    static const WCHAR dcomp_target_propW[] =
-+        {'_','_','w','i','n','e','_','d','c','o','m','p','_','t','a','r','g','e','t',0};
-+
-     if (!raw && NtUserGetDpiForWindow( hwnd ) != NtUserGetWinMonitorDpi( hwnd, MDT_RAW_DPI )) return TRUE; /* needs DPI scaling */
--    if (NtUserGetAncestor( hwnd, GA_PARENT ) != NtUserGetDesktopWindow()) return TRUE; /* child window, needs compositing */
-+    if (NtUserGetAncestor( hwnd, GA_PARENT ) != NtUserGetDesktopWindow())
-+    {
-+        if (NtUserGetProp( hwnd, dcomp_target_propW )) return FALSE;
-+        return TRUE; /* child window, needs compositing */
-+    }
-     if (NtUserGetWindowRelative( hwnd, GW_CHILD )) return needs_client_window_clipping( hwnd ); /* window has children, needs compositing */
-     return FALSE;
- }
 diff --git a/include/wine/wined3d.h b/include/wine/wined3d.h
 index 6f250863681..773892f8b4c 100644
 --- a/include/wine/wined3d.h

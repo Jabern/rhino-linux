@@ -56,16 +56,14 @@ diff --git a/dlls/winex11.drv/window.c b/dlls/winex11.drv/window.c
  /* returns the HWND for the X11 window, or the desktop window if it isn't a Wine window */
  static HWND hwnd_from_window( Display *display, Window window )
  {
-@@ -1116,17 +1145,18 @@
-         owner_win = X11DRV_get_whole_window( owner );
-     }
- 
-     if (owner_win)
+@@ -1120,6 +1149,7 @@ static void set_style_hints( struct x11drv_win_data *data, DWORD style, DWORD ex
      {
          XSetTransientForHint( data->display, data->whole_window, owner_win );
          group_leader = owner_win;
 +        if (data->whole_window && NtUserIsWindowVisible( data->hwnd )) XRaiseWindow( data->display, data->whole_window );
      }
+ 
+     /* Only use dialog type for owned popups. Metacity allows making fullscreen
 @@ -1666,6 +1667,21 @@
      if (!data->managed) data->wm_state_serial = 0;
  }
