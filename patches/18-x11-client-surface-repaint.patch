@@ -1,20 +1,7 @@
-diff --git a/include/wine/gdi_driver.h b/include/wine/gdi_driver.h
-index ad00912c4dd..602e69d3bf6 100644
---- a/include/wine/gdi_driver.h
-+++ b/include/wine/gdi_driver.h
-@@ -278,6 +278,7 @@ W32KAPI void *client_surface_create( const struct client_surface_funcs *funcs, H
- W32KAPI void client_surface_add_ref( struct client_surface *surface );
- W32KAPI void client_surface_release( struct client_surface *surface );
- W32KAPI void client_surface_present( struct client_surface *surface );
-+W32KAPI void present_client_surfaces( HWND hwnd );
- W32KAPI void update_client_surfaces( HWND hwnd );
- W32KAPI void detach_client_surfaces( HWND hwnd );
- 
-diff --git a/dlls/win32u/window.c b/dlls/win32u/window.c
-index 8ddc40fb17f..8c10ea743ed 100644
---- a/dlls/win32u/window.c
-+++ b/dlls/win32u/window.c
-@@ -450,6 +459,26 @@ void client_surface_update( struct client_surface *surface )
+diff -Nur -x '.git*' -x '*.orig' -x '*.rej' /tmp/tmp3c3xkfht/dlls/win32u/window.c /tmp/tmpth4lsody/dlls/win32u/window.c
+--- a/dlls/win32u/window.c	2026-10-03 22:22:40.791372591 +0300
++++ b/dlls/win32u/window.c	2026-10-03 22:22:40.794942355 +0300
+@@ -450,6 +450,29 @@
      pthread_mutex_unlock( &surfaces_lock );
  }
  
@@ -23,21 +10,43 @@ index 8ddc40fb17f..8c10ea743ed 100644
 +void present_client_surfaces( HWND hwnd )
 +{
 +    struct client_surface *surface;
-+    HDC hdc = 0;
 +
 +    pthread_mutex_lock( &surfaces_lock );
 +    LIST_FOR_EACH_ENTRY( surface, &client_surfaces, struct client_surface, entry )
 +    {
-+        if (surface->hwnd != hwnd || !surface->offscreen) continue;
++        HDC hdc;
++        if (surface->hwnd != hwnd && surface->toplevel != hwnd) continue;
++        if (!surface->offscreen) continue;
 +        client_surface_update_locked( surface );
 +        if (!surface->offscreen) continue;
-+        if (!hdc) hdc = NtUserGetDCEx( hwnd, 0, DCX_CACHE | DCX_USESTYLE );
-+        surface->funcs->present( surface, hdc );
++        if ((hdc = NtUserGetDCEx( surface->hwnd, 0, DCX_CACHE | DCX_USESTYLE )))
++        {
++            surface->funcs->present( surface, hdc );
++            NtUserReleaseDC( surface->hwnd, hdc );
++        }
 +    }
-+    if (hdc) NtUserReleaseDC( hwnd, hdc );
 +    pthread_mutex_unlock( &surfaces_lock );
 +}
 +
  BOOL client_surface_get_size( struct client_surface *surface, SIZE *virtual_size, SIZE *monitor_size )
  {
      BOOL updated;
+@@ -2483,6 +2506,7 @@
+         user_driver->pWindowPosChanged( hwnd, insert_after, owner_hint, swp_flags, &monitor_rects,
+                                         get_driver_window_surface( new_surface, raw_dpi ) );
+         update_client_surfaces( toplevel );
++        present_client_surfaces( toplevel );
+     }
+ 
+     return ret;
+diff -Nur -x '.git*' -x '*.orig' -x '*.rej' /tmp/tmp3c3xkfht/include/wine/gdi_driver.h /tmp/tmpth4lsody/include/wine/gdi_driver.h
+--- a/include/wine/gdi_driver.h	2026-10-03 22:22:39.765194622 +0300
++++ b/include/wine/gdi_driver.h	2026-10-03 22:22:40.794664886 +0300
+@@ -278,6 +278,7 @@
+ W32KAPI void client_surface_add_ref( struct client_surface *surface );
+ W32KAPI void client_surface_release( struct client_surface *surface );
+ W32KAPI void client_surface_present( struct client_surface *surface );
++W32KAPI void present_client_surfaces( HWND hwnd );
+ W32KAPI void update_client_surfaces( HWND hwnd );
+ W32KAPI void detach_client_surfaces( HWND hwnd );
+ 
