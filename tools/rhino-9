@@ -157,8 +157,12 @@ export __GL_SHADER_DISK_CACHE=1
 export __GL_SHADER_DISK_CACHE_SKIP_CLEANUP=1
 
 # DXVK low-latency configuration and fast state cache directory
-if [ -f "$SCRIPT_DIR/dxvk-rhino.conf" ]; then
-    export DXVK_CONFIG_FILE="${RHINO_DXVK_CONF:-$SCRIPT_DIR/dxvk-rhino.conf}"
+if [ -n "${RHINO_DXVK_CONF:-}" ] && [ -f "$RHINO_DXVK_CONF" ]; then
+    export DXVK_CONFIG_FILE="$RHINO_DXVK_CONF"
+elif [ -f "$SCRIPT_DIR/dxvk-rhino.conf" ]; then
+    export DXVK_CONFIG_FILE="$SCRIPT_DIR/dxvk-rhino.conf"
+elif [ -f "$RHINO_DIR/dxvk.conf" ]; then
+    export DXVK_CONFIG_FILE="$RHINO_DIR/dxvk.conf"
 fi
 export DXVK_STATE_CACHE=1
 export DXVK_STATE_CACHE_PATH="${XDG_CACHE_HOME:-$HOME/.cache}/dxvk"
