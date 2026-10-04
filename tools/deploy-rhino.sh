@@ -171,15 +171,6 @@ if [ -d "$RHINO_SYS_DIR" ]; then
         mkdir -p "$RHINO_SYS_DIR/netcore"
         cp -v "$RHINO_SYS_DIR/RhinoGreet.dll" "$RHINO_SYS_DIR/netcore/RhinoGreet.dll"
     fi
-    # Wine patch 17 natively handles WS_EX_LAYERED splash compositing, constant alpha blending,
-    # and smooth startup fade-out into the viewport without patching Rhino binaries.
-    # PatchGreet.exe is kept only as an optional legacy fallback.
-    if [ "${RHINO_LEGACY_PATCH_GREET:-0}" = "1" ] && [ -f "$SCRIPT_DIR/PatchGreet.exe" ]; then
-        echo "      Applying legacy RhinoGreet startup flow patch..."
-        "$WINESERVER_BIN" -k 2>/dev/null || true
-        "$WINE_BIN" "$SCRIPT_DIR/PatchGreet.exe" 2>/dev/null || true
-        timeout 5 "$WINESERVER_BIN" -w 2>/dev/null || true
-    fi
 fi
 USER_DXVK_DIR="$TARGET_PREFIX/drive_c/users/$USER/AppData/Local/dxvk"
 mkdir -p "$USER_DXVK_DIR"
