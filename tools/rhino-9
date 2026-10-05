@@ -4,13 +4,36 @@
 # Usage:
 #   rhino-9                open Rhino with splash and start page
 #   rhino-9 <file...>      open .3dm models or supported CAD files (Linux or Windows paths)
+#   rhino-9 --fresh        restart wineserver before launch for clean state
 #   rhino-9 --stop         stop this Wine prefix (terminates all processes in prefix cleanly)
 #
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
+CONFIG_FILE="${XDG_CONFIG_HOME:-$HOME/.config}/rhino-linux/config"
 
-# Auto-detect default prefix: check RHINO_PREFIX, WINEPREFIX, ~/.wine-rhino, or rhino-lab prefix
+# Load saved deployment config if present
+if [ -f "$CONFIG_FILE" ]; then
+    # shellcheck disable=SC1090
+    . "$CONFIG_FILE"
+fi
+
+# Locate companion asset directory
+DATA_DIR="${XDG_DATA_HOME:-$HOME/.local/share}/rhino-linux"
+find_asset() {
+    local name="$1"
+    if [ -f "$DATA_DIR/$name" ]; then
+        echo "$DATA_DIR/$name"
+    elif [ -f "$SCRIPT_DIR/$name" ]; then
+        echo "$SCRIPT_DIR/$name"
+    elif [ -f "$SCRIPT_DIR/tools/$name" ]; then
+        echo "$SCRIPT_DIR/tools/$name"
+    elif [ -f "$SCRIPT_DIR/../tools/$name" ]; then
+        echo "$SCRIPT_DIR/../tools/$name"
+    fi
+}
+
+# Auto-detect default prefix
 has_rhino() {
     [ -n "${1:-}" ] && [ -d "$1/drive_c/Program Files/Rhino 9 WIP/System" ]
 }
@@ -21,41 +44,47 @@ elif [ -n "${WINEPREFIX:-}" ]; then
     export WINEPREFIX="$WINEPREFIX"
 elif has_rhino "$HOME/.wine-rhino"; then
     export WINEPREFIX="$HOME/.wine-rhino"
-elif has_rhino "/home/jaberm/src/rhino-lab/prefix-rhino9"; then
-    export WINEPREFIX="/home/jaberm/src/rhino-lab/prefix-rhino9"
 elif [ -d "$HOME/.wine-rhino" ]; then
     export WINEPREFIX="$HOME/.wine-rhino"
-elif [ -d "/home/jaberm/src/rhino-lab/prefix-rhino9" ]; then
-    export WINEPREFIX="/home/jaberm/src/rhino-lab/prefix-rhino9"
 else
     export WINEPREFIX="$HOME/.wine-rhino"
 fi
 
-# Auto-detect Wine binary: check WINE, WINE_BUILD, ~/.local/share/wine-rhino, /opt/wine-rhino, repo build, or system wine
-if [ -n "${WINE:-}" ]; then
-    WINE_BIN="$WINE"
-    WINESERVER_BIN="$(dirname "$WINE_BIN")/wineserver"
-elif [ -n "${WINE_BUILD:-}" ] && [ -x "$WINE_BUILD/wine" ]; then
-    WINE_BIN="$WINE_BUILD/wine"
-    WINESERVER_BIN="$WINE_BUILD/server/wineserver"
-elif [ -x "$HOME/.local/share/wine-rhino/bin/wine" ]; then
-    WINE_BIN="$HOME/.local/share/wine-rhino/bin/wine"
-    WINESERVER_BIN="$HOME/.local/share/wine-rhino/bin/wineserver"
-elif [ -x "/opt/wine-rhino/bin/wine" ]; then
-    WINE_BIN="/opt/wine-rhino/bin/wine"
-    WINESERVER_BIN="/opt/wine-rhino/bin/wineserver"
-elif [ -x "$SCRIPT_DIR/../build-wine/wine" ]; then
-    WINE_BIN="$SCRIPT_DIR/../build-wine/wine"
-    WINESERVER_BIN="$SCRIPT_DIR/../build-wine/server/wineserver"
-elif [ -x "/home/jaberm/src/rhino-lab/build-wine/wine" ]; then
-    WINE_BIN="/home/jaberm/src/rhino-lab/build-wine/wine"
-    WINESERVER_BIN="/home/jaberm/src/rhino-lab/build-wine/server/wineserver"
-elif command -v wine >/dev/null 2>&1; then
-    WINE_BIN="$(command -v wine)"
-    WINESERVER_BIN="$(command -v wineserver 2>/dev/null || echo "wineserver")"
-else
-    echo "error: No Wine binary found. Set WINE=/path/to/wine or ensure wine is in PATH." >&2
-    exit 1
+# Auto-detect Wine binary
+WINE_BIN="${WINE:-${RHINO_WINE:-}}"
+if [ -z "$WINE_BIN" ]; then
+    if [ -n "${WINE_BUILD:-}" ] && [ -x "$WINE_BUILD/wine" ]; then
+        WINE_BIN="$WINE_BUILD/wine"
+    elif [ -x "$HOME/.local/share/wine-rhino/bin/wine" ]; then
+        WINE_BIN="$HOME/.local/share/wine-rhino/bin/wine"
+    elif [ -x "/opt/wine-rhino/bin/wine" ]; then
+        WINE_BIN="/opt/wine-rhino/bin/wine"
+    elif [ -x "$SCRIPT_DIR/../build-wine/wine" ]; then
+        WINE_BIN="$SCRIPT_DIR/../build-wine/wine"
+    elif [ -x "$SCRIPT_DIR/build-wine/wine" ]; then
+        WINE_BIN="$SCRIPT_DIR/build-wine/wine"
+    elif command -v wine >/dev/null 2>&1; then
+        WINE_BIN="$(command -v wine)"
+    else
+        echo "error: No Wine binary found. Set WINE=/path/to/wine or run ./install.sh" >&2
+        exit 1
+    fi
+fi
+
+# Auto-detect wineserver binary
+WINESERVER_BIN="${RHINO_WINESERVER:-}"
+if [ -z "$WINESERVER_BIN" ] || [ ! -x "$WINESERVER_BIN" ]; then
+    if [ -x "$(dirname "$WINE_BIN")/wineserver" ]; then
+        WINESERVER_BIN="$(dirname "$WINE_BIN")/wineserver"
+    elif [ -x "$(dirname "$WINE_BIN")/server/wineserver" ]; then
+        WINESERVER_BIN="$(dirname "$WINE_BIN")/server/wineserver"
+    elif [ -x "$(dirname "$WINE_BIN")/../server/wineserver" ]; then
+        WINESERVER_BIN="$(dirname "$WINE_BIN")/../server/wineserver"
+    elif command -v wineserver >/dev/null 2>&1; then
+        WINESERVER_BIN="$(command -v wineserver)"
+    else
+        WINESERVER_BIN="wineserver"
+    fi
 fi
 
 RHINO_DIR="$WINEPREFIX/drive_c/Program Files/Rhino 9 WIP/System"
@@ -67,23 +96,30 @@ case "${1:-}" in
         echo "Options:"
         echo "  -h, --help       Show this help message"
         echo "  --fresh          Restart wineserver before launch (fixes Cloud Zoo port 1717)"
-        echo "  --stop           Stop all processes in the Rhino Wine prefix"
+        echo "  --stop           Stop all processes in the Rhino Wine prefix cleanly"
         echo ""
         echo "Environment:"
-        echo "  RHINO_PREFIX     Target Wine prefix (default: ~/.wine-rhino)"
+        echo "  RHINO_PREFIX     Target Wine prefix (default: ~/.wine-rhino or saved config)"
         echo "  WINE             Path to Wine binary"
         exit 0
         ;;
     --fresh)
-        # Credit: ItHasLegs/rhino8-wine for the wineserver restart idea to handle stale http.sys state
         echo "Restarting wineserver for clean http.sys state..."
-        WINEPREFIX="$WINEPREFIX" "$WINESERVER_BIN" -k 2>/dev/null || true
+        if [ -x "$WINESERVER_BIN" ] || command -v "$WINESERVER_BIN" >/dev/null 2>&1; then
+            WINEPREFIX="$WINEPREFIX" "$WINESERVER_BIN" -k 2>/dev/null || true
+            WINEPREFIX="$WINEPREFIX" "$WINESERVER_BIN" -w 2>/dev/null || true
+        fi
         sleep 1
         shift
         ;;
     --stop)
         echo "Stopping Rhino Wine prefix ($WINEPREFIX)..."
-        WINEPREFIX="$WINEPREFIX" "$WINESERVER_BIN" -k 2>/dev/null || true
+        if [ ! -x "$WINESERVER_BIN" ] && ! command -v "$WINESERVER_BIN" >/dev/null 2>&1; then
+            echo "error: wineserver binary not found: $WINESERVER_BIN" >&2
+            exit 1
+        fi
+        WINEPREFIX="$WINEPREFIX" "$WINESERVER_BIN" -k
+        WINEPREFIX="$WINEPREFIX" "$WINESERVER_BIN" -w 2>/dev/null || true
         echo "Rhino Wine prefix stopped."
         exit 0
         ;;
@@ -98,29 +134,18 @@ for arg in "$@"; do
     if [[ "$arg" =~ ^file:// ]]; then
         arg="${arg#file://}"
     fi
-    if [[ "$arg" == ?:* || "$arg" == -* ]]; then
+    decoded_arg=$(printf '%b' "${arg//%/\\x}")
+    if [ -e "$decoded_arg" ]; then
+        abs_arg="$(readlink -f "$decoded_arg")"
+        args+=("Z:${abs_arg//\//\\}")
+    elif [[ "$arg" == ?:* || "$arg" == -* || "$arg" =~ ^/[a-zA-Z] ]]; then
         args+=("$arg")
+    elif [[ "$arg" == /* ]]; then
+        args+=("Z:${arg//\//\\}")
     else
-        # URL decode path if needed
-        decoded_arg=$(printf '%b' "${arg//%/\\x}")
-        if [ -e "$decoded_arg" ]; then
-            arg="$decoded_arg"
-        fi
-        if [[ "$arg" == /* ]]; then
-            # Direct mapping under z: -> / (zero process startup overhead)
-            args+=("Z:${arg//\//\\}")
-        elif [ -e "$arg" ]; then
-            abs_arg="$(readlink -f "$arg")"
-            args+=("Z:${abs_arg//\//\\}")
-        else
-            args+=("$arg")
-        fi
+        args+=("$arg")
     fi
 done
-
-# Keep Rhino's own startup flow enabled. RhinoGreet shows the splash and
-# template/recent-file page when no document was supplied. File arguments still
-# go straight to the requested model.
 
 # WebView2 mode: real Edge WebView2 enabled for panels and Cloud Zoo
 ms="$WINEPREFIX/drive_c/Program Files (x86)/Microsoft"
@@ -132,8 +157,9 @@ else
     wv2stub="$WINEPREFIX/drive_c/wv2stub"
     if [ ! -f "$wv2stub/msedgewebview2.exe" ]; then
         mkdir -p "$wv2stub"
-        if [ -f "$SCRIPT_DIR/msedgewebview2-stub.exe" ]; then
-            cp "$SCRIPT_DIR/msedgewebview2-stub.exe" "$wv2stub/msedgewebview2.exe"
+        stub_src="$(find_asset "msedgewebview2-stub.exe")"
+        if [ -n "$stub_src" ] && [ -f "$stub_src" ]; then
+            cp "$stub_src" "$wv2stub/msedgewebview2.exe"
         fi
     fi
     export WEBVIEW2_BROWSER_EXECUTABLE_FOLDER="C:\\wv2stub"
@@ -156,9 +182,14 @@ export __GL_ALLOW_FXAA_33=1
 export __GL_SHADER_DISK_CACHE=1
 export __GL_SHADER_DISK_CACHE_SKIP_CLEANUP=1
 
-# DXVK low-latency configuration and fast state cache directory
-if [ -f "$SCRIPT_DIR/dxvk-rhino.conf" ]; then
-    export DXVK_CONFIG_FILE="${RHINO_DXVK_CONF:-$SCRIPT_DIR/dxvk-rhino.conf}"
+# DXVK configuration resolution
+dxvk_conf_path="$(find_asset "dxvk-rhino.conf")"
+if [ -n "${RHINO_DXVK_CONF:-}" ] && [ -f "$RHINO_DXVK_CONF" ]; then
+    export DXVK_CONFIG_FILE="$RHINO_DXVK_CONF"
+elif [ -n "$dxvk_conf_path" ] && [ -f "$dxvk_conf_path" ]; then
+    export DXVK_CONFIG_FILE="$dxvk_conf_path"
+elif [ -f "$RHINO_DIR/dxvk.conf" ]; then
+    export DXVK_CONFIG_FILE="$RHINO_DIR/dxvk.conf"
 fi
 export DXVK_STATE_CACHE=1
 export DXVK_STATE_CACHE_PATH="${XDG_CACHE_HOME:-$HOME/.cache}/dxvk"
@@ -172,9 +203,8 @@ export RHINO_GRAPHICS_DRIVER="${RHINO_GRAPHICS_DRIVER:-x11}"
 # ==============================================================================
 # .NET 9 Runtime & RyuJIT Performance Tuning (Rhino Core, Grasshopper, Plugins)
 # ==============================================================================
-# 1. Server Garbage Collection: 16 dedicated GC heaps + parallel background GC threads.
-#    Eliminates UI thread pause freezes during heavy CAD modeling and mesh calculations.
-export DOTNET_gcServer=1
+# 1. Garbage Collection tuning: Server GC for heavy meshing, or Workstation GC for responsive UI
+export DOTNET_gcServer="${DOTNET_gcServer:-0}"
 
 # 2. Dynamic Profile-Guided Optimization: RyuJIT devirtualization & AVX2 loop vectorization.
 export DOTNET_TieredPGO=1
@@ -197,8 +227,8 @@ export OMP_PLACES="${OMP_PLACES:-cores}"
 # Keep thread pools warm and prevent teardown churn between dynamic loop iterations
 export OMP_DYNAMIC="${OMP_DYNAMIC:-false}"
 
-# Keep worker threads spinning actively on task handoff (eliminates ~15µs futex sleep/wake)
-export OMP_WAIT_POLICY="${OMP_WAIT_POLICY:-ACTIVE}"
+# Worker thread wait policy: PASSIVE yields to kernel when idle (avoids 100% CPU spinning)
+export OMP_WAIT_POLICY="${OMP_WAIT_POLICY:-PASSIVE}"
 
 # ==============================================================================
 # Linux Kernel In-Kernel Synchronization & Memory Allocator Tuning
@@ -214,10 +244,15 @@ if [ -f "/usr/lib/libjemalloc.so.2" ] && [[ "${LD_PRELOAD:-}" != *"libjemalloc.s
 fi
 
 # DLL overrides:
-# - vcomp140=builtin: CRITICAL! Wine builtin vcomp (with 64-bit dynamic loop patch) bounds threads to ~200.
-#   Native MS vcomp140 creates unbounded 46,000 thread explosion and deadlocks Wine ntdll.
+# - vcomp140=builtin: Wine builtin vcomp with 64-bit dynamic loop patch bounds threads properly.
 # - d3dcompiler_47=native,builtin: Required for complex HLSL shader compiling.
 export WINEDLLOVERRIDES="vcomp140=builtin;d3dcompiler_47=native,builtin;${WINEDLLOVERRIDES:-}"
 
 cd "$RHINO_DIR"
-exec "$WINE_BIN" 'C:\Program Files\Rhino 9 WIP\System\Rhino.exe' "${args[@]}"
+"$WINE_BIN" 'C:\Program Files\Rhino 9 WIP\System\Rhino.exe' "${args[@]}"
+EXIT_CODE=$?
+
+# Clean up prefix background processes on exit
+WINEPREFIX="$WINEPREFIX" "$WINESERVER_BIN" -k 2>/dev/null || true
+
+exit $EXIT_CODE
