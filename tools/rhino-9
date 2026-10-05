@@ -10,6 +10,8 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
+CONFIG_FILE="${CONFIG_FILE:-${XDG_CONFIG_HOME:-$HOME/.config}/rhino-linux/config}"
+
 # Explicit environment variables take precedence over saved config
 ENV_RHINO_PREFIX="${RHINO_PREFIX:-}"
 ENV_WINEPREFIX="${WINEPREFIX:-}"
@@ -45,9 +47,7 @@ has_rhino() {
     [ -n "${1:-}" ] && [ -d "$1/drive_c/Program Files/Rhino 9 WIP/System" ]
 }
 
-if [ -n "${RHINO_PREFIX:-}" ]; then
-    export WINEPREFIX="$RHINO_PREFIX"
-elif [ -n "${WINEPREFIX:-}" ]; then
+if [ -n "${WINEPREFIX:-}" ]; then
     export WINEPREFIX="$WINEPREFIX"
 elif has_rhino "$HOME/.wine-rhino"; then
     export WINEPREFIX="$HOME/.wine-rhino"

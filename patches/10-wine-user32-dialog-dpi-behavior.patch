@@ -2,7 +2,7 @@ diff --git a/dlls/user32/dialog.c b/dlls/user32/dialog.c
 index b3bad848206..2f0003b5289 100644
 --- a/dlls/user32/dialog.c
 +++ b/dlls/user32/dialog.c
-@@ -1968,3 +1968,66 @@ INT WINAPI DlgDirListComboBoxW( HWND hDlg, LPWSTR spec, INT idCBox,
+@@ -1968,3 +1968,70 @@ INT WINAPI DlgDirListComboBoxW( HWND hDlg, LPWSTR spec, INT idCBox,
  {
      return DIALOG_DlgDirListW( hDlg, spec, idCBox, idStatic, attrib, TRUE );
  }

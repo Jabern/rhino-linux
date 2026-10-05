@@ -202,19 +202,19 @@ print_banner
 get_distro_deps() {
     case "$DISTRO_FAMILY" in
         arch)
-            echo "wine vulkan-icd-loader vulkan-headers dxvk-bin bison flex mingw-w64-gcc libx11 freetype2 gnutls libxext libxcomposite libxdamage"
+            echo "wine vulkan-icd-loader vulkan-headers dxvk-bin cabextract bison flex mingw-w64-gcc libx11 freetype2 gnutls libxext libxcomposite libxdamage"
             ;;
         debian)
-            echo "wine64 libvulkan1 vulkan-tools build-essential bison flex gcc-mingw-w64 libx11-dev libfreetype-dev libgnutls28-dev libxext-dev libxcomposite-dev libxdamage-dev dxvk"
+            echo "wine64 libvulkan1 vulkan-tools build-essential cabextract bison flex gcc-mingw-w64 libx11-dev libfreetype-dev libgnutls28-dev libxext-dev libxcomposite-dev libxdamage-dev dxvk"
             ;;
         fedora)
-            echo "wine vulkan-loader-devel gcc make bison flex mingw64-gcc libX11-devel freetype-devel gnutls-devel libXext-devel libXcomposite-devel libXdamage-devel dxvk"
+            echo "wine vulkan-loader-devel gcc make cabextract bison flex mingw64-gcc libX11-devel freetype-devel gnutls-devel libXext-devel libXcomposite-devel libXdamage-devel dxvk"
             ;;
         suse)
-            echo "wine vulkan-devel gcc make bison flex libX11-devel freetype2-devel libgnutls-devel libXext-devel libXcomposite-devel libXdamage-devel dxvk"
+            echo "wine vulkan-devel gcc make cabextract bison flex libX11-devel freetype2-devel libgnutls-devel libXext-devel libXcomposite-devel libXdamage-devel dxvk"
             ;;
         *)
-            echo "wine vulkan dxvk bison flex gcc"
+            echo "wine vulkan dxvk cabextract bison flex gcc"
             ;;
     esac
 }
@@ -473,7 +473,15 @@ RHINO_EXE="$TARGET_PREFIX/drive_c/Program Files/Rhino 9 WIP/System/Rhino.exe"
 if [ -n "$RHINO_INSTALLER" ]; then
     if [ -f "$RHINO_INSTALLER" ]; then
         echo -e "Launching Rhino Installer: ${CYAN}$RHINO_INSTALLER${NC}..."
-        "$WINE_BIN" "$RHINO_INSTALLER"
+        installer_flags=()
+        if [ "$NON_INTERACTIVE" -eq 1 ]; then
+            installer_flags+=(/passive /norestart)
+        fi
+        "$WINE_BIN" "$RHINO_INSTALLER" "${installer_flags[@]}" || [ $? -eq 3010 ]
+        # Wait for any lingering msiexec tasks to complete
+        while "$WINESERVER_BIN" -k 0 2>/dev/null && pgrep -f -u "$UID" "msiexec" >/dev/null 2>&1; do
+            sleep 2
+        done
         timeout 10 "$WINESERVER_BIN" -w 2>/dev/null || true
         # Re-run deployment script to patch greeting & configs
         "${deploy_cmd[@]}"
@@ -488,7 +496,6 @@ else
     echo -e " ${YELLOW}[INFO]${NC} Rhino executable not found yet."
     echo "        To install Rhino, download your installer and run:"
     echo -e "        ${CYAN}./install.sh --installer /path/to/rhino_installer.exe${NC}"
-    echo -e "        or directly: ${CYAN}rhino-9 /path/to/rhino_installer.exe${NC}"
 fi
 
 # Ensure launcher symlink exists in repo root

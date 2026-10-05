@@ -270,15 +270,119 @@ timeout 5 "$WINESERVER_BIN" -w 2>/dev/null || true
 
 # 4. DXVK Configuration & Fonts
 echo "[4/6] Deploying DXVK configuration & fonts..."
+FONTS_DIR="$TARGET_PREFIX/drive_c/windows/Fonts"
+mkdir -p "$FONTS_DIR"
+
+# Resolve mandatory Arial core fonts required by WPF/.NET 10 typography fallback
+if [ ! -f "$FONTS_DIR/arial.ttf" ]; then
+    echo "      Resolving mandatory Arial core fonts for WPF/.NET..."
+
+    # 1. Search local system font directories and Windows partitions
+    for candidate_dir in \
+        "/usr/share/fonts/truetype/msttcorefonts" \
+        "/usr/share/fonts/msttcorefonts" \
+        "/usr/share/fonts/TTF" \
+        "/usr/share/fonts/truetype" \
+        "/usr/share/fonts" \
+        "/usr/local/share/fonts" \
+        "$HOME/.local/share/fonts" \
+        "$HOME/.fonts" \
+        /run/media/*/*/Windows/Fonts \
+        /run/media/*/*/windows/fonts \
+        /mnt/*/Windows/Fonts \
+        /mnt/*/windows/fonts \
+        /media/*/*/Windows/Fonts \
+        "$HOME"/.wine/drive_c/windows/Fonts \
+        "$HOME"/.local/share/wineprefixes/*/drive_c/windows/Fonts; do
+        if [ -d "$candidate_dir" ]; then
+            found_fonts=()
+            while IFS= read -r -d '' font_match; do
+                found_fonts+=("$font_match")
+            done < <(find "$candidate_dir" -maxdepth 2 -iname "arial*.ttf" -print0 2>/dev/null)
+
+            if [ "${#found_fonts[@]}" -gt 0 ]; then
+                for font in "${found_fonts[@]}"; do
+                    target_name="$(basename "$font" | tr '[:upper:]' '[:lower:]')"
+                    cp -f "$font" "$FONTS_DIR/$target_name"
+                done
+                if [ -f "$FONTS_DIR/arial.ttf" ]; then
+                    echo "      Copied Arial fonts from $candidate_dir"
+                    break
+                fi
+            fi
+        fi
+    done
+
+    # 2. If not found locally, fetch Microsoft corefonts package (arial32.exe)
+    if [ ! -f "$FONTS_DIR/arial.ttf" ]; then
+        echo "      Fetching Microsoft corefonts package (arial32.exe)..."
+        FONT_CACHE_DIR="${XDG_CACHE_HOME:-$HOME/.cache}/rhino-linux/fonts"
+        mkdir -p "$FONT_CACHE_DIR"
+        ARIAL_EXE="$FONT_CACHE_DIR/arial32.exe"
+        ARIAL_SHA256="85297a4d146e9c87ac6f74822734bdee5f4b2a722d7eaa584b7f2cbf76f478f6"
+
+        for cached in \
+            "$FONT_CACHE_DIR/arial32.exe" \
+            "${XDG_CACHE_HOME:-$HOME/.cache}/winetricks/corefonts/arial32.exe" \
+            "$HOME/.cache/winetricks/corefonts/arial32.exe"; do
+            if [ -f "$cached" ] && verify_sha256 "$ARIAL_SHA256" "$cached"; then
+                cp -f "$cached" "$ARIAL_EXE"
+                break
+            fi
+        done
+
+        if [ ! -f "$ARIAL_EXE" ] || ! verify_sha256 "$ARIAL_SHA256" "$ARIAL_EXE"; then
+            temp_dl="$ARIAL_EXE.part.$$"
+            for url in \
+                "https://github.com/pushcx/corefonts/raw/master/arial32.exe" \
+                "https://downloads.sourceforge.net/corefonts/arial32.exe"; do
+                if command -v curl >/dev/null 2>&1; then
+                    curl -fLs -o "$temp_dl" "$url" || true
+                elif command -v wget >/dev/null 2>&1; then
+                    wget -q -O "$temp_dl" "$url" || true
+                fi
+                if [ -f "$temp_dl" ] && verify_sha256 "$ARIAL_SHA256" "$temp_dl"; then
+                    mv -f "$temp_dl" "$ARIAL_EXE"
+                    break
+                fi
+                rm -f "$temp_dl"
+            done
+        fi
+
+        # 3. Extract with cabextract, bsdtar, or 7z
+        if [ -f "$ARIAL_EXE" ] && verify_sha256 "$ARIAL_SHA256" "$ARIAL_EXE"; then
+            temp_extract="$(mktemp -d)"
+            if command -v cabextract >/dev/null 2>&1; then
+                cabextract -q -d "$temp_extract" "$ARIAL_EXE" 2>/dev/null || true
+            elif command -v bsdtar >/dev/null 2>&1; then
+                bsdtar -xf "$ARIAL_EXE" -C "$temp_extract" 2>/dev/null || true
+            elif command -v 7z >/dev/null 2>&1; then
+                7z x -y -o"$temp_extract" "$ARIAL_EXE" >/dev/null 2>&1 || true
+            fi
+
+            for font in "$temp_extract"/*.[tT][tT][fF]; do
+                if [ -f "$font" ]; then
+                    target_name="$(basename "$font" | tr '[:upper:]' '[:lower:]')"
+                    cp -f "$font" "$FONTS_DIR/$target_name"
+                fi
+            done
+            rm -rf "$temp_extract"
+        fi
+    fi
+fi
+
+if [ -f "$FONTS_DIR/arial.ttf" ]; then
+    echo "      [PASS] Mandatory Arial font verified in $FONTS_DIR"
+else
+    echo "      [WARN] Arial font not detected. WPF .NET 10 UI may fail fast."
+fi
+
 RHINO_SYS_DIR="$TARGET_PREFIX/drive_c/Program Files/Rhino 9 WIP/System"
 if [ -d "$RHINO_SYS_DIR" ]; then
     cp -v "$SCRIPT_DIR/dxvk-rhino.conf" "$RHINO_SYS_DIR/dxvk.conf" 2>/dev/null || true
-    FONTS_DIR="$TARGET_PREFIX/drive_c/windows/Fonts"
-    if [ -d "$FONTS_DIR" ]; then
-        for font in "$RHINO_SYS_DIR"/*.ttf; do
-            [ -f "$font" ] && cp -u -v "$font" "$FONTS_DIR/" 2>/dev/null || true
-        done
-    fi
+    for font in "$RHINO_SYS_DIR"/*.ttf; do
+        [ -f "$font" ] && cp -u -v "$font" "$FONTS_DIR/" 2>/dev/null || true
+    done
     if [ -f "$RHINO_SYS_DIR/RhinoGreet.dll" ] && [ ! -f "$RHINO_SYS_DIR/netcore/RhinoGreet.dll" ]; then
         mkdir -p "$RHINO_SYS_DIR/netcore"
         cp -v "$RHINO_SYS_DIR/RhinoGreet.dll" "$RHINO_SYS_DIR/netcore/RhinoGreet.dll" 2>/dev/null || true
