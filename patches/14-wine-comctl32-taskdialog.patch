@@ -27,7 +27,7 @@ new file mode 100644
 index 00000000000..d8e93c4ff7d
 --- /dev/null
 +++ b/dlls/comctl32/taskdialog.c
-@@ -0,0 +1,121 @@
+@@ -0,0 +1,124 @@
 +/*
 + * Task Dialog
 + *
@@ -72,9 +72,12 @@ index 00000000000..d8e93c4ff7d
 +        case IDOK:
 +        case IDYES:
 +            return custom[0].nButtonID;
-+        case IDCANCEL:
 +        case IDNO:
 +            return custom_count > 1 ? custom[1].nButtonID : custom[0].nButtonID;
++        case IDCANCEL:
++            if (custom_count > 2) return custom[2].nButtonID;
++            if (custom_count > 1) return custom[1].nButtonID;
++            return IDCANCEL;
 +        case IDRETRY:
 +            return custom_count > 2 ? custom[2].nButtonID : custom[0].nButtonID;
 +        }
