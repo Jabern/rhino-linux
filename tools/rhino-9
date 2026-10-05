@@ -202,8 +202,8 @@ export DXVK_STATE_CACHE=1
 export DXVK_STATE_CACHE_PATH="${XDG_CACHE_HOME:-$HOME/.cache}/dxvk"
 mkdir -p "$DXVK_STATE_CACHE_PATH"
 
-# Driver selection: Force X11/XWayland driver to avoid experimental winewayland.drv black box bugs
-unset WAYLAND_DISPLAY
+# Driver selection: Wine registry selects driver (HKCU\Software\Wine\Drivers\Graphics)
+# Keep DISPLAY exported for X11/XWayland while preserving WAYLAND_DISPLAY for host processes (e.g. browser).
 export DISPLAY="${DISPLAY:-:0}"
 export RHINO_GRAPHICS_DRIVER="${RHINO_GRAPHICS_DRIVER:-x11}"
 
@@ -245,10 +245,11 @@ if [ -e "/dev/ntsync" ]; then
     export WINENTSYNC="${WINENTSYNC:-1}"
 fi
 
-# Pre-load jemalloc for lockless multi-arena memory allocation if available
-if [ -f "/usr/lib/libjemalloc.so.2" ] && [[ "${LD_PRELOAD:-}" != *"libjemalloc.so.2"* ]]; then
-    export LD_PRELOAD="/usr/lib/libjemalloc.so.2${LD_PRELOAD:+:$LD_PRELOAD}"
-fi
+# Clear LD_PRELOAD to prevent host allocator collisions (e.g. jemalloc) from
+# crashing external Linux processes spawned by Wine, such as the default web browser
+# for Cloud Zoo authentication and licensing URLs.
+unset LD_PRELOAD
+
 
 # DLL overrides:
 # - vcomp140=builtin: Wine builtin vcomp with 64-bit dynamic loop patch bounds threads properly.
