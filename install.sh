@@ -12,7 +12,9 @@
 #   --deps                  Check and install distro dependencies
 #   --prefix <PATH>         Wine prefix directory (default: ~/.wine-rhino)
 #   --wine <PATH>           Path to custom patched Wine binary
-#   --build-wine            Build Wine from source with all 20 patches
+#   --dxvk-dir <PATH>       Path to custom DXVK 64-bit DLL directory
+#   --build-wine            Build Wine from source with the patch stack
+#   --wayland               Include optional pure Wayland patch (Patch 16)
 #   --no-download           Do not download pre-built Wine (use existing or build)
 #   --wine-src <DIR>        Use existing Wine source directory to patch & build
 #   --installer <PATH>      Path to Rhino installer executable (.exe)
@@ -38,24 +40,21 @@ NC='\033[0m' # No Color
 NON_INTERACTIVE=0
 INSTALL_DEPS=0
 BUILD_WINE=0
+ENABLE_WAYLAND=0
 NO_DOWNLOAD=0
 WINE_SRC_DIR=""
 CUSTOM_WINE=""
+CUSTOM_DXVK_DIR=""
 RHINO_INSTALLER=""
 RUN_RHINO=0
 WINE_INSTALL_DIR="$HOME/.local/share/wine-rhino"
 WINE_RELEASE_URL="https://github.com/Jabern/rhino-linux/releases/download/v1.0.0/wine-rhino-11.18-x86_64.tar.xz"
+WINE_RELEASE_SHA256="59b3b39f0aa81178da3c87831243edb03432775f6482e31b054783d634fe2e6f"
 
 # Default Prefix
 TARGET_PREFIX="${RHINO_PREFIX:-${WINEPREFIX:-}}"
 if [ -z "$TARGET_PREFIX" ]; then
-    if [ -d "$HOME/.wine-rhino" ]; then
-        TARGET_PREFIX="$HOME/.wine-rhino"
-    elif [ -d "/home/jaberm/src/rhino-lab/prefix-rhino9" ]; then
-        TARGET_PREFIX="/home/jaberm/src/rhino-lab/prefix-rhino9"
-    else
-        TARGET_PREFIX="$HOME/.wine-rhino"
-    fi
+    TARGET_PREFIX="$HOME/.wine-rhino"
 fi
 
 # Detect Linux Distribution
@@ -100,12 +99,14 @@ detect_distro() {
 
 print_banner() {
     echo -e "${BOLD}${CYAN}"
-    echo "=========================================================================="
-    echo "  Rhino on Linux Installer"
-    echo "=========================================================================="
+    echo "  ____  _     _                               _     _                  "
+    echo " |  _ \| |__ (_)_ __   ___   ___  _ __       | |   (_)_ __  _   ___  __"
+    echo " | |_) | '_ \| | '_ \ / _ \ / _ \| '_ \ _____| |   | | '_ \| | | \ \/ /"
+    echo " |  _ <| | | | | | | | (_) | (_) | | | |_____| |___| | | | | |_| |>  < "
+    echo " |_| \_\_| |_|_|_| |_|\___/ \___/|_| |_|     |_____|_|_| |_|\__,_/_/\_\\"
     echo -e "${NC}"
-    echo -e " Distro: ${BOLD}${DISTRO_NAME}${NC}"
-    echo -e " Prefix: ${BOLD}${TARGET_PREFIX}${NC}"
+    echo -e " Rhinoceros on Linux — Universal Compatibility & Setup Tool"
+    echo -e " Distribution detected: ${BOLD}${DISTRO_NAME}${NC} (${DISTRO_FAMILY})"
     echo "=========================================================================="
 }
 
@@ -121,7 +122,9 @@ Options:
   --deps                  Install distro packages
   --prefix <PATH>         Wine prefix directory (default: ~/.wine-rhino)
   --wine <PATH>           Path to custom Wine binary
-  --build-wine            Build Wine from source with all 20 patches
+  --dxvk-dir <PATH>       Path to custom DXVK 64-bit DLL directory
+  --build-wine            Build Wine from source with the patch stack
+  --wayland               Include optional pure Wayland patch (Patch 16)
   --no-download           Do not download pre-built Wine (use existing or build)
   --wine-src <DIR>        Use an existing Wine source directory
   --installer <PATH>      Path to Rhino installer .exe
@@ -149,8 +152,16 @@ while [[ $# -gt 0 ]]; do
             CUSTOM_WINE="$2"
             shift 2
             ;;
+        --dxvk-dir)
+            CUSTOM_DXVK_DIR="$2"
+            shift 2
+            ;;
         --build-wine)
             BUILD_WINE=1
+            shift
+            ;;
+        --wayland)
+            ENABLE_WAYLAND=1
             shift
             ;;
         --no-download)
@@ -217,33 +228,33 @@ install_dependencies() {
         arch)
             echo -e "Executing: ${CYAN}sudo pacman -S --needed $deps${NC}"
             if command -v sudo >/dev/null 2>&1; then
-                sudo pacman -S --needed --noconfirm $deps || true
+                sudo pacman -S --needed --noconfirm $deps
             else
-                pacman -S --needed --noconfirm $deps || true
+                pacman -S --needed --noconfirm $deps
             fi
             ;;
         debian)
             echo -e "Executing: ${CYAN}sudo apt update && sudo apt install -y $deps${NC}"
             if command -v sudo >/dev/null 2>&1; then
-                sudo apt update && sudo apt install -y $deps || true
+                sudo apt update && sudo apt install -y $deps
             else
-                apt update && apt install -y $deps || true
+                apt update && apt install -y $deps
             fi
             ;;
         fedora)
             echo -e "Executing: ${CYAN}sudo dnf install -y $deps${NC}"
             if command -v sudo >/dev/null 2>&1; then
-                sudo dnf install -y $deps || true
+                sudo dnf install -y $deps
             else
-                dnf install -y $deps || true
+                dnf install -y $deps
             fi
             ;;
         suse)
             echo -e "Executing: ${CYAN}sudo zypper install -y $deps${NC}"
             if command -v sudo >/dev/null 2>&1; then
-                sudo zypper install -y $deps || true
+                sudo zypper install -y $deps
             else
-                zypper install -y $deps || true
+                zypper install -y $deps
             fi
             ;;
         *)
@@ -283,14 +294,15 @@ find_existing_wine() {
         WINE_BIN="/opt/wine-rhino/bin/wine"
     elif [ -x "$REPO_DIR/build-wine/wine" ]; then
         WINE_BIN="$REPO_DIR/build-wine/wine"
-    elif [ -x "/home/jaberm/src/rhino-lab/build-wine/wine" ]; then
-        WINE_BIN="/home/jaberm/src/rhino-lab/build-wine/wine"
     fi
 
     if [ -n "$WINE_BIN" ]; then
         WINESERVER_BIN="$(dirname "$WINE_BIN")/wineserver"
         if [ ! -x "$WINESERVER_BIN" ]; then
             WINESERVER_BIN="$(dirname "$WINE_BIN")/server/wineserver"
+        fi
+        if [ ! -x "$WINESERVER_BIN" ]; then
+            WINESERVER_BIN="$(dirname "$WINE_BIN")/../server/wineserver"
         fi
         if [ ! -x "$WINESERVER_BIN" ]; then
             WINESERVER_BIN="$(command -v wineserver 2>/dev/null || echo "wineserver")"
@@ -302,21 +314,38 @@ download_prebuilt_wine() {
     echo -e "\n${BOLD}${BLUE}[Step 2/4] Downloading Pre-built Patched Wine...${NC}"
     local cache_dir="${XDG_CACHE_HOME:-$HOME/.cache}/rhino-linux"
     local tarball="$cache_dir/wine-rhino-11.18-x86_64.tar.xz"
+    local temp_tarball="$tarball.part.$$"
 
     mkdir -p "$cache_dir" "$WINE_INSTALL_DIR"
+
+    # Verify existing cached archive if present
+    if [ -f "$tarball" ]; then
+        if echo "$WINE_RELEASE_SHA256  $tarball" | sha256sum -c --status 2>/dev/null; then
+            echo -e "Using verified cached Wine archive: $tarball"
+        else
+            echo -e "${YELLOW}Cached Wine archive failed checksum verification. Re-downloading...${NC}"
+            rm -f "$tarball"
+        fi
+    fi
 
     if [ ! -f "$tarball" ]; then
         echo -e "Fetching pre-compiled Wine runtime (~63 MB)..."
         if command -v curl >/dev/null 2>&1; then
-            curl -fL --progress-bar -o "$tarball" "$WINE_RELEASE_URL"
+            curl -fL --progress-bar -o "$temp_tarball" "$WINE_RELEASE_URL"
         elif command -v wget >/dev/null 2>&1; then
-            wget --show-progress -O "$tarball" "$WINE_RELEASE_URL"
+            wget --show-progress -O "$temp_tarball" "$WINE_RELEASE_URL"
         else
             echo -e "${RED}Error: curl or wget is required to download pre-built Wine.${NC}"
             return 1
         fi
-    else
-        echo -e "Using cached Wine archive: $tarball"
+
+        echo "Verifying SHA256 checksum..."
+        if ! echo "$WINE_RELEASE_SHA256  $temp_tarball" | sha256sum -c --status 2>/dev/null; then
+            echo -e "${RED}Error: SHA256 checksum verification failed for downloaded Wine runtime.${NC}" >&2
+            rm -f "$temp_tarball"
+            return 1
+        fi
+        mv -f "$temp_tarball" "$tarball"
     fi
 
     echo -e "Extracting Wine runtime to ${CYAN}$WINE_INSTALL_DIR${NC}..."
@@ -325,11 +354,11 @@ download_prebuilt_wine() {
     WINE_BIN="$WINE_INSTALL_DIR/bin/wine"
     WINESERVER_BIN="$WINE_INSTALL_DIR/bin/wineserver"
 
-    if [ -x "$WINE_BIN" ]; then
-        echo -e " ${GREEN}[PASS]${NC} Patched Wine ready: $("$WINE_BIN" --version 2>/dev/null || echo "$WINE_BIN")"
+    if [ -x "$WINE_BIN" ] && "$WINE_BIN" --version >/dev/null 2>&1; then
+        echo -e " ${GREEN}[PASS]${NC} Patched Wine ready: $("$WINE_BIN" --version)"
         return 0
     else
-        echo -e "${RED}Error: Failed to verify extracted Wine binary at $WINE_BIN${NC}"
+        echo -e "${RED}Error: Failed to verify functional Wine binary at $WINE_BIN${NC}" >&2
         return 1
     fi
 }
@@ -341,14 +370,23 @@ build_patched_wine() {
     local prefix_dir="/opt/wine-rhino"
 
     if [ ! -d "$src_dir" ]; then
-        echo -e "Cloning Wine 11.x repository into ${CYAN}$src_dir${NC}..."
-        git clone --depth 1 --branch wine-11.18 https://gitlab.winehq.org/wine/wine.git "$src_dir" || \
-        git clone --depth 1 https://gitlab.winehq.org/wine/wine.git "$src_dir"
+        echo -e "Cloning Wine 11.18 repository into ${CYAN}$src_dir${NC}..."
+        git clone --depth 1 --branch wine-11.18 https://gitlab.winehq.org/wine/wine.git "$src_dir"
     fi
 
-    echo "Applying Rhino 20-patch set to $src_dir..."
+    local patch_glob
+    if [ "$ENABLE_WAYLAND" -eq 1 ]; then
+        echo "Applying full 20-patch set (including Wayland driver)..."
+        patch_glob="$REPO_DIR/patches/"*.patch
+    else
+        echo "Applying standard 19-patch set for X11 / XWayland..."
+        patch_glob="$REPO_DIR/patches/{0[1-9],1[0-5],1[7-9],20}-*.patch"
+    fi
+
     cd "$src_dir"
-    for patch_file in "$REPO_DIR"/patches/{0[1-9],1[0-5],1[7-9],20}-*.patch; do
+    # Expand glob
+    eval "patch_files=($patch_glob)"
+    for patch_file in "${patch_files[@]}"; do
         patch_name="$(basename "$patch_file")"
         if patch -p1 --dry-run -R -N < "$patch_file" >/dev/null 2>&1; then
             echo -e " ${GREEN}[ALREADY APPLIED]${NC} $patch_name"
@@ -356,7 +394,8 @@ build_patched_wine() {
             patch -p1 -N < "$patch_file" >/dev/null
             echo -e " ${GREEN}[APPLIED]${NC} $patch_name"
         else
-            echo -e " ${YELLOW}[SKIPPED/CONFLICT]${NC} $patch_name (dry-run check failed)"
+            echo -e " ${RED}[FAILED]${NC} $patch_name failed to apply! Aborting build." >&2
+            return 1
         fi
     done
 
@@ -407,7 +446,11 @@ export WINEPREFIX="$TARGET_PREFIX"
 export RHINO_PREFIX="$TARGET_PREFIX"
 
 # Run deployment script
-"$REPO_DIR/tools/deploy-rhino.sh" --prefix "$TARGET_PREFIX" --wine "$WINE_BIN"
+deploy_cmd=("$REPO_DIR/tools/deploy-rhino.sh" --prefix "$TARGET_PREFIX" --wine "$WINE_BIN")
+if [ -n "$CUSTOM_DXVK_DIR" ]; then
+    deploy_cmd+=(--dxvk-dir "$CUSTOM_DXVK_DIR")
+fi
+"${deploy_cmd[@]}"
 
 # ------------------------------------------------------------------------------
 # Application Installation (Optional)
@@ -419,9 +462,9 @@ if [ -n "$RHINO_INSTALLER" ]; then
     if [ -f "$RHINO_INSTALLER" ]; then
         echo -e "Launching Rhino Installer: ${CYAN}$RHINO_INSTALLER${NC}..."
         "$WINE_BIN" "$RHINO_INSTALLER"
-        timeout 5 "$WINESERVER_BIN" -w 2>/dev/null || true
+        timeout 10 "$WINESERVER_BIN" -w 2>/dev/null || true
         # Re-run deployment script to patch greeting & configs
-        "$REPO_DIR/tools/deploy-rhino.sh" --prefix "$TARGET_PREFIX" --wine "$WINE_BIN"
+        "${deploy_cmd[@]}"
     else
         echo -e "${RED}Error: Installer not found at: $RHINO_INSTALLER${NC}"
     fi
