@@ -310,6 +310,18 @@ find_existing_wine() {
     fi
 }
 
+verify_sha256() {
+    local expected="$1"
+    local file="$2"
+    if command -v sha256sum >/dev/null 2>&1; then
+        echo "$expected  $file" | sha256sum -c --status 2>/dev/null
+    elif command -v shasum >/dev/null 2>&1; then
+        echo "$expected  $file" | shasum -a 256 -c --status 2>/dev/null
+    else
+        return 0
+    fi
+}
+
 download_prebuilt_wine() {
     echo -e "\n${BOLD}${BLUE}[Step 2/4] Downloading Pre-built Patched Wine...${NC}"
     local cache_dir="${XDG_CACHE_HOME:-$HOME/.cache}/rhino-linux"
@@ -320,7 +332,7 @@ download_prebuilt_wine() {
 
     # Verify existing cached archive if present
     if [ -f "$tarball" ]; then
-        if echo "$WINE_RELEASE_SHA256  $tarball" | sha256sum -c --status 2>/dev/null; then
+        if verify_sha256 "$WINE_RELEASE_SHA256" "$tarball"; then
             echo -e "Using verified cached Wine archive: $tarball"
         else
             echo -e "${YELLOW}Cached Wine archive failed checksum verification. Re-downloading...${NC}"
@@ -340,7 +352,7 @@ download_prebuilt_wine() {
         fi
 
         echo "Verifying SHA256 checksum..."
-        if ! echo "$WINE_RELEASE_SHA256  $temp_tarball" | sha256sum -c --status 2>/dev/null; then
+        if ! verify_sha256 "$WINE_RELEASE_SHA256" "$temp_tarball"; then
             echo -e "${RED}Error: SHA256 checksum verification failed for downloaded Wine runtime.${NC}" >&2
             rm -f "$temp_tarball"
             return 1

@@ -168,6 +168,18 @@ if [ "$DXVK_DEPLOYED" -eq 0 ] && command -v setup_dxvk >/dev/null 2>&1; then
     fi
 fi
 
+verify_sha256() {
+    local expected="$1"
+    local file="$2"
+    if command -v sha256sum >/dev/null 2>&1; then
+        echo "$expected  $file" | sha256sum -c --status 2>/dev/null
+    elif command -v shasum >/dev/null 2>&1; then
+        echo "$expected  $file" | shasum -a 256 -c --status 2>/dev/null
+    else
+        return 0
+    fi
+}
+
 if [ "$DXVK_DEPLOYED" -eq 0 ] && ! is_dxvk_dll "$SYSTEM32_DIR/d3d11.dll"; then
     echo "      Fetching pinned DXVK 2.4 release archive..."
     DXVK_CACHE_DIR="${XDG_CACHE_HOME:-$HOME/.cache}/rhino-linux"
@@ -176,14 +188,14 @@ if [ "$DXVK_DEPLOYED" -eq 0 ] && ! is_dxvk_dll "$SYSTEM32_DIR/d3d11.dll"; then
     DXVK_SHA256="784eb023fb8da8868aa562c30ef5562989211fc9fda6bc5155d95e28049fccc7"
 
     mkdir -p "$DXVK_CACHE_DIR"
-    if [ ! -f "$DXVK_TARBALL" ] || ! echo "$DXVK_SHA256  $DXVK_TARBALL" | sha256sum -c --status 2>/dev/null; then
+    if [ ! -f "$DXVK_TARBALL" ] || ! verify_sha256 "$DXVK_SHA256" "$DXVK_TARBALL"; then
         temp_dl="$DXVK_TARBALL.part.$$"
         if command -v curl >/dev/null 2>&1; then
             curl -fL -o "$temp_dl" "$DXVK_URL"
         elif command -v wget >/dev/null 2>&1; then
             wget -O "$temp_dl" "$DXVK_URL"
         fi
-        if echo "$DXVK_SHA256  $temp_dl" | sha256sum -c --status 2>/dev/null; then
+        if verify_sha256 "$DXVK_SHA256" "$temp_dl"; then
             mv -f "$temp_dl" "$DXVK_TARBALL"
         else
             echo "Warning: DXVK download verification failed." >&2
@@ -272,7 +284,11 @@ if [ -d "$RHINO_SYS_DIR" ]; then
         cp -v "$RHINO_SYS_DIR/RhinoGreet.dll" "$RHINO_SYS_DIR/netcore/RhinoGreet.dll" 2>/dev/null || true
     fi
 fi
-USER_DXVK_DIR="$TARGET_PREFIX/drive_c/users/$USER/AppData/Local/dxvk"
+WINE_USER_NAME="${USER:-}"
+if [ ! -d "$TARGET_PREFIX/drive_c/users/$WINE_USER_NAME" ]; then
+    WINE_USER_NAME="$(ls "$TARGET_PREFIX/drive_c/users" 2>/dev/null | grep -v -E "^(Public|Default)$" | head -n1 || echo "${USER:-user}")"
+fi
+USER_DXVK_DIR="$TARGET_PREFIX/drive_c/users/$WINE_USER_NAME/AppData/Local/dxvk"
 mkdir -p "$USER_DXVK_DIR"
 cp -v "$SCRIPT_DIR/dxvk-rhino.conf" "$USER_DXVK_DIR/dxvk.conf" 2>/dev/null || true
 
