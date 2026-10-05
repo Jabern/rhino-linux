@@ -88,6 +88,7 @@ done
 mkdir ~/src/build-wine && cd ~/src/build-wine
 ../wine/configure --enable-win64 --prefix=/opt/wine-rhino --without-capi
 make -j$(nproc)
+sudo make install
 
 # 4. Configure prefix
 cd /path/to/rhino-linux

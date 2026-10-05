@@ -111,9 +111,9 @@ Below is the technical breakdown of all 20 patches.
 
 ### Patch 10: Dialog DPI Change Behavior APIs
 - **File**: [`patches/10-wine-user32-dialog-dpi-behavior.patch`](../patches/10-wine-user32-dialog-dpi-behavior.patch)
-- **Subsystem**: `dlls/user32/dialog.c`, `dlls/user32/user32.spec`
-- **Problem**: Rhino's options, document properties, and print dialogs utilize Windows 10+ Per-Monitor DPI v2 APIs (`SetDialogDpiChangeBehavior`, `SetDialogControlDpiChangeBehavior`) to adjust dialog layout scaling when dragged across monitors of differing pixel densities. In stock Wine, these functions were absent, leading to dialog creation failures or misaligned fonts on multi-DPI displays.
-- **Solution**: Implements `SetDialogDpiChangeBehavior` and `SetDialogControlDpiChangeBehavior` in `user32.dll`.
+- **Subsystem**: `dlls/user32/dialog.c`, `dlls/user32/user32.spec`, `include/winuser.h`, `include/windef.h`
+- **Problem**: Rhino's options, document properties, and print dialogs utilize Windows 10+ Per-Monitor DPI v2 APIs (`SetDialogDpiChangeBehavior`, `GetDialogDpiChangeBehavior`, `SetDialogControlDpiChangeBehavior`, `GetDialogControlDpiChangeBehavior`) to query and adjust dialog layout scaling across displays of differing pixel densities. In stock Wine, these functions were absent, leading to dialog creation failures or misaligned fonts on multi-DPI displays.
+- **Solution**: Implements `SetDialogDpiChangeBehavior`, `GetDialogDpiChangeBehavior`, `SetDialogControlDpiChangeBehavior`, and `GetDialogControlDpiChangeBehavior` in `user32.dll` matching official Windows API signatures and property bitmask semantics.
 
 ---
 
