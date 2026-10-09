@@ -1,0 +1,163 @@
+name: Build Patched Wine Runtime
+
+on:
+  workflow_dispatch:
+    inputs:
+      wine_version:
+        description: 'Wine upstream git branch/tag'
+        required: true
+        default: 'wine-11.18'
+      create_release:
+        description: 'Publish archive to GitHub Releases'
+        required: false
+        type: boolean
+        default: false
+      release_tag:
+        description: 'Release tag (if publishing)'
+        required: false
+        default: 'v1.0.0-wine11.18'
+  push:
+    branches:
+      - main
+    paths:
+      - 'patches/**'
+      - '.github/workflows/build-wine.yml'
+  release:
+    types: [published]
+
+permissions:
+  contents: write
+
+jobs:
+  build-wine:
+    name: Build Wine (${{ inputs.wine_version || 'wine-11.18' }})
+    runs-on: ubuntu-24.04
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Install build dependencies
+        run: |
+          sudo dpkg --add-architecture i386
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential \
+            ccache \
+            flex \
+            bison \
+            gcc-mingw-w64-x86-64 \
+            gcc-mingw-w64-i686 \
+            libx11-dev \
+            libxext-dev \
+            libxrandr-dev \
+            libxinerama-dev \
+            libxcomposite-dev \
+            libxdamage-dev \
+            libxcursor-dev \
+            libxi-dev \
+            libxfixes-dev \
+            libxrender-dev \
+            libgl-dev \
+            libegl-dev \
+            libvulkan-dev \
+            libfreetype-dev \
+            libfontconfig-dev \
+            libgnutls28-dev \
+            libpulse-dev \
+            libasound2-dev \
+            libudev-dev \
+            libwayland-dev \
+            wayland-protocols \
+            libxkbcommon-dev \
+            xz-utils
+
+      - name: Setup ccache
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ccache
+          key: ccache-wine-${{ runner.os }}-${{ inputs.wine_version || 'wine-11.18' }}-${{ github.sha }}
+          restore-keys: |
+            ccache-wine-${{ runner.os }}-${{ inputs.wine_version || 'wine-11.18' }}-
+            ccache-wine-${{ runner.os }}-
+
+      - name: Configure ccache environment
+        run: |
+          ccache -M 5G
+          ccache -s
+
+      - name: Clone Wine upstream
+        run: |
+          WINE_VER="${{ inputs.wine_version || 'wine-11.18' }}"
+          echo "Cloning Wine $WINE_VER..."
+          git clone --depth 1 --branch "$WINE_VER" https://gitlab.winehq.org/wine/wine.git wine-src
+
+      - name: Apply repository patches
+        run: |
+          cd wine-src
+          echo "Applying patch set from patches/..."
+          for patch_file in "$GITHUB_WORKSPACE"/patches/*.patch; do
+            if [ -f "$patch_file" ]; then
+              patch_name="$(basename "$patch_file")"
+              echo "Applying: $patch_name"
+              patch -p1 -N < "$patch_file" || { echo "Failed to apply $patch_name"; exit 1; }
+            fi
+          done
+          echo "All patches applied successfully."
+
+      - name: Configure Wine (dual WoW64)
+        run: |
+          mkdir -p build-wine
+          cd build-wine
+          export PATH="/usr/lib/ccache:$PATH"
+          ../wine-src/configure \
+            --prefix=/opt/wine-rhino \
+            --enable-archs=i386,x86_64 \
+            --without-capi \
+            --without-gstreamer
+
+      - name: Compile Wine
+        run: |
+          cd build-wine
+          export PATH="/usr/lib/ccache:$PATH"
+          make -j$(nproc)
+          ccache -s
+
+      - name: Stage and Package Wine Runtime
+        run: |
+          cd build-wine
+          make install DESTDIR="$GITHUB_WORKSPACE/staging"
+          cd "$GITHUB_WORKSPACE/staging/opt/wine-rhino"
+          
+          WINE_VER="${{ inputs.wine_version || 'wine-11.18' }}"
+          TARBALL="wine-rhino-${WINE_VER}-x86_64.tar.xz"
+          echo "Packaging $TARBALL..."
+          tar -cJf "$GITHUB_WORKSPACE/$TARBALL" *
+          
+          cd "$GITHUB_WORKSPACE"
+          sha256sum "$TARBALL" > "$TARBALL.sha256"
+          echo "TARBALL=$TARBALL" >> $GITHUB_ENV
+          echo "SHA256=$(cat $TARBALL.sha256 | awk '{print $1}')" >> $GITHUB_ENV
+          
+          echo "Generated archive: $TARBALL"
+          cat "$TARBALL.sha256"
+
+      - name: Upload Wine Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.TARBALL }}
+          path: |
+            ${{ env.TARBALL }}
+            ${{ env.TARBALL }}.sha256
+          retention-days: 14
+
+      - name: Publish to GitHub Releases
+        if: github.event_name == 'release' || inputs.create_release == true
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ inputs.release_tag || github.ref_name }}
+          files: |
+            ${{ env.TARBALL }}
+            ${{ env.TARBALL }}.sha256
+          draft: false
+          prerelease: false
