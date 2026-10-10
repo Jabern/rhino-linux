@@ -203,5 +203,6 @@ Below is the technical breakdown of all 20 patches.
 ### Patch 21: GDI+ Flattening of S-Shaped Bezier Curves
 - **File**: [`patches/21-gdiplus-flatten-s-curve-beziers.patch`](../patches/21-gdiplus-flatten-s-curve-beziers.patch)
 - **Subsystem**: `dlls/gdiplus/graphicspath.c`
+- **Reported by**: [eqeka](https://github.com/eqeka), who found that Grasshopper wires were drawn straight.
 - **Problem**: Grasshopper draws every wire as a single cubic Bezier (`GraphicsPath.AddBezier`) stroked with a wide pen, which GDI+ flattens into line segments first. Wine's `flatten_bezier` judged flatness only by the distance of the curve's middle point from the chord. For a point-symmetric S-curve, which is exactly what Grasshopper's wires are, that middle point lies on the chord, so the whole curve was accepted as flat and drawn as one straight line. Unpatched upstream Wine (11.18, 11.19 and master) behaves the same way.
 - **Solution**: When the two control points lie on opposite sides of the chord, the segment is only accepted once both control points are also within tolerance, so S-curves are subdivided until each half is C-shaped. C-shaped curves (arcs, ellipses, rounded rectangles) keep the original criterion and flatten exactly as before.
