@@ -391,6 +391,24 @@ if [ -d "$RHINO_SYS_DIR" ]; then
         cp -v "$RHINO_SYS_DIR/RhinoGreet.dll" "$RHINO_SYS_DIR/netcore/RhinoGreet.dll" 2>/dev/null || true
     fi
 fi
+
+# Rhino compiles display-mode shaders at runtime (Artistic, Monochrome, ...); Wine's
+# builtin d3dcompiler_47 cannot compile them and those viewports stay black. Use
+# Microsoft's compiler from the WebView2 runtime that the Rhino installer put in
+# the prefix (newest 64-bit copy).
+SYSTEM32_COMPILER="$TARGET_PREFIX/drive_c/windows/system32/d3dcompiler_47.dll"
+NATIVE_COMPILER=""
+while IFS= read -r candidate; do
+    grep -qa "Wine builtin DLL" "$candidate" && continue
+    file "$candidate" 2>/dev/null | grep -q 'x86-64' || continue
+    NATIVE_COMPILER="$candidate"
+done < <(ls -d "$TARGET_PREFIX/drive_c/Program Files (x86)/Microsoft/EdgeWebView/Application"/*/d3dcompiler_47.dll 2>/dev/null | sort -V)
+if [ -n "$NATIVE_COMPILER" ]; then
+    cp -f "$NATIVE_COMPILER" "$SYSTEM32_COMPILER"
+    echo "      [PASS] Native d3dcompiler_47 installed from the WebView2 runtime"
+elif [ -d "$RHINO_SYS_DIR" ] && grep -qa "Wine builtin DLL" "$SYSTEM32_COMPILER" 2>/dev/null; then
+    echo "      [WARN] No native d3dcompiler_47 found; Artistic/Monochrome display modes will render black."
+fi
 WINE_USER_NAME="${USER:-}"
 if [ ! -d "$TARGET_PREFIX/drive_c/users/$WINE_USER_NAME" ]; then
     WINE_USER_NAME="$(ls "$TARGET_PREFIX/drive_c/users" 2>/dev/null | grep -v -E "^(Public|Default)$" | head -n1 || echo "${USER:-user}")"
