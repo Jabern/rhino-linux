@@ -390,11 +390,11 @@ build_patched_wine() {
 
     local patch_files=()
     if [ "$ENABLE_WAYLAND" -eq 1 ]; then
-        echo "Applying full 20-patch set (including Wayland driver)..."
+        echo "Applying full patch set (including Wayland driver Patch 16)..."
         patch_files=("$REPO_DIR"/patches/*.patch)
     else
-        echo "Applying standard 19-patch set for X11 / XWayland..."
-        patch_files=("$REPO_DIR"/patches/{0[1-9],1[0-5],1[7-9],20}-*.patch)
+        echo "Applying standard patch set for X11 / XWayland (all except Patch 16)..."
+        patch_files=("$REPO_DIR"/patches/{0[1-9],1[0-5],1[7-9],2[0-9]}-*.patch)
     fi
 
     cd "$src_dir"

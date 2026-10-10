@@ -32,6 +32,7 @@ Below is the technical breakdown of all 20 patches.
 | 18 | [`18-x11-client-surface-repaint.patch`](../patches/18-x11-client-surface-repaint.patch) | `win32u` / `winex11` | Invalidate and repaint on Vulkan swapchain recreate (eliminates black bars) |
 | 19 | [`19-wine-multimonitor-child-maximize.patch`](../patches/19-wine-multimonitor-child-maximize.patch) | `win32u` | Prevent MDI child viewports from shifting off-screen on multi-monitors |
 | 20 | [`20-wine-xrandr-primary-anchor.patch`](../patches/20-wine-xrandr-primary-anchor.patch) | `winex11.drv` | Anchor primary display at `(0, 0)` under XRandR for Wayland bridges |
+| 21 | [`21-gdiplus-flatten-s-curve-beziers.patch`](../patches/21-gdiplus-flatten-s-curve-beziers.patch) | `gdiplus` | Correct flattening of S-shaped Bezier curves (curved Grasshopper wires) |
 
 ---
 
@@ -198,3 +199,9 @@ Below is the technical breakdown of all 20 patches.
 - **Subsystem**: `dlls/winex11.drv/xrandr.c`
 - **Problem**: When running under Wayland window managers (such as Niri or Hyprland via `xwayland-satellite`), moving focus or windows across monitors causes the compositor to dynamically switch which output is designated as the XRandR primary display. In stock Wine, changing the primary display shifted Wine's virtual desktop origin `(0, 0)`. When this occurred, existing Rhino windows and mouse cursor coordinates desynced by a full monitor width (e.g. 1920 pixels), freezing mouse interaction.
 - **Solution**: Anchors the primary display rectangle to root `(0, 0)` in `get_primary_rect`, keeping coordinate mapping completely stable across dynamic monitor events.
+
+### Patch 21: GDI+ Flattening of S-Shaped Bezier Curves
+- **File**: [`patches/21-gdiplus-flatten-s-curve-beziers.patch`](../patches/21-gdiplus-flatten-s-curve-beziers.patch)
+- **Subsystem**: `dlls/gdiplus/graphicspath.c`
+- **Problem**: Grasshopper draws every wire as a single cubic Bezier (`GraphicsPath.AddBezier`) stroked with a wide pen, which GDI+ flattens into line segments first. Wine's `flatten_bezier` judged flatness only by the distance of the curve's middle point from the chord. For a point-symmetric S-curve, which is exactly what Grasshopper's wires are, that middle point lies on the chord, so the whole curve was accepted as flat and drawn as one straight line. Unpatched upstream Wine (11.18, 11.19 and master) behaves the same way.
+- **Solution**: When the two control points lie on opposite sides of the chord, the segment is only accepted once both control points are also within tolerance, so S-curves are subdivided until each half is C-shaped. C-shaped curves (arcs, ellipses, rounded rectangles) keep the original criterion and flatten exactly as before.

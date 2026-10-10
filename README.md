@@ -62,7 +62,7 @@ Stock Wine experiences crashes, blank web panels, and visual glitches when runni
 - **Viewport & Graphics**: Rebinds X11 client surfaces and forces redraws on Vulkan swapchain recreation to eliminate viewport maximize black bars ([Patch 18](patches/18-x11-client-surface-repaint.patch)), plus DXGI format fallback ([Patch 11](patches/11-wine-dxgi-unknown-swapchain-format.patch)).
 - **Multi-Monitor & Wayland**: Excludes MDI child windows from multi-monitor desktop offset shifts ([Patch 19](patches/19-wine-multimonitor-child-maximize.patch)), anchors XRandR coordinates to prevent Wayland mouse drift ([Patch 20](patches/20-wine-xrandr-primary-anchor.patch)), and adds Wayland popup overlay compositing ([Patch 16](patches/16-winewayland-popups-and-overlays.patch)).
 
-See [docs/patches.md](docs/patches.md) for the detailed technical breakdown and file lists for all 20 patches.
+See [docs/patches.md](docs/patches.md) for the detailed technical breakdown and file lists for all patches.
 
 ## Desktop Environments & Window Managers
 
@@ -80,7 +80,7 @@ cd ~/src/wine
 git checkout wine-11.18
 
 # 2. Apply patches
-for p in /path/to/rhino-linux/patches/{0[1-9],1[0-5],1[7-9],20}-*.patch; do
+for p in /path/to/rhino-linux/patches/{0[1-9],1[0-5],1[7-9],2[0-9]}-*.patch; do
     patch -p1 < "$p"
 done
 

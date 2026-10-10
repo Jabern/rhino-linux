@@ -28,6 +28,7 @@ This directory contains 20 modular topic patches for Wine (19 core patches for X
 | **18** | `18-x11-client-surface-repaint.patch` | `winex11.drv` / `win32u` | Presents offscreen DXVK client surfaces on idle window mapping via XDamage and invalidates parent on swapchain recreate. |
 | **19** | `19-wine-multimonitor-child-maximize.patch` | `win32u` | Excludes child and MDI windows from monitor-offset calculations when maximized across secondary displays. |
 | **20** | `20-wine-xrandr-primary-anchor.patch` | `winex11.drv` | Anchors primary monitor at root (0,0) in XRandR to prevent coordinate shifts and mouse input desync when Wayland compositors dynamically rotate the primary output. |
+| **21** | `21-gdiplus-flatten-s-curve-beziers.patch` | `gdiplus` | Fixes Bezier flattening of S-shaped curves (control points on opposite sides of the chord), which were reduced to a straight line; restores curved Grasshopper wires. |
 
 ---
 
@@ -38,8 +39,8 @@ To apply to an upstream Wine tree (Wine 11.18):
 ```bash
 cd /path/to/wine
 
-# Standard 19-patch series for X11 / XWayland:
-for p in /path/to/rhino-linux/patches/{0[1-9],1[0-5],1[7-9],20}-*.patch; do
+# Standard patch series for X11 / XWayland (all except Patch 16):
+for p in /path/to/rhino-linux/patches/{0[1-9],1[0-5],1[7-9],2[0-9]}-*.patch; do
     patch -p1 < "$p"
 done
 
