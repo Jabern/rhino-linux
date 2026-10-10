@@ -29,6 +29,27 @@ rhino-9
 rhino-9 model.3dm
 ```
 
+## Prefer not to use the terminal?
+
+**Rhino on Linux** is a small app that installs Rhino for you and keeps it working:
+it checks your computer, asks for the Rhino installer you downloaded from McNeel,
+and shows the installation step by step. Afterwards it lets you open Rhino, check
+for updates, repair the setup, close a stuck Rhino or uninstall everything. An
+*Expert mode* (menu) adds direct access to the Wine environment: winecfg, the
+registry, DXVK settings, a terminal in the prefix and rebuilding Wine.
+
+<p align="center"><img src="docs/images/rhino-on-linux-app.png" width="420" alt="The Rhino on Linux app: open Rhino, check for updates, repair, close a stuck Rhino, uninstall"></p>
+
+Start it from the downloaded folder with `python3 tools/rhino-on-linux.py`
+(or double-click the file). After the first installation it also appears in
+your applications menu as **Rhino on Linux**. It uses the same scripts as the
+command line, so both always behave the same.
+
+It needs Python with GTK 4 and libadwaita 1.5 or newer (Ubuntu 24.04, Fedora 40 and current Arch have it):
+- **Arch / Manjaro**: `sudo pacman -S --needed python-gobject gtk4 libadwaita`
+- **Ubuntu / Debian**: `sudo apt install python3-gi gir1.2-gtk-4.0 gir1.2-adw-1`
+- **Fedora**: `sudo dnf install python3-gobject gtk4 libadwaita`
+
 ## Dependencies
 
 ### Runtime Dependencies

@@ -104,6 +104,27 @@ fi
 # 1. Initialize Prefix if needed
 if [ ! -d "$TARGET_PREFIX/drive_c" ]; then
     echo "[1/6] Initializing fresh 64-bit Wine prefix..."
+    # The Rhino installer needs Wine Mono (.NET Framework) and uses the IE control
+    # (Wine Gecko). Wine installs both silently from its cache instead of asking
+    # the user, so stage the versions this Wine release expects (11.18).
+    WINE_ADDON_CACHE="${XDG_CACHE_HOME:-$HOME/.cache}/wine"
+    mkdir -p "$WINE_ADDON_CACHE"
+    while read -r addon sum; do
+        file="$WINE_ADDON_CACHE/$(basename "$addon")"
+        if [ -f "$file" ] && echo "$sum  $file" | sha256sum -c --status 2>/dev/null; then continue; fi
+        echo "      Downloading $(basename "$addon")..."
+        if curl -fsSL -o "$file.part" "https://dl.winehq.org/wine/$addon" &&
+           echo "$sum  $file.part" | sha256sum -c --status 2>/dev/null; then
+            mv -f "$file.part" "$file"
+        else
+            rm -f "$file.part"
+            echo "      [WARN] Could not download $(basename "$addon"); Wine will ask to install it."
+        fi
+    done <<'ADDONS'
+wine-mono/11.3.0/wine-mono-11.3.0-x86.msi df2dfc1665c2511882e7cabd56eafd0c0a3d94e5a7e86f969277f6c189d418d3
+wine-gecko/2.47.4/wine-gecko-2.47.4-x86.msi 26cecc47706b091908f7f814bddb074c61beb8063318e9efc5a7f789857793d6
+wine-gecko/2.47.4/wine-gecko-2.47.4-x86_64.msi e590b7d988a32d6aa4cf1d8aa3aa3d33766fdd4cf4c89c2dcc2095ecb28d066f
+ADDONS
     "$WINE_BIN" wineboot -u
     timeout 10 "$WINESERVER_BIN" -w 2>/dev/null || true
 else
@@ -467,6 +488,22 @@ StartupWMClass=Rhino.exe
 StartupNotify=true
 EOF
     chmod +x "$APPS_DIR/rhino-9.desktop"
+
+    # The setup and maintenance app (needs Python with GTK 4 and libadwaita).
+    if python3 -c 'import gi; gi.require_version("Gtk", "4.0"); gi.require_version("Adw", "1")' 2>/dev/null; then
+        cat << EOF > "$APPS_DIR/io.github.jabern.RhinoOnLinux.desktop"
+[Desktop Entry]
+Name=Rhino on Linux
+GenericName=Rhino setup and maintenance
+Comment=Install, update, repair or uninstall Rhino
+Exec=python3 "$(dirname "$SCRIPT_DIR")/tools/rhino-on-linux.py"
+Icon=rhino9
+Terminal=false
+Type=Application
+Categories=Settings;Utility;
+StartupNotify=true
+EOF
+    fi
 
     if command -v update-desktop-database >/dev/null 2>&1; then
         update-desktop-database "$APPS_DIR" 2>/dev/null || true
