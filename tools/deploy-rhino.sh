@@ -115,14 +115,16 @@ echo "[2/6] Deploying DXVK 64-bit runtime libraries..."
 SYSTEM32_DIR="$TARGET_PREFIX/drive_c/windows/system32"
 mkdir -p "$SYSTEM32_DIR"
 
+# Identify DXVK by content, not size: Wine's own builtin d3d11.dll is several MB
+# and carries the "Wine builtin DLL" marker, DXVK's references its DXVK_* env vars.
 is_dxvk_dll() {
     local dll="$1"
-    [ -f "$dll" ] && [ "$(stat -c%s "$dll" 2>/dev/null || stat -f%z "$dll" 2>/dev/null || echo 0)" -gt 500000 ]
+    [ -f "$dll" ] && ! grep -qa "Wine builtin DLL" "$dll" && grep -qa "DXVK_" "$dll"
 }
 
 deploy_dxvk_from_dir() {
     local src_dir="$1"
-    if [ -f "$src_dir/d3d11.dll" ]; then
+    if is_dxvk_dll "$src_dir/d3d11.dll"; then
         echo "      Copying DXVK libraries from $src_dir..."
         for dll in d3d11.dll dxgi.dll d3d9.dll d3d10core.dll; do
             [ -f "$src_dir/$dll" ] && cp -f "$src_dir/$dll" "$SYSTEM32_DIR/$dll"
@@ -176,7 +178,8 @@ verify_sha256() {
     elif command -v shasum >/dev/null 2>&1; then
         echo "$expected  $file" | shasum -a 256 -c --status 2>/dev/null
     else
-        return 0
+        echo "Error: sha256sum or shasum is required to verify downloads." >&2
+        return 1
     fi
 }
 
@@ -326,7 +329,7 @@ if [ ! -f "$FONTS_DIR/arial.ttf" ]; then
             "${XDG_CACHE_HOME:-$HOME/.cache}/winetricks/corefonts/arial32.exe" \
             "$HOME/.cache/winetricks/corefonts/arial32.exe"; do
             if [ -f "$cached" ] && verify_sha256 "$ARIAL_SHA256" "$cached"; then
-                cp -f "$cached" "$ARIAL_EXE"
+                [ "$cached" -ef "$ARIAL_EXE" ] || cp -f "$cached" "$ARIAL_EXE"
                 break
             fi
         done
