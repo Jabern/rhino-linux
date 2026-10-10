@@ -142,18 +142,28 @@ jobs:
           cd build-wine
           make install DESTDIR="$GITHUB_WORKSPACE/staging"
           cd "$GITHUB_WORKSPACE/staging/opt/wine-rhino"
-          
+
+          # Runtime only: drop headers and import libraries, strip debug
+          # information and symbols (Wine only needs exports at run time).
+          rm -rf include
+          find . -name '*.a' -delete
+          find lib/wine/x86_64-unix -type f -name '*.so' -exec strip --strip-unneeded {} +
+          strip --strip-unneeded bin/wineserver lib/wine/x86_64-unix/wine lib/wine/x86_64-unix/wine-preloader 2>/dev/null || true
+          find lib/wine/x86_64-windows -type f -exec x86_64-w64-mingw32-strip --strip-unneeded {} + 2>/dev/null || true
+          find lib/wine/i386-windows -type f -exec i686-w64-mingw32-strip --strip-unneeded {} + 2>/dev/null || true
+          ./bin/wine --version
+
           WINE_VER="${{ inputs.wine_version || 'wine-11.18' }}"
-          TARBALL="wine-rhino-${WINE_VER}-x86_64.tar.xz"
+          TARBALL="wine-rhino-${WINE_VER#wine-}-x86_64.tar.xz"
           echo "Packaging $TARBALL..."
-          tar -cJf "$GITHUB_WORKSPACE/$TARBALL" *
-          
+          tar -cf - * | xz -9 -T0 > "$GITHUB_WORKSPACE/$TARBALL"
+
           cd "$GITHUB_WORKSPACE"
           sha256sum "$TARBALL" > "$TARBALL.sha256"
           echo "TARBALL=$TARBALL" >> $GITHUB_ENV
           echo "SHA256=$(cat $TARBALL.sha256 | awk '{print $1}')" >> $GITHUB_ENV
-          
-          echo "Generated archive: $TARBALL"
+
+          echo "Generated archive: $TARBALL ($(du -h "$TARBALL" | cut -f1))"
           cat "$TARBALL.sha256"
 
       - name: Upload Wine Artifacts
@@ -175,3 +185,5 @@ jobs:
             ${{ env.TARBALL }}.sha256
           draft: false
           prerelease: false
+          # never replace a runtime already published (install.sh pins its checksum)
+          overwrite_files: false
