@@ -2,6 +2,8 @@
 
 Patches and scripts to get McNeel Rhinoceros running on Linux using Wine and DXVK.
 
+![Rhino 9 running on Linux: shaded Perspective viewport rendered with DXVK, wireframe Top, Front and Right views](docs/images/rhino-9-on-linux.png)
+
 ## Quickstart
 
 ```bash
