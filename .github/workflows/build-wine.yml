@@ -115,6 +115,8 @@ jobs:
             --enable-archs=i386,x86_64 \
             --without-capi \
             --without-gstreamer
+          grep -q '^#define SONAME_LIBXDAMAGE ' include/config.h || { echo "XDamage support missing"; exit 1; }
+          grep -q '^#define HAVE_LINUX_NTSYNC_H 1' include/config.h || echo "::warning::linux/ntsync.h not found; runtime will be built without ntsync"
 
       - name: Compile Wine
         run: |

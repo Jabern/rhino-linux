@@ -318,7 +318,8 @@ verify_sha256() {
     elif command -v shasum >/dev/null 2>&1; then
         echo "$expected  $file" | shasum -a 256 -c --status 2>/dev/null
     else
-        return 0
+        echo "Error: sha256sum or shasum is required to verify downloads." >&2
+        return 1
     fi
 }
 
@@ -379,25 +380,24 @@ build_patched_wine() {
     echo -e "\n${BOLD}${BLUE}[Step 2/4] Building Patched Wine from Source...${NC}"
     local src_dir="${WINE_SRC_DIR:-$REPO_DIR/wine-src}"
     local build_dir="$REPO_DIR/build-wine"
-    local prefix_dir="/opt/wine-rhino"
+    local jobs
+    jobs="$(nproc 2>/dev/null || echo 4)"
 
     if [ ! -d "$src_dir" ]; then
         echo -e "Cloning Wine 11.18 repository into ${CYAN}$src_dir${NC}..."
         git clone --depth 1 --branch wine-11.18 https://gitlab.winehq.org/wine/wine.git "$src_dir"
     fi
 
-    local patch_glob
+    local patch_files=()
     if [ "$ENABLE_WAYLAND" -eq 1 ]; then
         echo "Applying full 20-patch set (including Wayland driver)..."
-        patch_glob="$REPO_DIR/patches/"*.patch
+        patch_files=("$REPO_DIR"/patches/*.patch)
     else
         echo "Applying standard 19-patch set for X11 / XWayland..."
-        patch_glob="$REPO_DIR/patches/{0[1-9],1[0-5],1[7-9],20}-*.patch"
+        patch_files=("$REPO_DIR"/patches/{0[1-9],1[0-5],1[7-9],20}-*.patch)
     fi
 
     cd "$src_dir"
-    # Expand glob
-    eval "patch_files=($patch_glob)"
     for patch_file in "${patch_files[@]}"; do
         patch_name="$(basename "$patch_file")"
         if patch -p1 --dry-run -R -N < "$patch_file" >/dev/null 2>&1; then
@@ -411,18 +411,30 @@ build_patched_wine() {
         fi
     done
 
+    # WoW64 build: the Rhino installer bootstrapper is a 32-bit executable.
     mkdir -p "$build_dir"
     cd "$build_dir"
-    echo "Configuring Wine 64-bit..."
-    "$src_dir/configure" --enable-win64 --prefix="$prefix_dir" --without-capi
+    echo "Configuring Wine (WoW64: i386 + x86_64)..."
+    "$src_dir/configure" --prefix="$WINE_INSTALL_DIR" --enable-archs=i386,x86_64 \
+        --without-capi --without-gstreamer
 
-    echo "Compiling Wine with $(nproc) parallel jobs..."
-    make -j"$(nproc)"
+    # Viewport repaint after maximize/resize depends on XDamage; ntsync on the kernel header.
+    if ! grep -q '^#define SONAME_LIBXDAMAGE ' include/config.h; then
+        echo -e "${RED}Error: libXdamage development files not found; the viewport repaint fix would be compiled out.${NC}" >&2
+        return 1
+    fi
+    if ! grep -q '^#define HAVE_LINUX_NTSYNC_H 1' include/config.h; then
+        echo -e "${YELLOW}Warning: linux/ntsync.h not found; building without ntsync support.${NC}"
+    fi
 
-    WINE_BIN="$build_dir/wine"
-    WINESERVER_BIN="$build_dir/server/wineserver"
+    echo "Compiling Wine with $jobs parallel jobs..."
+    make -j"$jobs"
+    make install
+
+    WINE_BIN="$WINE_INSTALL_DIR/bin/wine"
+    WINESERVER_BIN="$WINE_INSTALL_DIR/bin/wineserver"
     cd "$REPO_DIR"
-    echo -e "${GREEN}Wine build completed successfully: $WINE_BIN${NC}"
+    echo -e "${GREEN}Wine build completed successfully: $("$WINE_BIN" --version)${NC}"
 }
 
 find_existing_wine
