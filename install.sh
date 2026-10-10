@@ -48,8 +48,8 @@ CUSTOM_DXVK_DIR=""
 RHINO_INSTALLER=""
 RUN_RHINO=0
 WINE_INSTALL_DIR="$HOME/.local/share/wine-rhino"
-WINE_RELEASE_URL="https://github.com/Jabern/rhino-linux/releases/download/v1.0.0/wine-rhino-11.18-x86_64.tar.xz"
-WINE_RELEASE_SHA256="59b3b39f0aa81178da3c87831243edb03432775f6482e31b054783d634fe2e6f"
+WINE_RELEASE_URL="https://github.com/Jabern/rhino-linux/releases/download/v1.1.0/wine-rhino-11.18-x86_64.tar.xz"
+WINE_RELEASE_SHA256="591ef36d02b104b4f8f0920dc370ff17d9ed5e8dc7466f79685ba9322928076d"
 
 # Default Prefix
 TARGET_PREFIX="${RHINO_PREFIX:-${WINEPREFIX:-}}"
@@ -283,12 +283,22 @@ fi
 WINE_BIN=""
 WINESERVER_BIN=""
 
+# The installed runtime records where it came from: the release checksum it was
+# extracted from, or "local-build" for --build-wine. An older or unmarked runtime is
+# replaced by the current release; a local build is kept.
+RUNTIME_STAMP="$WINE_INSTALL_DIR/.rhino-linux-runtime"
+runtime_is_current() {
+    local stamp
+    stamp="$(cat "$RUNTIME_STAMP" 2>/dev/null || true)"
+    [ "$stamp" = "$WINE_RELEASE_SHA256" ] || [ "$stamp" = "local-build" ]
+}
+
 find_existing_wine() {
     if [ -n "$CUSTOM_WINE" ] && [ -x "$CUSTOM_WINE" ]; then
         WINE_BIN="$CUSTOM_WINE"
     elif [ -n "${WINE:-}" ] && [ -x "$WINE" ]; then
         WINE_BIN="$WINE"
-    elif [ -x "$WINE_INSTALL_DIR/bin/wine" ]; then
+    elif [ -x "$WINE_INSTALL_DIR/bin/wine" ] && runtime_is_current; then
         WINE_BIN="$WINE_INSTALL_DIR/bin/wine"
     elif [ -x "/opt/wine-rhino/bin/wine" ]; then
         WINE_BIN="/opt/wine-rhino/bin/wine"
@@ -342,7 +352,7 @@ download_prebuilt_wine() {
     fi
 
     if [ ! -f "$tarball" ]; then
-        echo -e "Fetching pre-compiled Wine runtime (~63 MB)..."
+        echo -e "Fetching pre-compiled Wine runtime (~58 MB)..."
         if command -v curl >/dev/null 2>&1; then
             curl -fL --progress-bar -o "$temp_tarball" "$WINE_RELEASE_URL"
         elif command -v wget >/dev/null 2>&1; then
@@ -362,7 +372,10 @@ download_prebuilt_wine() {
     fi
 
     echo -e "Extracting Wine runtime to ${CYAN}$WINE_INSTALL_DIR${NC}..."
+    rm -rf "$WINE_INSTALL_DIR"
+    mkdir -p "$WINE_INSTALL_DIR"
     tar -xf "$tarball" -C "$WINE_INSTALL_DIR"
+    echo "$WINE_RELEASE_SHA256" > "$RUNTIME_STAMP"
 
     WINE_BIN="$WINE_INSTALL_DIR/bin/wine"
     WINESERVER_BIN="$WINE_INSTALL_DIR/bin/wineserver"
@@ -439,6 +452,7 @@ build_patched_wine() {
     echo "Compiling Wine with $jobs parallel jobs..."
     make -j"$jobs"
     make install
+    echo "local-build" > "$RUNTIME_STAMP"
 
     WINE_BIN="$WINE_INSTALL_DIR/bin/wine"
     WINESERVER_BIN="$WINE_INSTALL_DIR/bin/wineserver"

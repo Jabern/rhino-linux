@@ -12,7 +12,7 @@ cd rhino-linux
 ./install.sh
 ```
 
-`./install.sh` automatically downloads our pre-built patched Wine runtime (~63 MB) directly from GitHub Releases, so you **do not** need to compile Wine from source.
+`./install.sh` automatically downloads our pre-built patched Wine runtime (~58 MB) directly from GitHub Releases, so you **do not** need to compile Wine from source.
 
 To run your Rhino installer directly, pass `--installer`:
 
