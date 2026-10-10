@@ -109,19 +109,21 @@ jobs:
         run: |
           mkdir -p build-wine
           cd build-wine
-          export PATH="/usr/lib/ccache:$PATH"
           ../wine-src/configure \
             --prefix=/opt/wine-rhino \
             --enable-archs=i386,x86_64 \
+            --disable-tests \
             --without-capi \
-            --without-gstreamer
+            --without-gstreamer \
+            CC="ccache gcc" \
+            i386_CC="ccache i686-w64-mingw32-gcc" \
+            x86_64_CC="ccache x86_64-w64-mingw32-gcc"
           grep -q '^#define SONAME_LIBXDAMAGE ' include/config.h || { echo "XDamage support missing"; exit 1; }
           grep -q '^#define HAVE_LINUX_NTSYNC_H 1' include/config.h || echo "::warning::linux/ntsync.h not found; runtime will be built without ntsync"
 
       - name: Compile Wine
         run: |
           cd build-wine
-          export PATH="/usr/lib/ccache:$PATH"
           make -j$(nproc)
           ccache -s
 

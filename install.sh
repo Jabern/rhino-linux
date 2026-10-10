@@ -414,9 +414,18 @@ build_patched_wine() {
     # WoW64 build: the Rhino installer bootstrapper is a 32-bit executable.
     mkdir -p "$build_dir"
     cd "$build_dir"
+    # ccache makes rebuilds after a patch change recompile only the touched files.
+    local cc_vars=()
+    if command -v ccache >/dev/null 2>&1; then
+        echo "Using ccache for host and PE (mingw) compilers."
+        cc_vars=(CC="ccache gcc"
+                 i386_CC="ccache i686-w64-mingw32-gcc"
+                 x86_64_CC="ccache x86_64-w64-mingw32-gcc")
+    fi
+
     echo "Configuring Wine (WoW64: i386 + x86_64)..."
     "$src_dir/configure" --prefix="$WINE_INSTALL_DIR" --enable-archs=i386,x86_64 \
-        --without-capi --without-gstreamer
+        --disable-tests --without-capi --without-gstreamer "${cc_vars[@]}"
 
     # Viewport repaint after maximize/resize depends on XDamage; ntsync on the kernel header.
     if ! grep -q '^#define SONAME_LIBXDAMAGE ' include/config.h; then
