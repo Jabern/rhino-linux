@@ -35,7 +35,7 @@ jobs:
 
     steps:
       - name: Check out repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Install build dependencies
         run: |
@@ -73,7 +73,7 @@ jobs:
             xz-utils
 
       - name: Setup ccache
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: ~/.cache/ccache
           key: ccache-wine-${{ runner.os }}-${{ inputs.wine_version || 'wine-11.18' }}-${{ github.sha }}
@@ -105,6 +105,15 @@ jobs:
           done
           echo "All patches applied successfully."
 
+      - name: Provide the ntsync kernel header
+        run: |
+          # The runner's kernel headers predate ntsync (Linux 6.14); the header
+          # is only needed at build time, Wine uses /dev/ntsync when available.
+          mkdir -p kernel-headers/linux
+          curl -fsSL -o kernel-headers/linux/ntsync.h \
+            https://raw.githubusercontent.com/torvalds/linux/v6.17/include/uapi/linux/ntsync.h
+          echo "006437ee52a3e04f921df77081eb5c21c44c71f598b10ac534c6ef9e78296262  kernel-headers/linux/ntsync.h" | sha256sum -c
+
       - name: Configure Wine (dual WoW64)
         run: |
           mkdir -p build-wine
@@ -115,11 +124,12 @@ jobs:
             --disable-tests \
             --without-capi \
             --without-gstreamer \
+            CPPFLAGS="-I$GITHUB_WORKSPACE/kernel-headers" \
             CC="ccache gcc" \
             i386_CC="ccache i686-w64-mingw32-gcc" \
             x86_64_CC="ccache x86_64-w64-mingw32-gcc"
           grep -q '^#define SONAME_LIBXDAMAGE ' include/config.h || { echo "XDamage support missing"; exit 1; }
-          grep -q '^#define HAVE_LINUX_NTSYNC_H 1' include/config.h || echo "::warning::linux/ntsync.h not found; runtime will be built without ntsync"
+          grep -q '^#define HAVE_LINUX_NTSYNC_H 1' include/config.h || { echo "ntsync support missing"; exit 1; }
 
       - name: Compile Wine
         run: |
@@ -147,7 +157,7 @@ jobs:
           cat "$TARBALL.sha256"
 
       - name: Upload Wine Artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: ${{ env.TARBALL }}
           path: |
@@ -157,7 +167,7 @@ jobs:
 
       - name: Publish to GitHub Releases
         if: github.event_name == 'release' || inputs.create_release == true
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           tag_name: ${{ inputs.release_tag || github.ref_name }}
           files: |
