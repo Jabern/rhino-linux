@@ -62,10 +62,15 @@ desktop distributions set up already.
 
 Download [RhinoOnLinux.flatpak](https://github.com/Jabern/rhino-linux/releases/latest/download/RhinoOnLinux.flatpak)
 and double-click it. Your software center (GNOME Software, Discover) installs
-it, along with the GNOME runtime it needs from Flathub. Or from a terminal:
+it, along with the GNOME runtime it needs from Flathub.
+
+If double-clicking opens nothing, your software center may not handle
+downloaded Flatpak files. Shelly on CachyOS, for example, shows its normal
+package list when its Flatpak support is switched off in its settings.
+Installing from a terminal always works:
 
 ```bash
-flatpak install --user RhinoOnLinux.flatpak
+flatpak install --user ~/Downloads/RhinoOnLinux.flatpak
 ```
 
 The download doesn't update itself. When a new version comes out, download it
