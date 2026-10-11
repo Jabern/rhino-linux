@@ -149,14 +149,23 @@ def check_sync():
 CHECKS = [check_graphics, check_disk, check_tools, check_sync]
 
 
+def app_icon_path():
+    """Rhino's icon: the copy deploy-rhino.sh installs, else the one shipped with this app
+    (a fresh install has not run the deploy step yet)."""
+    data = os.environ.get("XDG_DATA_HOME", os.path.join(HOME, ".local/share"))
+    for path in (os.path.join(data, "rhino-linux/rhino9-256.png"), os.path.join(REPO_DIR, "tools/rhino9-256.png")):
+        if os.path.isfile(path):
+            return path
+    return None
+
+
 def app_status_page(title, description):
     """Status page showing Rhino's icon when the deploy step has installed it."""
     page = Adw.StatusPage(title=title, description=description)
-    data = os.environ.get("XDG_DATA_HOME", os.path.join(HOME, ".local/share"))
-    icon = os.path.join(data, "rhino-linux/rhino9-256.png")
+    icon = app_icon_path()
     try:
         page.set_paintable(Gdk.Texture.new_from_filename(icon))
-    except GLib.Error:
+    except (GLib.Error, TypeError):
         page.set_icon_name("applications-graphics-symbolic")
     return page
 
@@ -164,9 +173,8 @@ def app_status_page(title, description):
 def app_header(title, description):
     """Compact icon and title for pages with more content below."""
     box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6, margin_top=12)
-    data = os.environ.get("XDG_DATA_HOME", os.path.join(HOME, ".local/share"))
-    icon = os.path.join(data, "rhino-linux/rhino9-256.png")
-    if os.path.isfile(icon):
+    icon = app_icon_path()
+    if icon:
         box.append(Gtk.Image(file=icon, pixel_size=96, margin_bottom=6))
     else:
         box.append(Gtk.Image(icon_name="applications-graphics-symbolic", pixel_size=96, margin_bottom=6))
