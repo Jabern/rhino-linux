@@ -31,24 +31,91 @@ rhino-9 model.3dm
 
 ## Prefer not to use the terminal?
 
-**Rhino on Linux** is a small app that installs Rhino for you and keeps it working:
-it checks your computer, asks for the Rhino installer you downloaded from McNeel,
-and shows the installation step by step. Afterwards it lets you open Rhino, check
-for updates, repair the setup, close a stuck Rhino or uninstall everything. An
-*Expert mode* (menu) adds direct access to the Wine environment: winecfg, the
-registry, DXVK settings, a terminal in the prefix and rebuilding Wine.
+**Rhino on Linux** is a small app that installs Rhino for you and looks after it
+afterwards. It checks your computer, asks for the Rhino installer you downloaded
+from McNeel, and shows the installation as it goes. You never have to open a
+terminal.
 
-<p align="center"><img src="docs/images/rhino-on-linux-app.png" width="420" alt="The Rhino on Linux app: open Rhino, check for updates, repair, close a stuck Rhino, uninstall"></p>
+<p align="center">
+  <img src="docs/images/app-welcome.png" width="270" alt="Welcome page of the Rhino on Linux app with a Get Started button">
+  <img src="docs/images/app-check.png" width="270" alt="Check page: 3D graphics, free space, tools and ntsync all marked as fine">
+  <img src="docs/images/app-home.png" width="270" alt="Home page once Rhino is installed: Open Rhino, install a plug-in, and maintenance actions">
+</p>
 
-Start it from the downloaded folder with `python3 tools/rhino-on-linux.py`
-(or double-click the file). After the first installation it also appears in
-your applications menu as **Rhino on Linux**. It uses the same scripts as the
-command line, so both always behave the same.
+Once Rhino is installed, the app is where you go to:
 
-It needs Python with GTK 4 and libadwaita 1.5 or newer (Ubuntu 24.04, Fedora 40 and current Arch have it):
+- open Rhino
+- install plug-ins (see below)
+- check for updates
+- repair the setup if something breaks, without losing your files or sign-in
+- close Rhino when it is stuck
+- uninstall everything it installed
+
+Turn on *Expert mode* in the menu if you want the Wine side of things:
+winecfg, the registry editor, the DXVK settings and the prefix folder.
+
+### As a Flatpak
+
+The Flatpak works the same on every distribution and brings everything the
+app needs with it. You only need Flatpak and the Flathub remote, which most desktop
+distributions set up already. To build and install it from this repository:
+
+```bash
+flatpak install --user flathub org.flatpak.Builder
+flatpak run org.flatpak.Builder --user --install --install-deps-from=flathub \
+    --force-clean build-flatpak flatpak/io.github.jabern.RhinoOnLinux.yml
+```
+
+Then open **Rhino on Linux** from your applications menu. Rhino gets its own
+entry there too, and double-clicking a `.3dm` file opens it in Rhino.
+
+The Flatpak keeps Rhino and its Wine setup in
+`~/.var/app/io.github.jabern.RhinoOnLinux/`, separate from a regular install.
+**Uninstall** in the app removes Rhino;
+`flatpak uninstall --delete-data io.github.jabern.RhinoOnLinux` removes the app
+and everything with it. It can see your home folder, so you can open and save
+models wherever you keep them.
+
+### Without Flatpak
+
+Run the app straight from the downloaded folder with
+`python3 tools/rhino-on-linux.py`. After the first installation it also shows up
+in your applications menu. It runs the same scripts as the command line, so
+both ways give you the same result.
+
+This needs Python with GTK 4 and libadwaita 1.5 or newer (Ubuntu 24.04, Fedora 40
+and current Arch have it):
 - **Arch / Manjaro**: `sudo pacman -S --needed python-gobject gtk4 libadwaita`
 - **Ubuntu / Debian**: `sudo apt install python3-gi gir1.2-gtk-4.0 gir1.2-adw-1`
 - **Fedora**: `sudo dnf install python3-gobject gtk4 libadwaita`
+
+## Installing plug-ins
+
+Rhino's own Package Manager (`_PackageManager` inside Rhino) lists many
+plug-ins. For the ones you download yourself, use **Install a plug-in…** in the
+app, drop the file on its window, or double-click the file in your file manager.
+The app knows these files:
+
+| File | What happens |
+|---|---|
+| `.rhi` | McNeel's Rhino Installer Engine installs it, the same tool Windows uses |
+| `.yak` | Rhino's package manager installs it from the file |
+| `.gha`, `.ghuser` | copied into Grasshopper's Libraries or UserObjects folder |
+| `.exe`, `.msi` | the plug-in's own installer runs, inside Rhino's Wine prefix |
+| `.zip` | unpacked first, then installed as above |
+
+Close Rhino before installing. If it is still open, the app offers to close it
+for you. From the terminal, the same thing is
+`tools/install-plugin.sh bella_rhino-26.4.0-win32.zip`.
+
+Here is the [Bella](https://bellarender.com) renderer, installed from its
+download `.zip` and rendering its sample scene:
+
+![Bella for Rhino rendering a glass jug of orange juice, a glass and two oranges on a checked tablecloth, next to the Rhino viewports](docs/images/bella-in-rhino.jpg)
+
+Some plug-ins won't work under Wine: anything that installs a Windows driver,
+such as a USB license dongle, and features that need NVIDIA CUDA. Bella renders
+on the CPU, so it isn't affected.
 
 ## Dependencies
 
@@ -77,7 +144,7 @@ Only required if you choose to compile Wine from source with `--build-wine` (req
 
 ## What the patches do
 
-Stock Wine experiences crashes, blank web panels, and visual glitches when running Rhino. We maintain 20 targeted patches to resolve these issues across all major subsystems:
+Stock Wine experiences crashes, blank web panels, and visual glitches when running Rhino. We maintain 21 targeted patches to resolve these issues across all major subsystems:
 
 - **Compute & Stability**: Adds 64-bit dynamic OpenMP loop scheduling ([Patch 01](patches/01-vcomp-dynamic-init-next-i8.patch)), NT thread pool worker caps ([Patch 02](patches/02-ntdll-threadpool-worker-leak.patch)), and CPU affinity APIs ([Patch 03](patches/03-set-thread-ideal-processor-ex.patch)).
 - **Cloud Zoo & Licensing**: Implements DirectComposition visual tree swapchain hosting for Microsoft Edge WebView2 ([Patch 06](patches/06-wine-dcomp-webview2-visual-hosting.patch), [Patch 07](patches/07-wine-dcomp-hidden-target-guards.patch)), ECDSA P-256 JWT auth ([Patch 15](patches/15-wine-ncrypt-ecdsa-p256.patch)), and Session 0 RPC services ([Patch 13](patches/13-wine-services-session0.patch)).
