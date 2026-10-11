@@ -1,0 +1,47 @@
+# Flatpak build of the Rhino on Linux app. Wine, the Rhino prefix and Rhino
+# itself all run inside the sandbox; the patched Wine runtime is downloaded
+# from this repository's releases into the app's data directory.
+id: io.github.jabern.RhinoOnLinux
+runtime: org.gnome.Platform
+runtime-version: '51'
+sdk: org.gnome.Sdk
+command: rhino-on-linux
+finish-args:
+  - --share=ipc
+  - --share=network        # Wine runtime, DXVK and font downloads; Rhino sign-in
+  - --socket=x11           # Wine's X11 driver (XWayland on Wayland desktops)
+  - --socket=wayland       # the setup app itself
+  - --socket=pulseaudio
+  - --device=all           # GPU for Vulkan/DXVK, and /dev/ntsync
+  - --filesystem=home      # open and save models anywhere, as in Windows
+  - --allow=multiarch      # WoW64 needs modify_ldt to run 32-bit installers
+  - --env=WINEDEBUG=-all
+modules:
+  - name: cabextract       # extracts Microsoft's Arial font installer
+    buildsystem: autotools
+    sources:
+      - type: archive
+        url: https://www.cabextract.org.uk/cabextract-1.11.tar.gz
+        sha256: b5546db1155e4c718ff3d4b278573604f30dd64c3c5bfd4657cd089b823a3ac6
+
+  - name: rhino-on-linux
+    buildsystem: simple
+    build-commands:
+      - install -d /app/share/rhino-on-linux
+      - cp -a install.sh tools /app/share/rhino-on-linux/
+      - install -Dm755 flatpak/rhino-on-linux.sh /app/bin/rhino-on-linux
+      - ln -s ../share/rhino-on-linux/tools/rhino-9 /app/bin/rhino-9
+      - install -Dm644 tools/rhino9-256.png /app/share/icons/hicolor/256x256/apps/io.github.jabern.RhinoOnLinux.png
+      - install -Dm644 flatpak/io.github.jabern.RhinoOnLinux.desktop -t /app/share/applications
+      - install -Dm644 flatpak/io.github.jabern.RhinoOnLinux.Rhino.desktop -t /app/share/applications
+      - install -Dm644 flatpak/io.github.jabern.RhinoOnLinux.metainfo.xml -t /app/share/metainfo
+      - install -Dm644 tools/rhino-on-linux-mime.xml /app/share/mime/packages/io.github.jabern.RhinoOnLinux.xml
+    sources:
+      - type: dir
+        path: ..
+        skip:
+          - build-wine
+          - wine-src
+          - .git
+          - .flatpak-builder
+          - build-flatpak

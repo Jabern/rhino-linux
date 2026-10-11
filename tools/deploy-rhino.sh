@@ -29,13 +29,14 @@ REPO_DIR="$(dirname "$SCRIPT_DIR")"
 # Default values
 TARGET_PREFIX="${RHINO_PREFIX:-${WINEPREFIX:-}}"
 if [ -z "$TARGET_PREFIX" ]; then
-    TARGET_PREFIX="$HOME/.wine-rhino"
+    # Inside the Flatpak the prefix lives in the app's private data directory.
+    if [ -n "${FLATPAK_ID:-}" ]; then TARGET_PREFIX="$XDG_DATA_HOME/prefix"; else TARGET_PREFIX="$HOME/.wine-rhino"; fi
 fi
 
 WINE_BIN="${WINE:-}"
 if [ -z "$WINE_BIN" ]; then
-    if [ -x "$HOME/.local/share/wine-rhino/bin/wine" ]; then
-        WINE_BIN="$HOME/.local/share/wine-rhino/bin/wine"
+    if [ -x "${XDG_DATA_HOME:-$HOME/.local/share}/wine-rhino/bin/wine" ]; then
+        WINE_BIN="${XDG_DATA_HOME:-$HOME/.local/share}/wine-rhino/bin/wine"
     elif [ -x "/opt/wine-rhino/bin/wine" ]; then
         WINE_BIN="/opt/wine-rhino/bin/wine"
     elif [ -x "$REPO_DIR/build-wine/wine" ]; then
@@ -50,6 +51,8 @@ fi
 
 CUSTOM_DXVK_DIR=""
 SKIP_DESKTOP=0
+# The Flatpak exports its own launcher and menu entries.
+[ -n "${FLATPAK_ID:-}" ] && SKIP_DESKTOP=1
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -290,6 +293,15 @@ if [ -f "$SCRIPT_DIR/windows-fonts.reg" ]; then
     echo "      Applying Windows font substitution entries..."
     "$WINE_BIN" regedit /S "$SCRIPT_DIR/windows-fonts.reg"
 fi
+
+# WebView2's installer registers Edge Update as an auto-start service. It never
+# exits, so it keeps wineserver alive after Rhino closes; WebView2 runs without it.
+for svc in edgeupdate edgeupdatem; do
+    if grep -qi "^\[System\\\\\\\\ControlSet001\\\\\\\\Services\\\\\\\\$svc\]" "$TARGET_PREFIX/system.reg" 2>/dev/null; then
+        echo "      Disabling the Microsoft Edge Update service ($svc)..."
+        "$WINE_BIN" reg add "HKLM\\System\\CurrentControlSet\\Services\\$svc" /v Start /t REG_DWORD /d 4 /f >/dev/null 2>&1 || true
+    fi
+done
 timeout 5 "$WINESERVER_BIN" -w 2>/dev/null || true
 
 # 4. DXVK Configuration & Fonts
@@ -417,11 +429,17 @@ fi
 # builtin d3dcompiler_47 cannot compile them and those viewports stay black. Use
 # Microsoft's compiler from the WebView2 runtime that the Rhino installer put in
 # the prefix (newest 64-bit copy).
+# PE machine type 0x8664 (x86-64), read from the header: offset of "PE\0\0" at 0x3c.
+pe_is_x86_64() {
+    local pe
+    pe="$(od -An -tu4 -j 60 -N 4 "$1" 2>/dev/null | tr -d ' ')"
+    [ -n "$pe" ] && [ "$(od -An -tx2 -j $((pe + 4)) -N 2 "$1" 2>/dev/null | tr -d ' ')" = "8664" ]
+}
 SYSTEM32_COMPILER="$TARGET_PREFIX/drive_c/windows/system32/d3dcompiler_47.dll"
 NATIVE_COMPILER=""
 while IFS= read -r candidate; do
     grep -qa "Wine builtin DLL" "$candidate" && continue
-    file "$candidate" 2>/dev/null | grep -q 'x86-64' || continue
+    pe_is_x86_64 "$candidate" || continue
     NATIVE_COMPILER="$candidate"
 done < <(ls -d "$TARGET_PREFIX/drive_c/Program Files (x86)/Microsoft/EdgeWebView/Application"/*/d3dcompiler_47.dll 2>/dev/null | sort -V)
 if [ -n "$NATIVE_COMPILER" ]; then
@@ -460,9 +478,11 @@ EOF
 # 6. Launcher Installation & Desktop Integration
 echo "[6/6] Installing launcher script & desktop entries..."
 BIN_DIR="$HOME/.local/bin"
-mkdir -p "$BIN_DIR"
-cp -f "$SCRIPT_DIR/rhino-9" "$BIN_DIR/rhino-9"
-chmod +x "$BIN_DIR/rhino-9"
+if [ "$SKIP_DESKTOP" -eq 0 ]; then
+    mkdir -p "$BIN_DIR"
+    cp -f "$SCRIPT_DIR/rhino-9" "$BIN_DIR/rhino-9"
+    chmod +x "$BIN_DIR/rhino-9"
+fi
 
 if [ "$SKIP_DESKTOP" -eq 0 ]; then
     ICON_DIR="$HOME/.local/share/icons/hicolor/256x256/apps"
@@ -496,13 +516,23 @@ EOF
 Name=Rhino on Linux
 GenericName=Rhino setup and maintenance
 Comment=Install, update, repair or uninstall Rhino
-Exec=python3 "$(dirname "$SCRIPT_DIR")/tools/rhino-on-linux.py"
+Exec=python3 "$(dirname "$SCRIPT_DIR")/tools/rhino-on-linux.py" %f
 Icon=rhino9
 Terminal=false
 Type=Application
 Categories=Settings;Utility;
+MimeType=application/x-rhino-installer;application/x-rhino-package;application/x-grasshopper-assembly;application/x-grasshopper-userobject;
 StartupNotify=true
 EOF
+    fi
+
+    # File types for models and plug-ins, so double-clicking them works.
+    if [ -f "$SCRIPT_DIR/rhino-on-linux-mime.xml" ]; then
+        mkdir -p "$HOME/.local/share/mime/packages"
+        cp -f "$SCRIPT_DIR/rhino-on-linux-mime.xml" "$HOME/.local/share/mime/packages/io.github.jabern.RhinoOnLinux.xml"
+        if command -v update-mime-database >/dev/null 2>&1; then
+            update-mime-database "$HOME/.local/share/mime" 2>/dev/null || true
+        fi
     fi
 
     if command -v update-desktop-database >/dev/null 2>&1; then

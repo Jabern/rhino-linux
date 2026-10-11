@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<mime-info xmlns="http://www.freedesktop.org/standards/shared-mime-info">
+  <mime-type type="application/x-3dm">
+    <comment>Rhino 3D model</comment>
+    <glob pattern="*.3dm"/>
+  </mime-type>
+  <mime-type type="application/x-rhino-installer">
+    <comment>Rhino plug-in installer</comment>
+    <sub-class-of type="application/zip"/>
+    <glob pattern="*.rhi"/>
+  </mime-type>
+  <mime-type type="application/x-rhino-package">
+    <comment>Rhino Package Manager package</comment>
+    <sub-class-of type="application/zip"/>
+    <glob pattern="*.yak"/>
+  </mime-type>
+  <mime-type type="application/x-grasshopper-assembly">
+    <comment>Grasshopper plug-in</comment>
+    <glob pattern="*.gha"/>
+  </mime-type>
+  <mime-type type="application/x-grasshopper-userobject">
+    <comment>Grasshopper user object</comment>
+    <glob pattern="*.ghuser"/>
+  </mime-type>
+</mime-info>

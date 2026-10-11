@@ -1,0 +1,41 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+  <id>io.github.jabern.RhinoOnLinux</id>
+  <name>Rhino on Linux</name>
+  <summary>Install and run McNeel Rhinoceros on Linux</summary>
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>MIT</project_license>
+  <description>
+    <p>Rhino on Linux sets up McNeel Rhinoceros with a patched Wine and DXVK, using the
+    Rhino installer you download from McNeel with your own account. It checks your
+    computer, installs Rhino step by step and keeps it working: open Rhino, check for
+    updates, repair the setup or uninstall it. Plug-ins such as renderers and Grasshopper
+    add-ons install with a double-click. An expert mode gives direct access to the
+    Wine environment.</p>
+    <p>Not affiliated with Robert McNeel &amp; Associates. Rhino requires a valid license.</p>
+  </description>
+  <screenshots>
+    <screenshot type="default">
+      <caption>Open Rhino, install plug-ins and look after the setup</caption>
+      <image>https://raw.githubusercontent.com/Jabern/rhino-linux/main/docs/images/app-home.png</image>
+    </screenshot>
+    <screenshot>
+      <caption>A first look at your computer before installing</caption>
+      <image>https://raw.githubusercontent.com/Jabern/rhino-linux/main/docs/images/app-check.png</image>
+    </screenshot>
+    <screenshot>
+      <caption>Rhino 9 rendering with the Bella plug-in</caption>
+      <image>https://raw.githubusercontent.com/Jabern/rhino-linux/main/docs/images/bella-in-rhino.jpg</image>
+    </screenshot>
+  </screenshots>
+  <launchable type="desktop-id">io.github.jabern.RhinoOnLinux.desktop</launchable>
+  <url type="homepage">https://github.com/Jabern/rhino-linux</url>
+  <url type="bugtracker">https://github.com/Jabern/rhino-linux/issues</url>
+  <developer id="io.github.jabern">
+    <name>Rhino on Linux contributors</name>
+  </developer>
+  <content_rating type="oars-1.1"/>
+  <releases>
+    <release version="1.1.0" date="2026-10-10"/>
+  </releases>
+</component>

@@ -1,0 +1,12 @@
+[Desktop Entry]
+Name=Rhinoceros
+GenericName=3D CAD Modeler
+Comment=Open Rhino (installed with Rhino on Linux)
+Exec=rhino-9 %F
+Icon=io.github.jabern.RhinoOnLinux
+Terminal=false
+Type=Application
+Categories=Graphics;3DGraphics;Engineering;
+MimeType=application/x-3dm;
+StartupWMClass=rhino.exe
+StartupNotify=true

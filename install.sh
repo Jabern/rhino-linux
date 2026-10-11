@@ -47,14 +47,15 @@ CUSTOM_WINE=""
 CUSTOM_DXVK_DIR=""
 RHINO_INSTALLER=""
 RUN_RHINO=0
-WINE_INSTALL_DIR="$HOME/.local/share/wine-rhino"
+WINE_INSTALL_DIR="${XDG_DATA_HOME:-$HOME/.local/share}/wine-rhino"
 WINE_RELEASE_URL="https://github.com/Jabern/rhino-linux/releases/download/v1.1.0/wine-rhino-11.18-x86_64.tar.xz"
 WINE_RELEASE_SHA256="591ef36d02b104b4f8f0920dc370ff17d9ed5e8dc7466f79685ba9322928076d"
 
 # Default Prefix
 TARGET_PREFIX="${RHINO_PREFIX:-${WINEPREFIX:-}}"
 if [ -z "$TARGET_PREFIX" ]; then
-    TARGET_PREFIX="$HOME/.wine-rhino"
+    # Inside the Flatpak the prefix lives in the app's private data directory.
+    if [ -n "${FLATPAK_ID:-}" ]; then TARGET_PREFIX="$XDG_DATA_HOME/prefix"; else TARGET_PREFIX="$HOME/.wine-rhino"; fi
 fi
 
 # Detect Linux Distribution
@@ -534,7 +535,7 @@ else
 fi
 
 # Ensure launcher symlink exists in repo root
-ln -sf "tools/rhino-9" "$REPO_DIR/rhino-9"
+if [ -w "$REPO_DIR" ]; then ln -sf "tools/rhino-9" "$REPO_DIR/rhino-9"; fi
 
 echo -e "\n${BOLD}${GREEN}==========================================================================${NC}"
 echo -e "${BOLD}${GREEN}  Setup Complete!${NC}"

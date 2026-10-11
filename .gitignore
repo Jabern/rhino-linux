@@ -7,6 +7,8 @@
 # Build artifacts
 build-wine/
 wine-src/
+.flatpak-builder/
+build-flatpak/
 *.o
 *.obj
 

@@ -21,10 +21,13 @@ from gi.repository import Adw, Gdk, Gio, GLib, Gtk  # noqa: E402
 APP_ID = "io.github.jabern.RhinoOnLinux"
 REPO_DIR = os.path.dirname(os.path.dirname(os.path.realpath(__file__)))
 HOME = os.path.expanduser("~")
+IN_FLATPAK = bool(os.environ.get("FLATPAK_ID"))
+DATA_HOME = os.environ.get("XDG_DATA_HOME", os.path.join(HOME, ".local/share"))
 CONFIG_DIR = os.path.join(os.environ.get("XDG_CONFIG_HOME", os.path.join(HOME, ".config")), "rhino-linux")
 CONFIG_FILE = os.path.join(CONFIG_DIR, "config")
 GUI_SETTINGS = os.path.join(CONFIG_DIR, "app.ini")
 DOWNLOAD_URL = "https://www.rhino3d.com/download/"
+PLUGIN_SUFFIXES = ("rhi", "yak", "gha", "ghuser", "zip", "exe", "msi")
 ANSI = re.compile(r"\x1b\[[0-9;]*m")
 
 # Script output -> (progress fraction, friendly description), in installation order.
@@ -54,11 +57,12 @@ def read_config():
 
 
 def prefix_path():
-    return read_config().get("RHINO_PREFIX", os.path.join(HOME, ".wine-rhino"))
+    default = os.path.join(DATA_HOME, "prefix") if IN_FLATPAK else os.path.join(HOME, ".wine-rhino")
+    return read_config().get("RHINO_PREFIX", default)
 
 
 def wine_path():
-    return read_config().get("RHINO_WINE", os.path.join(HOME, ".local/share/wine-rhino/bin/wine"))
+    return read_config().get("RHINO_WINE", os.path.join(DATA_HOME, "wine-rhino/bin/wine"))
 
 
 def rhino_installed():
@@ -66,6 +70,8 @@ def rhino_installed():
 
 
 def launcher():
+    if IN_FLATPAK:
+        return shutil.which("rhino-9") or "rhino-9"
     local = os.path.join(HOME, ".local/bin/rhino-9")
     return local if os.path.exists(local) else (shutil.which("rhino-9") or local)
 
@@ -129,6 +135,22 @@ def app_status_page(title, description):
     return page
 
 
+def app_header(title, description):
+    """Compact icon and title for pages with more content below."""
+    box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6, margin_top=12)
+    data = os.environ.get("XDG_DATA_HOME", os.path.join(HOME, ".local/share"))
+    icon = os.path.join(data, "rhino-linux/rhino9-256.png")
+    if os.path.isfile(icon):
+        box.append(Gtk.Image(file=icon, pixel_size=96, margin_bottom=6))
+    else:
+        box.append(Gtk.Image(icon_name="applications-graphics-symbolic", pixel_size=96, margin_bottom=6))
+    label = Gtk.Label(label=title)
+    label.add_css_class("title-1")
+    box.append(label)
+    box.append(Gtk.Label(label=description, wrap=True, justify=Gtk.Justification.CENTER))
+    return box
+
+
 def find_installer():
     downloads = os.path.join(HOME, "Downloads")
     try:
@@ -148,11 +170,16 @@ class Window(Adw.ApplicationWindow):
         self.installer = find_installer()
         self.log_lines = []
         self.proc = None
+        self.exit_status = 0
 
         self.toasts = Adw.ToastOverlay()
         self.nav = Adw.NavigationView()
         self.toasts.set_child(self.nav)
         self.set_content(self.toasts)
+
+        drop = Gtk.DropTarget.new(Gio.File, Gdk.DragAction.COPY)
+        drop.connect("drop", lambda _t, f, _x, _y: self.install_plugin(f.get_path()) or True)
+        self.toasts.add_controller(drop)
 
         action = Gio.SimpleAction.new_stateful("expert", None, GLib.Variant.new_boolean(self.expert))
         action.connect("change-state", self.on_expert)
@@ -350,6 +377,7 @@ class Window(Adw.ApplicationWindow):
             ok = proc.wait_check_finish(res)
         except GLib.Error:
             ok = False
+        self.exit_status = proc.get_exit_status() if proc.get_if_exited() else -1
         tail = "\n".join(l for l in self.log_lines[-8:] if l.strip())
         self.finish(ok, tail, on_done)
 
@@ -393,10 +421,19 @@ class Window(Adw.ApplicationWindow):
     # home screen for an existing installation
     def home_page(self):
         box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=24)
-        box.append(app_status_page("Rhino 9", "Installed and ready."))
+        box.append(app_header("Rhino 9", "Installed and ready."))
         open_btn = self.pill("Open Rhino")
         open_btn.connect("clicked", self.on_open_rhino)
         box.append(open_btn)
+
+        plugins = Adw.PreferencesGroup(title="Plug-ins",
+                                       description="You can also drop a plug-in file on this window, or double-click it in your file manager.")
+        row = Adw.ActionRow(title="Install a plug-in…", subtitle="Bella, V-Ray, Grasshopper add-ons: .rhi, .yak, .gha, .zip or an installer",
+                            activatable=True)
+        row.add_prefix(Gtk.Image(icon_name="list-add-symbolic"))
+        row.connect("activated", self.on_choose_plugin)
+        plugins.add(row)
+        box.append(plugins)
 
         group = Adw.PreferencesGroup(title="Maintenance")
         for title, subtitle, icon, cb in (
@@ -424,11 +461,13 @@ class Window(Adw.ApplicationWindow):
         prefix_row.add_suffix(Gtk.Image(icon_name="folder-open-symbolic"))
         prefix_row.connect("activated", lambda *_: self.open_path(prefix_path()))
         group.add(prefix_row)
-        for title, cb in (("Wine configuration", lambda *_: self.wine_tool("winecfg")),
-                          ("Registry editor", lambda *_: self.wine_tool("regedit")),
-                          ("Edit DXVK settings", lambda *_: self.open_path(self.dxvk_conf())),
-                          ("Open a terminal in the prefix", self.on_terminal),
-                          ("Rebuild Wine from source", self.on_rebuild)):
+        tools = [("Wine configuration", lambda *_: self.wine_tool("winecfg")),
+                 ("Registry editor", lambda *_: self.wine_tool("regedit")),
+                 ("Edit DXVK settings", lambda *_: self.open_path(self.dxvk_conf()))]
+        if not IN_FLATPAK:  # the sandbox has no host terminal and no Wine toolchain
+            tools += [("Open a terminal in the prefix", self.on_terminal),
+                      ("Rebuild Wine from source", self.on_rebuild)]
+        for title, cb in tools:
             row = Adw.ActionRow(title=title, activatable=True)
             row.add_suffix(Gtk.Image(icon_name="go-next-symbolic"))
             row.connect("activated", cb)
@@ -443,6 +482,63 @@ class Window(Adw.ApplicationWindow):
             self.toast("Opening Rhino…")
         except OSError as e:
             self.show_failure("Rhino could not be started", str(e))
+
+    def on_choose_plugin(self, *_):
+        dialog = Gtk.FileDialog(title="Choose a Rhino plug-in")
+        flt = Gtk.FileFilter(name="Rhino and Grasshopper plug-ins")
+        for suffix in PLUGIN_SUFFIXES:
+            flt.add_suffix(suffix)
+        filters = Gio.ListStore.new(Gtk.FileFilter)
+        filters.append(flt)
+        dialog.set_filters(filters)
+        if os.path.isdir(os.path.join(HOME, "Downloads")):
+            dialog.set_initial_folder(Gio.File.new_for_path(os.path.join(HOME, "Downloads")))
+
+        def done(dlg, res):
+            try:
+                self.install_plugin(dlg.open_finish(res).get_path())
+            except GLib.Error:
+                pass
+        dialog.open(self, None, done)
+
+    def install_plugin(self, path):
+        if self.proc is not None:
+            self.toast("Please wait until this step finishes")
+            return
+        if not path or not path.lower().endswith(tuple("." + s for s in PLUGIN_SUFFIXES)):
+            self.show_failure("This is not a Rhino plug-in",
+                              "Supported files: " + ", ".join("." + s for s in PLUGIN_SUFFIXES))
+            return
+        if not rhino_installed():
+            self.show_failure("Install Rhino first", "Plug-ins are added to an existing Rhino installation.")
+            return
+        name = os.path.basename(path)
+        argv = [os.path.join(REPO_DIR, "tools/install-plugin.sh"), path]
+        self.run_script("Installing " + name, argv, lambda ok, d: self.plugin_done(ok, d, path))
+        if name.lower().endswith((".exe", ".msi")):
+            self.step_label.set_label("Follow the steps in the installer window")
+
+    def plugin_done(self, ok, detail, path):
+        if ok:
+            self.nav.replace([self.home_page()])
+            self.toast(os.path.basename(path) + " installed. Restart Rhino to use it.")
+        elif self.exit_status == 3:
+            self.nav.pop()
+            dialog = Adw.AlertDialog(heading="Close Rhino first",
+                                     body="Plug-ins are installed while Rhino is closed. Save your work in Rhino, "
+                                          "then close it, or let this app close it for you.")
+            dialog.add_response("cancel", "Cancel")
+            dialog.add_response("close", "Close Rhino and Install")
+            dialog.set_response_appearance("close", Adw.ResponseAppearance.DESTRUCTIVE)
+            dialog.set_close_response("cancel")
+
+            def chosen(dlg, res):
+                if dlg.choose_finish(res) == "close":
+                    self.on_stop()
+                    self.install_plugin(path)
+            dialog.choose(self, None, chosen)
+        else:
+            self.show_failure("The plug-in was not installed", detail)
 
     def on_update(self, *_):
         self.run_script("Updating", [os.path.join(REPO_DIR, "install.sh"), "-y"],
@@ -580,7 +676,7 @@ class Window(Adw.ApplicationWindow):
 
 class App(Adw.Application):
     def __init__(self):
-        super().__init__(application_id=APP_ID, flags=Gio.ApplicationFlags.DEFAULT_FLAGS)
+        super().__init__(application_id=APP_ID, flags=Gio.ApplicationFlags.HANDLES_OPEN)
 
     def do_startup(self):
         Adw.Application.do_startup(self)
@@ -592,6 +688,12 @@ class App(Adw.Application):
     def do_activate(self):
         win = self.props.active_window or Window(self)
         win.present()
+
+    def do_open(self, files, n_files, hint):
+        """A plug-in file opened from the file manager: install it."""
+        self.activate()
+        if files:
+            self.props.active_window.install_plugin(files[0].get_path())
 
 
 if __name__ == "__main__":

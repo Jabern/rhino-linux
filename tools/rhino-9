@@ -49,6 +49,8 @@ has_rhino() {
 
 if [ -n "${WINEPREFIX:-}" ]; then
     export WINEPREFIX="$WINEPREFIX"
+elif [ -n "${FLATPAK_ID:-}" ]; then
+    export WINEPREFIX="$XDG_DATA_HOME/prefix"
 elif has_rhino "$HOME/.wine-rhino"; then
     export WINEPREFIX="$HOME/.wine-rhino"
 elif [ -d "$HOME/.wine-rhino" ]; then
@@ -62,8 +64,8 @@ WINE_BIN="${WINE:-${RHINO_WINE:-}}"
 if [ -z "$WINE_BIN" ]; then
     if [ -n "${WINE_BUILD:-}" ] && [ -x "$WINE_BUILD/wine" ]; then
         WINE_BIN="$WINE_BUILD/wine"
-    elif [ -x "$HOME/.local/share/wine-rhino/bin/wine" ]; then
-        WINE_BIN="$HOME/.local/share/wine-rhino/bin/wine"
+    elif [ -x "${XDG_DATA_HOME:-$HOME/.local/share}/wine-rhino/bin/wine" ]; then
+        WINE_BIN="${XDG_DATA_HOME:-$HOME/.local/share}/wine-rhino/bin/wine"
     elif [ -x "/opt/wine-rhino/bin/wine" ]; then
         WINE_BIN="/opt/wine-rhino/bin/wine"
     elif [ -x "$SCRIPT_DIR/../build-wine/wine" ]; then
@@ -96,6 +98,19 @@ fi
 
 RHINO_DIR="$WINEPREFIX/drive_c/Program Files/Rhino 9 WIP/System"
 
+# End every process in the prefix. wineserver -k finds the server through a file
+# lock, which reports no owner across PID namespaces (Rhino started from another
+# Flatpak instance), so ask the server itself to end its processes first.
+stop_prefix() {
+    local socket
+    socket="/tmp/.wine-$(id -u)/server-$(stat -c '%d-%i' "$WINEPREFIX" 2>/dev/null | awk -F- '{printf "%x-%x", $1, $2}')/socket"
+    if [ -x "$WINE_BIN" ] && [ -S "$socket" ]; then
+        WINEDEBUG=-all "$WINE_BIN" wineboot -k >/dev/null 2>&1 || true
+    fi
+    WINEPREFIX="$WINEPREFIX" "$WINESERVER_BIN" -k 2>/dev/null || true
+    WINEPREFIX="$WINEPREFIX" "$WINESERVER_BIN" -w 2>/dev/null || true
+}
+
 case "${1:-}" in
     -h|--help)
         echo "Usage: rhino-9 [OPTIONS] [file.3dm ...]"
@@ -113,8 +128,7 @@ case "${1:-}" in
     --fresh)
         echo "Restarting wineserver for clean http.sys state..."
         if [ -x "$WINESERVER_BIN" ] || command -v "$WINESERVER_BIN" >/dev/null 2>&1; then
-            WINEPREFIX="$WINEPREFIX" "$WINESERVER_BIN" -k 2>/dev/null || true
-            WINEPREFIX="$WINEPREFIX" "$WINESERVER_BIN" -w 2>/dev/null || true
+            stop_prefix
         fi
         sleep 1
         shift
@@ -125,8 +139,7 @@ case "${1:-}" in
             echo "error: wineserver binary not found: $WINESERVER_BIN" >&2
             exit 1
         fi
-        WINEPREFIX="$WINEPREFIX" "$WINESERVER_BIN" -k
-        WINEPREFIX="$WINEPREFIX" "$WINESERVER_BIN" -w 2>/dev/null || true
+        stop_prefix
         echo "Rhino Wine prefix stopped."
         exit 0
         ;;
