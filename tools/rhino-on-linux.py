@@ -65,8 +65,19 @@ def wine_path():
     return read_config().get("RHINO_WINE", os.path.join(DATA_HOME, "wine-rhino/bin/wine"))
 
 
+RHINO_DIRS = ("Rhino 9", "Rhino 9 WIP", "Rhino 8")  # newest release first
+
+
+def rhino_name():
+    """Rhino's folder under Program Files, or None when Rhino is not installed."""
+    for name in RHINO_DIRS:
+        if os.path.isfile(os.path.join(prefix_path(), "drive_c/Program Files", name, "System/Rhino.exe")):
+            return name
+    return None
+
+
 def rhino_installed():
-    return os.path.isfile(os.path.join(prefix_path(), "drive_c/Program Files/Rhino 9 WIP/System/Rhino.exe"))
+    return rhino_name() is not None
 
 
 def launcher():
@@ -114,10 +125,25 @@ def check_tools():
     return False, "A few small tools are missing", "Please install: " + ", ".join(missing)
 
 
+NTSYNC_COMMAND = "echo ntsync | sudo tee /etc/modules-load.d/ntsync.conf && sudo modprobe ntsync"
+
+
+def ntsync_state():
+    """'on', 'off' (the kernel has ntsync, usually as a module that is not
+    loaded) or 'old' (the kernel predates ntsync, added in Linux 6.14)."""
+    if os.access("/dev/ntsync", os.R_OK | os.W_OK):
+        return "on"
+    m = re.match(r"(\d+)\.(\d+)", os.uname().release)
+    return "off" if m and (int(m.group(1)), int(m.group(2))) >= (6, 14) else "old"
+
+
 def check_sync():
-    if os.path.exists("/dev/ntsync"):
+    state = ntsync_state()
+    if state == "on":
         return True, "Fast multithreading available", "Your kernel supports ntsync"
-    return True, "Standard multithreading", "Optional: a kernel with ntsync (Linux 6.14+) makes Rhino a little faster"
+    if state == "off":
+        return True, "Fast multithreading is switched off", "Optional: one command turns on ntsync, which makes Rhino a little faster"
+    return True, "Standard multithreading", "Optional: Linux 6.14 or newer comes with ntsync, which makes Rhino a little faster"
 
 
 CHECKS = [check_graphics, check_disk, check_tools, check_sync]
@@ -421,7 +447,7 @@ class Window(Adw.ApplicationWindow):
     # home screen for an existing installation
     def home_page(self):
         box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=24)
-        box.append(app_header("Rhino 9", "Installed and ready."))
+        box.append(app_header(rhino_name() or "Rhino", "Installed and ready."))
         open_btn = self.pill("Open Rhino")
         open_btn.connect("clicked", self.on_open_rhino)
         box.append(open_btn)
@@ -434,6 +460,9 @@ class Window(Adw.ApplicationWindow):
         row.connect("activated", self.on_choose_plugin)
         plugins.add(row)
         box.append(plugins)
+
+        if ntsync_state() == "off":
+            box.append(self.ntsync_group())
 
         group = Adw.PreferencesGroup(title="Maintenance")
         for title, subtitle, icon, cb in (
@@ -451,6 +480,25 @@ class Window(Adw.ApplicationWindow):
         if self.expert:
             box.append(self.expert_group())
         return self.page("Rhino on Linux", box, "home")
+
+    def ntsync_group(self):
+        group = Adw.PreferencesGroup(
+            title="Make Rhino faster",
+            description="Your Linux kernel has ntsync, which speeds up Rhino's multithreaded work, but it is "
+                        "switched off. Run this command once in a terminal; it asks for your password and "
+                        "stays on after a restart. Then restart Rhino.")
+        row = Adw.ActionRow(title=NTSYNC_COMMAND, title_selectable=True, use_markup=False)
+        row.add_css_class("monospace")
+        copy = Gtk.Button(icon_name="edit-copy-symbolic", valign=Gtk.Align.CENTER, tooltip_text="Copy")
+        copy.add_css_class("flat")
+
+        def copied(*_):
+            self.get_clipboard().set(NTSYNC_COMMAND)
+            self.toast("Command copied")
+        copy.connect("clicked", copied)
+        row.add_suffix(copy)
+        group.add(row)
+        return group
 
     def expert_group(self):
         group = Adw.PreferencesGroup(title="Expert", description="Direct access to the Wine environment.")
@@ -576,10 +624,18 @@ class Window(Adw.ApplicationWindow):
         runtime = os.path.dirname(os.path.dirname(wine_path()))
         if os.path.exists(os.path.join(runtime, ".rhino-linux-runtime")) or os.path.basename(runtime) == "wine-rhino":
             targets.append(runtime)
-        targets += [os.path.join(data, "rhino-linux"), CONFIG_DIR,
-                    os.path.join(HOME, ".local/bin/rhino-9"),
-                    os.path.join(data, "applications/rhino-9.desktop"),
-                    os.path.join(data, "applications/io.github.jabern.RhinoOnLinux.desktop")]
+        cache = os.environ.get("XDG_CACHE_HOME", os.path.join(HOME, ".cache"))
+        targets += [os.path.join(data, "rhino-linux"), CONFIG_DIR, os.path.join(cache, "rhino-linux")]
+        if IN_FLATPAK:
+            # The sandbox's own cache: Wine Mono/Gecko and DXVK's shader cache.
+            # Nothing outside ~/.var/app: HOME is the real home folder here.
+            targets += [os.path.join(cache, "wine"), os.path.join(cache, "dxvk")]
+        else:
+            targets += [os.path.join(HOME, ".local/bin/rhino-9"),
+                        os.path.join(data, "applications/rhino-9.desktop"),
+                        os.path.join(data, "applications/io.github.jabern.RhinoOnLinux.desktop"),
+                        os.path.join(data, "mime/packages/io.github.jabern.RhinoOnLinux.xml"),
+                        os.path.join(data, "icons/hicolor/256x256/apps/rhino9.png")]
         safe = []
         for t in targets:
             real = os.path.realpath(t)
@@ -601,17 +657,24 @@ class Window(Adw.ApplicationWindow):
             if dlg.choose_finish(res) != "remove":
                 return
             self.on_stop()
-            for t in targets:
-                if os.path.isdir(t) and not os.path.islink(t):
-                    shutil.rmtree(t, ignore_errors=True)
-                else:
-                    try:
-                        os.unlink(t)
-                    except OSError:
-                        pass
+            self.remove_targets(targets)
             self.show_start()
             self.toast("Rhino was uninstalled")
         dialog.choose(self, None, chosen)
+
+    @staticmethod
+    def remove_targets(targets):
+        for t in targets:
+            if os.path.isdir(t) and not os.path.islink(t):
+                shutil.rmtree(t, ignore_errors=True)
+            else:
+                try:
+                    os.unlink(t)
+                except OSError:
+                    pass
+        if not IN_FLATPAK:
+            run_quiet("update-mime-database", os.path.join(DATA_HOME, "mime"))
+            run_quiet("update-desktop-database", os.path.join(DATA_HOME, "applications"))
 
     def dxvk_conf(self):
         data = os.environ.get("XDG_DATA_HOME", os.path.join(HOME, ".local/share"))
@@ -642,7 +705,7 @@ class Window(Adw.ApplicationWindow):
         lines += ["", "== Graphics"] + [l for l in run_quiet("vulkaninfo", "--summary").splitlines()
                                          if re.search(r"deviceName|driverName|driverInfo|apiVersion", l)]
         lines += ["", "== Wine", run_quiet(wine_path(), "--version").strip(), "prefix: " + prefix_path(),
-                  "rhino installed: " + str(rhino_installed()), "ntsync: " + str(os.path.exists("/dev/ntsync"))]
+                  "rhino installed: " + str(rhino_installed()), "ntsync: " + ntsync_state()]
         if self.log_lines:
             lines += ["", "== Last setup output"] + self.log_lines[-200:]
         path = os.path.join(HOME, "rhino-on-linux-report.txt")

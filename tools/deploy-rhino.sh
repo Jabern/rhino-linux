@@ -416,8 +416,19 @@ else
     echo "      [WARN] Arial font not detected. WPF .NET 10 UI may fail fast."
 fi
 
-RHINO_SYS_DIR="$TARGET_PREFIX/drive_c/Program Files/Rhino 9 WIP/System"
-if [ -d "$RHINO_SYS_DIR" ]; then
+# Rhino's folder under Program Files: the newest release first, then the WIP build.
+find_rhino_dir() {
+    local name
+    for name in "Rhino 9" "Rhino 9 WIP" "Rhino 8"; do
+        if [ -f "$1/drive_c/Program Files/$name/System/Rhino.exe" ]; then
+            printf '%s\n' "$name"
+            return 0
+        fi
+    done
+    return 1
+}
+if RHINO_NAME="$(find_rhino_dir "$TARGET_PREFIX")"; then
+    RHINO_SYS_DIR="$TARGET_PREFIX/drive_c/Program Files/$RHINO_NAME/System"
     cp -v "$SCRIPT_DIR/dxvk-rhino.conf" "$RHINO_SYS_DIR/dxvk.conf" 2>/dev/null || true
     for font in "$RHINO_SYS_DIR"/*.ttf; do
         [ -f "$font" ] && cp -u -v "$font" "$FONTS_DIR/" 2>/dev/null || true

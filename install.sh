@@ -504,7 +504,18 @@ fi
 # Application Installation (Optional)
 # ------------------------------------------------------------------------------
 echo -e "\n${BOLD}${BLUE}[Step 4/4] Checking Application Status...${NC}"
-RHINO_EXE="$TARGET_PREFIX/drive_c/Program Files/Rhino 9 WIP/System/Rhino.exe"
+# Rhino's folder under Program Files: the newest release first, then the WIP build.
+find_rhino_dir() {
+    local name
+    for name in "Rhino 9" "Rhino 9 WIP" "Rhino 8"; do
+        if [ -f "$1/drive_c/Program Files/$name/System/Rhino.exe" ]; then
+            printf '%s\n' "$name"
+            return 0
+        fi
+    done
+    return 1
+}
+rhino_present() { find_rhino_dir "$TARGET_PREFIX" >/dev/null; }
 
 if [ -n "$RHINO_INSTALLER" ]; then
     if [ -f "$RHINO_INSTALLER" ]; then
@@ -526,7 +537,7 @@ if [ -n "$RHINO_INSTALLER" ]; then
     fi
 fi
 
-if [ -f "$RHINO_EXE" ]; then
+if rhino_present; then
     echo -e " ${GREEN}[PASS]${NC} Rhinoceros detected in prefix."
 else
     echo -e " ${YELLOW}[INFO]${NC} Rhino executable not found yet."
@@ -548,7 +559,7 @@ echo "==========================================================================
 if [ "$RUN_RHINO" -eq 1 ]; then
     echo -e "\n${BOLD}${CYAN}Launching Rhinoceros...${NC}"
     exec "$REPO_DIR/tools/rhino-9"
-elif [ -f "$RHINO_EXE" ] && [ "$NON_INTERACTIVE" -eq 0 ]; then
+elif rhino_present && [ "$NON_INTERACTIVE" -eq 0 ]; then
     echo ""
     read -rp "Would you like to launch Rhino now? [Y/n] " run_ans
     if [[ "${run_ans:-y}" =~ ^[Yy] ]]; then

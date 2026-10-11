@@ -40,14 +40,25 @@ WINE_BIN="${RHINO_WINE:-$DATA_HOME/wine-rhino/bin/wine}"
 export WINEPREFIX="$RHINO_PREFIX" WINEDEBUG="${WINEDEBUG:--all}"
 unset WINEDLLOVERRIDES
 
-if [ ! -x "$WINE_BIN" ] || [ ! -d "$WINEPREFIX/drive_c/Program Files/Rhino 9 WIP/System" ]; then
+# Rhino's folder under Program Files: the newest release first, then the WIP build.
+find_rhino_dir() {
+    local name
+    for name in "Rhino 9" "Rhino 9 WIP" "Rhino 8"; do
+        if [ -f "$1/drive_c/Program Files/$name/System/Rhino.exe" ]; then
+            printf '%s\n' "$name"
+            return 0
+        fi
+    done
+    return 1
+}
+if [ ! -x "$WINE_BIN" ] || ! RHINO_NAME="$(find_rhino_dir "$WINEPREFIX")"; then
     echo "Error: Rhino is not installed yet (prefix: $WINEPREFIX)."
     exit 1
 fi
 
 ROAMING="$WINEPREFIX/drive_c/users/$(id -un)/AppData/Roaming"
 RHIEXEC='C:\Program Files\McNeel\Rhino Installer Engine\x64\rhiexec.exe'
-YAK='C:\Program Files\Rhino 9 WIP\System\Yak.exe'
+YAK="C:\\Program Files\\$RHINO_NAME\\System\\Yak.exe"
 WORK="$(mktemp -d "${XDG_CACHE_HOME:-$HOME/.cache}/rhino-plugin-XXXXXX")"
 trap 'rm -rf "$WORK"' EXIT
 

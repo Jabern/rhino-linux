@@ -42,19 +42,23 @@ find_asset() {
     fi
 }
 
-# Auto-detect default prefix
-has_rhino() {
-    [ -n "${1:-}" ] && [ -d "$1/drive_c/Program Files/Rhino 9 WIP/System" ]
+# Rhino's folder under Program Files: the newest release first, then the WIP build.
+find_rhino_dir() {
+    local name
+    for name in "Rhino 9" "Rhino 9 WIP" "Rhino 8"; do
+        if [ -f "$1/drive_c/Program Files/$name/System/Rhino.exe" ]; then
+            printf '%s\n' "$name"
+            return 0
+        fi
+    done
+    return 1
 }
 
+# Default prefix
 if [ -n "${WINEPREFIX:-}" ]; then
     export WINEPREFIX="$WINEPREFIX"
 elif [ -n "${FLATPAK_ID:-}" ]; then
     export WINEPREFIX="$XDG_DATA_HOME/prefix"
-elif has_rhino "$HOME/.wine-rhino"; then
-    export WINEPREFIX="$HOME/.wine-rhino"
-elif [ -d "$HOME/.wine-rhino" ]; then
-    export WINEPREFIX="$HOME/.wine-rhino"
 else
     export WINEPREFIX="$HOME/.wine-rhino"
 fi
@@ -96,7 +100,8 @@ if [ -z "$WINESERVER_BIN" ] || [ ! -x "$WINESERVER_BIN" ]; then
     fi
 fi
 
-RHINO_DIR="$WINEPREFIX/drive_c/Program Files/Rhino 9 WIP/System"
+RHINO_NAME="$(find_rhino_dir "$WINEPREFIX" || echo "Rhino 9")"
+RHINO_DIR="$WINEPREFIX/drive_c/Program Files/$RHINO_NAME/System"
 
 # End every process in the prefix. wineserver -k finds the server through a file
 # lock, which reports no owner across PID namespaces (Rhino started from another
@@ -145,8 +150,16 @@ case "${1:-}" in
         ;;
 esac
 
-[ -x "$WINE_BIN" ] || { echo "error: Wine not executable at $WINE_BIN" >&2; exit 1; }
-[ -d "$RHINO_DIR" ] || { echo "error: Rhino not found at $RHINO_DIR" >&2; exit 1; }
+if [ ! -x "$WINE_BIN" ] || [ ! -d "$RHINO_DIR" ]; then
+    # The Flatpak's Rhino menu entry stays after Rhino is uninstalled: open the
+    # setup app so the user can install it again instead of seeing nothing.
+    if [ -n "${FLATPAK_ID:-}" ] && command -v rhino-on-linux >/dev/null 2>&1; then
+        exec rhino-on-linux
+    fi
+    [ -x "$WINE_BIN" ] || echo "error: Wine not executable at $WINE_BIN" >&2
+    [ -d "$RHINO_DIR" ] || echo "error: Rhino not found in $WINEPREFIX" >&2
+    exit 1
+fi
 
 # Convert Linux paths or file:// URIs to Windows paths
 args=()
@@ -270,4 +283,4 @@ unset LD_PRELOAD
 export WINEDLLOVERRIDES="vcomp140=builtin;d3dcompiler_47=native,builtin;${WINEDLLOVERRIDES:-}"
 
 cd "$RHINO_DIR"
-exec "$WINE_BIN" 'C:\Program Files\Rhino 9 WIP\System\Rhino.exe' "${args[@]}"
+exec "$WINE_BIN" "C:\\Program Files\\$RHINO_NAME\\System\\Rhino.exe" "${args[@]}"
