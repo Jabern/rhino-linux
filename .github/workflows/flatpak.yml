@@ -97,12 +97,11 @@ jobs:
 
       - name: Attach to GitHub release
         if: github.event_name == 'release' || inputs.release_tag != ''
-        uses: softprops/action-gh-release@v3
-        with:
-          tag_name: ${{ inputs.release_tag || github.ref_name }}
-          files: |
-            ${{ env.BUNDLE }}
-            ${{ env.BUNDLE }}.sha256
-          # unlike the Wine runtime, nothing pins the bundle's checksum,
-          # so a rebuilt bundle may replace the previous one
-          overwrite_files: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ inputs.release_tag || github.event.release.tag_name }}
+        run: |
+          # Only add the files: editing the release itself is not allowed for
+          # this token. Unlike the Wine runtime, nothing pins the bundle's
+          # checksum, so a rebuilt bundle may replace the previous one.
+          gh release upload "$TAG" "$BUNDLE" "$BUNDLE.sha256" --clobber --repo "$GITHUB_REPOSITORY"

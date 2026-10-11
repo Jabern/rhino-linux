@@ -57,8 +57,21 @@ winecfg, the registry editor, the DXVK settings and the prefix folder.
 ### As a Flatpak
 
 The Flatpak works the same on every distribution and brings everything the
-app needs with it. You only need Flatpak and the Flathub remote, which most desktop
-distributions set up already. To build and install it from this repository:
+app needs with it. You only need Flatpak and the Flathub remote, which most
+desktop distributions set up already.
+
+Download [RhinoOnLinux.flatpak](https://github.com/Jabern/rhino-linux/releases/latest/download/RhinoOnLinux.flatpak)
+and double-click it. Your software center (GNOME Software, Discover) installs
+it, along with the GNOME runtime it needs from Flathub. Or from a terminal:
+
+```bash
+flatpak install --user RhinoOnLinux.flatpak
+```
+
+The download doesn't update itself. When a new version comes out, download it
+again and install it over the old one; Rhino and your settings stay.
+
+To build it yourself from this repository instead:
 
 ```bash
 flatpak install --user flathub org.flatpak.Builder
@@ -66,7 +79,7 @@ flatpak run org.flatpak.Builder --user --install --install-deps-from=flathub \
     --force-clean build-flatpak flatpak/io.github.jabern.RhinoOnLinux.yml
 ```
 
-Then open **Rhino on Linux** from your applications menu. Rhino gets its own
+Either way, open **Rhino on Linux** from your applications menu. Rhino gets its own
 entry there too, and double-clicking a `.3dm` file opens it in Rhino.
 
 The Flatpak keeps Rhino and its Wine setup in
