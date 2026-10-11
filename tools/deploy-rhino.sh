@@ -439,6 +439,17 @@ if RHINO_NAME="$(find_rhino_dir "$TARGET_PREFIX")"; then
     fi
 fi
 
+# The Rhino installer puts a Windows shortcut (.lnk) on the Desktop. Wine maps that
+# folder to the real Desktop, where Linux cannot open it; our menu entries replace it.
+DESKTOP_DIR="$(readlink -f "$TARGET_PREFIX/drive_c/users/$(id -un)/Desktop" 2>/dev/null || true)"
+if [ -n "$DESKTOP_DIR" ] && [ -d "$DESKTOP_DIR" ]; then
+    for lnk in "$DESKTOP_DIR"/Rhino*.lnk; do
+        [ -f "$lnk" ] || continue
+        rm -f "$lnk"
+        echo "      Removed the Windows shortcut $(basename "$lnk") from the Desktop"
+    done
+fi
+
 # Rhino compiles display-mode shaders at runtime (Artistic, Monochrome, ...); Wine's
 # builtin d3dcompiler_47 cannot compile them and those viewports stay black. Use
 # Microsoft's compiler from the WebView2 runtime that the Rhino installer put in
