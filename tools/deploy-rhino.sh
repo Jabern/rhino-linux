@@ -257,6 +257,9 @@ Windows Registry Editor Version 5.00
 [HKEY_CURRENT_USER\Software\Wine\DllOverrides]
 "vcomp140"="builtin"
 "d3dcompiler_47"="native,builtin"
+; Wine's menu builder turns Windows shortcuts into desktop entries that call the
+; system's wine, not ours (and outside the Flatpak); rhino-9 has its own entries.
+"winemenubuilder.exe"=""
 
 ; Rhino executable: native DXVK for viewport acceleration
 [HKEY_CURRENT_USER\Software\Wine\AppDefaults\Rhino.exe\DllOverrides]
