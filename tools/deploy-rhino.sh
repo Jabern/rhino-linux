@@ -520,7 +520,7 @@ Exec=python3 "$(dirname "$SCRIPT_DIR")/tools/rhino-on-linux.py" %f
 Icon=rhino9
 Terminal=false
 Type=Application
-Categories=Settings;Utility;
+Categories=Utility;
 MimeType=application/x-rhino-installer;application/x-rhino-package;application/x-grasshopper-assembly;application/x-grasshopper-userobject;
 StartupNotify=true
 EOF

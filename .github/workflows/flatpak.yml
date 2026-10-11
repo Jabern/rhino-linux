@@ -1,0 +1,108 @@
+name: Build Flatpak
+
+on:
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: 'Attach the bundle to this existing release (leave empty to only build)'
+        required: false
+        default: ''
+  push:
+    branches:
+      - main
+    paths:
+      - 'flatpak/**'
+      - 'tools/**'
+      - 'install.sh'
+      - '.github/workflows/flatpak.yml'
+  pull_request:
+    paths:
+      - 'flatpak/**'
+      - 'tools/**'
+      - 'install.sh'
+      - '.github/workflows/flatpak.yml'
+  release:
+    types: [published]
+
+permissions:
+  contents: write
+
+env:
+  APP_ID: io.github.jabern.RhinoOnLinux
+  BUNDLE: RhinoOnLinux.flatpak
+
+jobs:
+  flatpak:
+    name: Build Flatpak bundle
+    runs-on: ubuntu-24.04
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+
+      - name: Install Flatpak and flatpak-builder
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            flatpak flatpak-builder appstream desktop-file-utils dbus
+          # Ubuntu 24.04 restricts unprivileged user namespaces, which
+          # bubblewrap needs for both building and running Flatpaks.
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 || true
+          flatpak remote-add --user --if-not-exists flathub https://dl.flathub.org/repo/flathub.flatpakrepo
+
+      - name: Validate metadata
+        run: |
+          desktop-file-validate flatpak/*.desktop
+          appstreamcli validate --no-net flatpak/${APP_ID}.metainfo.xml
+
+      - name: Cache flatpak-builder downloads and builds
+        uses: actions/cache@v6
+        with:
+          path: .flatpak-builder
+          key: flatpak-builder-${{ hashFiles('flatpak/*.yml') }}-${{ github.sha }}
+          restore-keys: |
+            flatpak-builder-${{ hashFiles('flatpak/*.yml') }}-
+            flatpak-builder-
+
+      - name: Build
+        run: |
+          # The runner has no usable FUSE, so build without rofiles-fuse.
+          flatpak-builder --user --install-deps-from=flathub --disable-rofiles-fuse \
+            --repo=repo --force-clean build-flatpak flatpak/${APP_ID}.yml
+
+      - name: Export bundle
+        run: |
+          # --runtime-repo lets software centers fetch the GNOME runtime from
+          # Flathub when someone opens the bundle.
+          flatpak build-bundle --runtime-repo=https://dl.flathub.org/repo/flathub.flatpakrepo \
+            repo "$BUNDLE" "$APP_ID" master
+          sha256sum "$BUNDLE" > "$BUNDLE.sha256"
+          ls -l "$BUNDLE"
+          cat "$BUNDLE.sha256"
+
+      - name: Check that the bundle installs
+        run: |
+          flatpak install --user -y --noninteractive "$BUNDLE"
+          flatpak info --user "$APP_ID"
+          dbus-run-session -- flatpak run --command=sh "$APP_ID" -c 'test -x /app/bin/rhino-on-linux && test -x /app/share/rhino-on-linux/tools/install-plugin.sh && python3 -c "import gi; gi.require_version(\"Adw\", \"1\"); from gi.repository import Adw"'
+
+      - name: Upload bundle
+        uses: actions/upload-artifact@v7
+        with:
+          name: ${{ env.BUNDLE }}
+          path: |
+            ${{ env.BUNDLE }}
+            ${{ env.BUNDLE }}.sha256
+          retention-days: 14
+
+      - name: Attach to GitHub release
+        if: github.event_name == 'release' || inputs.release_tag != ''
+        uses: softprops/action-gh-release@v3
+        with:
+          tag_name: ${{ inputs.release_tag || github.ref_name }}
+          files: |
+            ${{ env.BUNDLE }}
+            ${{ env.BUNDLE }}.sha256
+          # unlike the Wine runtime, nothing pins the bundle's checksum,
+          # so a rebuilt bundle may replace the previous one
+          overwrite_files: true

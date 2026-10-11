@@ -6,6 +6,6 @@ Exec=rhino-on-linux %f
 Icon=io.github.jabern.RhinoOnLinux
 Terminal=false
 Type=Application
-Categories=Settings;Utility;
+Categories=Utility;
 StartupNotify=true
 MimeType=application/x-rhino-installer;application/x-rhino-package;application/x-grasshopper-assembly;application/x-grasshopper-userobject;
