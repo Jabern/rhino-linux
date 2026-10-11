@@ -44,7 +44,7 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
-            flatpak flatpak-builder appstream desktop-file-utils dbus
+            flatpak flatpak-builder appstream desktop-file-utils dbus elfutils
           # Ubuntu 24.04 restricts unprivileged user namespaces, which
           # bubblewrap needs for both building and running Flatpaks.
           sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 || true
