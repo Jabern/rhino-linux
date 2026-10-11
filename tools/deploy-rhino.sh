@@ -427,6 +427,7 @@ find_rhino_dir() {
     done
     return 1
 }
+RHINO_SYS_DIR=""   # stays empty until the Rhino installer has run
 if RHINO_NAME="$(find_rhino_dir "$TARGET_PREFIX")"; then
     RHINO_SYS_DIR="$TARGET_PREFIX/drive_c/Program Files/$RHINO_NAME/System"
     cp -v "$SCRIPT_DIR/dxvk-rhino.conf" "$RHINO_SYS_DIR/dxvk.conf" 2>/dev/null || true
@@ -470,7 +471,7 @@ done < <(ls -d "$TARGET_PREFIX/drive_c/Program Files (x86)/Microsoft/EdgeWebView
 if [ -n "$NATIVE_COMPILER" ]; then
     cp -f "$NATIVE_COMPILER" "$SYSTEM32_COMPILER"
     echo "      [PASS] Native d3dcompiler_47 installed from the WebView2 runtime"
-elif [ -d "$RHINO_SYS_DIR" ] && grep -qa "Wine builtin DLL" "$SYSTEM32_COMPILER" 2>/dev/null; then
+elif [ -n "$RHINO_SYS_DIR" ] && [ -d "$RHINO_SYS_DIR" ] && grep -qa "Wine builtin DLL" "$SYSTEM32_COMPILER" 2>/dev/null; then
     echo "      [WARN] No native d3dcompiler_47 found; Artistic/Monochrome display modes will render black."
 fi
 WINE_USER_NAME="${USER:-}"
