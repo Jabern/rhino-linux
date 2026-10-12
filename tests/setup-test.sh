@@ -48,6 +48,8 @@ fi
 stop_prefix
 
 check "Wine runtime installed" test -x "$WINE"
+check "runtime runs on any x86-64 CPU (no ISA level above baseline)" \
+    bash -c "! find '$RUNTIME/bin' '$RUNTIME/lib/wine/x86_64-unix' -type f -exec readelf -n {} + 2>/dev/null | grep -qE 'x86 ISA needed:.*x86-64-v[2-4]'"
 check "prefix has 32-bit system files (WoW64)" test -f "$PREFIX/drive_c/windows/syswow64/kernel32.dll"
 check "DXVK is the native d3d11" bash -c "! grep -qa 'Wine builtin DLL' '$PREFIX/drive_c/windows/system32/d3d11.dll'"
 check "Arial is installed" test -f "$PREFIX/drive_c/windows/Fonts/arial.ttf"

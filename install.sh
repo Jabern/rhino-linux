@@ -48,8 +48,8 @@ CUSTOM_DXVK_DIR=""
 RHINO_INSTALLER=""
 RUN_RHINO=0
 WINE_INSTALL_DIR="${XDG_DATA_HOME:-$HOME/.local/share}/wine-rhino"
-WINE_RELEASE_URL="https://github.com/Jabern/rhino-linux/releases/download/v1.1.0/wine-rhino-11.18-x86_64.tar.xz"
-WINE_RELEASE_SHA256="591ef36d02b104b4f8f0920dc370ff17d9ed5e8dc7466f79685ba9322928076d"
+WINE_RELEASE_URL="https://github.com/Jabern/rhino-linux/releases/download/v1.1.1/wine-rhino-11.18-x86_64.tar.xz"
+WINE_RELEASE_SHA256="985a54b80c869f8754eb8f81e7b7535888065630abd2824807daf6f5b0943c26"
 
 # Default Prefix
 TARGET_PREFIX="${RHINO_PREFIX:-${WINEPREFIX:-}}"

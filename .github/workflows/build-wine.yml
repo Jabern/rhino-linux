@@ -152,6 +152,11 @@ jobs:
           find lib/wine/x86_64-windows -type f -exec x86_64-w64-mingw32-strip --strip-unneeded {} + 2>/dev/null || true
           find lib/wine/i386-windows -type f -exec i686-w64-mingw32-strip --strip-unneeded {} + 2>/dev/null || true
           ./bin/wine --version
+          # Refuse runtimes that only start on newer CPUs: glibc will not load a binary
+          # whose ISA note asks for more than baseline x86-64 (v1.1.0 asked for v4).
+          if find bin lib/wine/x86_64-unix -type f -exec readelf -n {} + 2>/dev/null | grep -E 'x86 ISA needed:.*x86-64-v[2-4]'; then
+            echo "Runtime requires a newer x86-64 level than baseline"; exit 1
+          fi
 
           WINE_VER="${{ inputs.wine_version || 'wine-11.18' }}"
           TARBALL="wine-rhino-${WINE_VER#wine-}-x86_64.tar.xz"
