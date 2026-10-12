@@ -12,7 +12,13 @@ cd rhino-linux
 ./install.sh
 ```
 
-`./install.sh` automatically downloads our pre-built patched Wine runtime (~58 MB) directly from GitHub Releases, so you **do not** need to compile Wine from source.
+`./install.sh` automatically downloads our pre-built patched Wine runtime (~54 MB) directly from GitHub Releases, so you **do not** need to compile Wine from source.
+
+The runtime works on any 64-bit Intel or AMD processor. It needs a Linux
+distribution from 2023 or later (glibc 2.38 or newer), such as Ubuntu 24.04,
+Fedora 39, Debian 13 or a current Arch. On older systems, like Ubuntu 22.04 or
+Debian 12, use the [Flatpak](#as-a-flatpak) instead: it brings its own system
+libraries. You can check your version with `ldd --version`.
 
 To run your Rhino installer directly, pass `--installer`:
 

@@ -353,7 +353,7 @@ download_prebuilt_wine() {
     fi
 
     if [ ! -f "$tarball" ]; then
-        echo -e "Fetching pre-compiled Wine runtime (~58 MB)..."
+        echo -e "Fetching pre-compiled Wine runtime (~54 MB)..."
         local fetched=0
         if command -v curl >/dev/null 2>&1; then
             curl -fL --retry 3 --retry-delay 5 --retry-all-errors --progress-bar -o "$temp_tarball" "$WINE_RELEASE_URL" && fetched=1
