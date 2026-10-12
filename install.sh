@@ -387,11 +387,13 @@ download_prebuilt_wine() {
     WINE_BIN="$WINE_INSTALL_DIR/bin/wine"
     WINESERVER_BIN="$WINE_INSTALL_DIR/bin/wineserver"
 
-    if [ -x "$WINE_BIN" ] && "$WINE_BIN" --version >/dev/null 2>&1; then
-        echo -e " ${GREEN}[PASS]${NC} Patched Wine ready: $("$WINE_BIN" --version)"
+    local version_out
+    if [ -x "$WINE_BIN" ] && version_out="$("$WINE_BIN" --version 2>&1)"; then
+        echo -e " ${GREEN}[PASS]${NC} Patched Wine ready: $version_out"
         return 0
     else
         echo -e "${RED}Error: Failed to verify functional Wine binary at $WINE_BIN${NC}" >&2
+        [ -n "${version_out:-}" ] && echo "$version_out" | head -10 >&2
         return 1
     fi
 }

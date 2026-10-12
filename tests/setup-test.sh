@@ -37,6 +37,10 @@ else
     fail "install.sh finishes"
     echo "----- install.sh, runtime step:"
     sed -n '/Step 2\/4/,/Step 3\/4/p' "$T/install.log" | grep -v '%' | head -40
+    echo "----- system:"
+    uname -srm; grep -m1 'model name' /proc/cpuinfo
+    echo "mmap_min_addr=$(cat /proc/sys/vm/mmap_min_addr) overcommit=$(cat /proc/sys/vm/overcommit_memory)" \
+         "max_map_count=$(cat /proc/sys/vm/max_map_count) la57=$(grep -c la57 /proc/cpuinfo | head -1)"
     echo "----- install.sh, last lines:"
     tail -15 "$T/install.log"
     echo "-----"
