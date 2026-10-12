@@ -1,0 +1,46 @@
+name: Test Setup
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+    paths:
+      - 'install.sh'
+      - 'tools/**'
+      - 'tests/**'
+      - '.github/workflows/test-setup.yml'
+  pull_request:
+    paths:
+      - 'install.sh'
+      - 'tools/**'
+      - 'tests/**'
+      - '.github/workflows/test-setup.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  setup:
+    name: Fresh install and repair
+    runs-on: ubuntu-24.04
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+
+      - name: Install test tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends cabextract xz-utils gcc-mingw-w64-x86-64 shellcheck
+
+      - name: Check shell scripts
+        run: |
+          bash -n install.sh tools/*.sh tools/rhino-9 tests/*.sh
+          shellcheck --severity=error install.sh tools/*.sh tools/rhino-9 tests/*.sh
+
+      - name: Check the app compiles
+        run: python3 -m py_compile tools/rhino-on-linux.py
+
+      - name: Install into a fresh home folder and check the result
+        run: tests/setup-test.sh

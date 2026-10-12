@@ -416,6 +416,44 @@ else
     echo "      [WARN] Arial font not detected. WPF .NET 10 UI may fail fast."
 fi
 
+# Wine registers its own core fonts by the absolute path of the Wine build that ran
+# first. If that build moves or is deleted, DirectWrite cannot find Tahoma, and
+# WebView2 (Rhino's sign-in) crashes in an endless system-font loop. Keep copies in
+# the prefix and register them by file name, as Windows does.
+WINE_REAL="$(readlink -f "$(command -v "$WINE_BIN" 2>/dev/null || echo "$WINE_BIN")")"
+WINE_FONT_SRC=""
+for dir in "$(dirname "$WINE_REAL")/../share/wine/fonts" "$(dirname "$WINE_REAL")/fonts"; do
+    if [ -f "$dir/tahoma.ttf" ]; then WINE_FONT_SRC="$dir"; break; fi
+done
+if [ -n "$WINE_FONT_SRC" ]; then
+    CORE_FONTS_REG="$(mktemp "${TMPDIR:-/tmp}/rhino-fonts-XXXXXX.reg")"
+    printf 'Windows Registry Editor Version 5.00\n' > "$CORE_FONTS_REG"
+    for key in 'HKEY_LOCAL_MACHINE\Software\Microsoft\Windows NT\CurrentVersion\Fonts' \
+               'HKEY_LOCAL_MACHINE\Software\Microsoft\Windows\CurrentVersion\Fonts' \
+               'HKEY_CURRENT_USER\Software\Wine\Fonts\External Fonts'; do
+        printf '\n[%s]\n' "$key" >> "$CORE_FONTS_REG"
+        while IFS='|' read -r name file; do
+            cp -f "$WINE_FONT_SRC/$file" "$FONTS_DIR/$file"
+            case "$key" in
+                *External*) printf '"%s"=-\n' "$name" >> "$CORE_FONTS_REG" ;;
+                *)          printf '"%s"="%s"\n' "$name" "$file" >> "$CORE_FONTS_REG" ;;
+            esac
+        done <<'EOF'
+Tahoma (TrueType)|tahoma.ttf
+Tahoma Bold (TrueType)|tahomabd.ttf
+Marlett (TrueType)|marlett.ttf
+Symbol (TrueType)|symbol.ttf
+Webdings (TrueType)|webdings.ttf
+Wingdings (TrueType)|wingding.ttf
+EOF
+    done
+    "$WINE_BIN" regedit /S "$CORE_FONTS_REG"
+    rm -f "$CORE_FONTS_REG"
+    echo "      [PASS] Wine's core fonts registered from the prefix (Tahoma for web views)"
+else
+    echo "      [WARN] Wine's own fonts not found next to $WINE_BIN; web views may not start"
+fi
+
 # Rhino's folder under Program Files: the newest release first, then the WIP build.
 find_rhino_dir() {
     local name
