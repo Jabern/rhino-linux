@@ -33,7 +33,14 @@ stop_prefix() { in_home WINEPREFIX="$PREFIX" "$RUNTIME/bin/wineserver" -k 2>/dev
 
 echo "== Fresh install (install.sh -y)"
 if in_home bash "$REPO/install.sh" -y > "$T/install.log" 2>&1; then pass "install.sh finishes"
-else fail "install.sh finishes (last lines below)"; tail -15 "$T/install.log"; fi
+else
+    fail "install.sh finishes"
+    echo "----- install.sh, runtime step:"
+    sed -n '/Step 2\/4/,/Step 3\/4/p' "$T/install.log" | grep -v '%' | head -40
+    echo "----- install.sh, last lines:"
+    tail -15 "$T/install.log"
+    echo "-----"
+fi
 stop_prefix
 
 check "Wine runtime installed" test -x "$WINE"
@@ -58,7 +65,11 @@ fi
 echo "== Repair with Rhino present (stand-in Rhino.exe)"
 RHINO_SYS="$PREFIX/drive_c/Program Files/Rhino 9/System"
 mkdir -p "$RHINO_SYS" && touch "$RHINO_SYS/Rhino.exe"
-DESKTOP="$(readlink -f "$PREFIX/drive_c/users/${USER:-user}/Desktop")"
+DESKTOP="$(readlink -f "$PREFIX/drive_c/users/${USER:-user}/Desktop" 2>/dev/null || true)"
+if [ -z "$DESKTOP" ] || [ ! -d "$PREFIX/drive_c/users" ]; then
+    echo "The fresh install left no usable prefix; skipping the repair checks."
+    echo; echo "$FAILED check(s) failed."; exit 1
+fi
 mkdir -p "$DESKTOP" && touch "$DESKTOP/Rhino 9.lnk" "$DESKTOP/notes.txt"
 if in_home bash "$REPO/tools/deploy-rhino.sh" --prefix "$PREFIX" --wine "$WINE" --skip-desktop > "$T/repair.log" 2>&1
 then pass "deploy-rhino.sh repair finishes"; else fail "deploy-rhino.sh repair finishes"; tail -15 "$T/repair.log"; fi
