@@ -354,12 +354,18 @@ download_prebuilt_wine() {
 
     if [ ! -f "$tarball" ]; then
         echo -e "Fetching pre-compiled Wine runtime (~58 MB)..."
+        local fetched=0
         if command -v curl >/dev/null 2>&1; then
-            curl -fL --progress-bar -o "$temp_tarball" "$WINE_RELEASE_URL"
+            curl -fL --retry 3 --retry-delay 5 --retry-all-errors --progress-bar -o "$temp_tarball" "$WINE_RELEASE_URL" && fetched=1
         elif command -v wget >/dev/null 2>&1; then
-            wget --show-progress -O "$temp_tarball" "$WINE_RELEASE_URL"
+            wget --tries=4 --waitretry=5 --show-progress -O "$temp_tarball" "$WINE_RELEASE_URL" && fetched=1
         else
             echo -e "${RED}Error: curl or wget is required to download pre-built Wine.${NC}"
+            return 1
+        fi
+        if [ "$fetched" -ne 1 ]; then
+            echo -e "${RED}Error: downloading $WINE_RELEASE_URL failed.${NC}" >&2
+            rm -f "$temp_tarball"
             return 1
         fi
 
@@ -476,9 +482,13 @@ elif [ -z "$WINE_BIN" ]; then
             exit 1
         fi
     else
+        # Compiling Wine needs dozens of development packages and about an hour,
+        # so a failed download stops here instead of starting a source build.
         if ! download_prebuilt_wine; then
-            echo -e "${YELLOW}Download failed. Falling back to source build...${NC}"
-            build_patched_wine
+            echo -e "${RED}Could not download the Wine runtime.${NC}" >&2
+            echo "Check your internet connection and run the installer again; finished steps are kept." >&2
+            echo "(Experts can build Wine from source instead with: ./install.sh --build-wine)" >&2
+            exit 1
         fi
     fi
 else

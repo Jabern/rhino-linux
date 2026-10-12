@@ -116,7 +116,7 @@ if [ ! -d "$TARGET_PREFIX/drive_c" ]; then
         file="$WINE_ADDON_CACHE/$(basename "$addon")"
         if [ -f "$file" ] && echo "$sum  $file" | sha256sum -c --status 2>/dev/null; then continue; fi
         echo "      Downloading $(basename "$addon")..."
-        if curl -fsSL -o "$file.part" "https://dl.winehq.org/wine/$addon" &&
+        if curl -fsSL --retry 3 --retry-delay 5 --retry-all-errors -o "$file.part" "https://dl.winehq.org/wine/$addon" &&
            echo "$sum  $file.part" | sha256sum -c --status 2>/dev/null; then
             mv -f "$file.part" "$file"
         else
@@ -218,9 +218,9 @@ if [ "$DXVK_DEPLOYED" -eq 0 ] && ! is_dxvk_dll "$SYSTEM32_DIR/d3d11.dll"; then
     if [ ! -f "$DXVK_TARBALL" ] || ! verify_sha256 "$DXVK_SHA256" "$DXVK_TARBALL"; then
         temp_dl="$DXVK_TARBALL.part.$$"
         if command -v curl >/dev/null 2>&1; then
-            curl -fL -o "$temp_dl" "$DXVK_URL"
+            curl -fL --retry 3 --retry-delay 5 --retry-all-errors -o "$temp_dl" "$DXVK_URL"
         elif command -v wget >/dev/null 2>&1; then
-            wget -O "$temp_dl" "$DXVK_URL"
+            wget --tries=4 --waitretry=5 -O "$temp_dl" "$DXVK_URL"
         fi
         if verify_sha256 "$DXVK_SHA256" "$temp_dl"; then
             mv -f "$temp_dl" "$DXVK_TARBALL"
@@ -376,9 +376,9 @@ if [ ! -f "$FONTS_DIR/arial.ttf" ]; then
                 "https://github.com/pushcx/corefonts/raw/master/arial32.exe" \
                 "https://downloads.sourceforge.net/corefonts/arial32.exe"; do
                 if command -v curl >/dev/null 2>&1; then
-                    curl -fLs -o "$temp_dl" "$url" || true
+                    curl -fLs --retry 3 --retry-delay 5 --retry-all-errors -o "$temp_dl" "$url" || true
                 elif command -v wget >/dev/null 2>&1; then
-                    wget -q -O "$temp_dl" "$url" || true
+                    wget -q --tries=4 --waitretry=5 -O "$temp_dl" "$url" || true
                 fi
                 if [ -f "$temp_dl" ] && verify_sha256 "$ARIAL_SHA256" "$temp_dl"; then
                     mv -f "$temp_dl" "$ARIAL_EXE"
