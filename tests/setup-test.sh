@@ -3,7 +3,7 @@
 # user does (install.sh -y, release runtime, fresh prefix), and check the result.
 # Rhino itself is not installed; a stand-in Rhino.exe covers the "Rhino present" paths.
 #
-# Usage: tests/setup-test.sh        (needs curl, tar, xz, cabextract; mingw-w64 optional)
+# Usage: tests/setup-test.sh        (needs curl, tar, xz; cabextract and mingw-w64 optional)
 # Leaves nothing behind; set KEEP=1 to keep the test home for inspection.
 set -uo pipefail
 

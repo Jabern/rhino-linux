@@ -206,13 +206,13 @@ get_distro_deps() {
             echo "wine vulkan-icd-loader vulkan-headers dxvk-bin cabextract bison flex mingw-w64-gcc libx11 freetype2 gnutls libxext libxcomposite libxdamage"
             ;;
         debian)
-            echo "wine64 libvulkan1 vulkan-tools build-essential cabextract bison flex gcc-mingw-w64 libx11-dev libfreetype-dev libgnutls28-dev libxext-dev libxcomposite-dev libxdamage-dev dxvk"
+            echo "wine64 libvulkan1 vulkan-tools build-essential cabextract bison flex gcc-mingw-w64 g++-mingw-w64 libx11-dev libfreetype-dev libgnutls28-dev libxext-dev libxcomposite-dev libxdamage-dev dxvk"
             ;;
         fedora)
-            echo "wine vulkan-loader-devel gcc make cabextract bison flex mingw64-gcc libX11-devel freetype-devel gnutls-devel libXext-devel libXcomposite-devel libXdamage-devel dxvk"
+            echo "wine vulkan-loader-devel gcc gcc-c++ make cabextract bison flex mingw64-gcc mingw64-gcc-c++ mingw32-gcc mingw32-gcc-c++ libX11-devel freetype-devel gnutls-devel libXext-devel libXcomposite-devel libXdamage-devel dxvk"
             ;;
         suse)
-            echo "wine vulkan-devel gcc make cabextract bison flex libX11-devel freetype2-devel libgnutls-devel libXext-devel libXcomposite-devel libXdamage-devel dxvk"
+            echo "wine vulkan-devel gcc gcc-c++ make cabextract bison flex libX11-devel freetype2-devel libgnutls-devel libXext-devel libXcomposite-devel libXdamage-devel dxvk"
             ;;
         *)
             echo "wine vulkan dxvk cabextract bison flex gcc"
@@ -441,13 +441,27 @@ build_patched_wine() {
     if command -v ccache >/dev/null 2>&1; then
         echo "Using ccache for host and PE (mingw) compilers."
         cc_vars=(CC="ccache gcc"
+                 CXX="ccache g++"
                  i386_CC="ccache i686-w64-mingw32-gcc"
-                 x86_64_CC="ccache x86_64-w64-mingw32-gcc")
+                 i386_CXX="ccache i686-w64-mingw32-g++"
+                 x86_64_CC="ccache x86_64-w64-mingw32-gcc"
+                 x86_64_CXX="ccache x86_64-w64-mingw32-g++")
+    else
+        cc_vars=(CXX="g++"
+                 i386_CC="i686-w64-mingw32-gcc"
+                 i386_CXX="i686-w64-mingw32-g++"
+                 x86_64_CC="x86_64-w64-mingw32-gcc"
+                 x86_64_CXX="x86_64-w64-mingw32-g++")
+    fi
+
+    local cppflags=()
+    if [ -d "$REPO_DIR/kernel-headers" ]; then
+        cppflags=(CPPFLAGS="-I$REPO_DIR/kernel-headers")
     fi
 
     echo "Configuring Wine (WoW64: i386 + x86_64)..."
     "$src_dir/configure" --prefix="$WINE_INSTALL_DIR" --enable-archs=i386,x86_64 \
-        --disable-tests --without-capi --without-gstreamer "${cc_vars[@]}"
+        --disable-tests --without-capi --without-gstreamer "${cppflags[@]}" "${cc_vars[@]}"
 
     # Viewport repaint after maximize/resize depends on XDamage; ntsync on the kernel header.
     if ! grep -q '^#define SONAME_LIBXDAMAGE ' include/config.h; then
@@ -457,10 +471,21 @@ build_patched_wine() {
     if ! grep -q '^#define HAVE_LINUX_NTSYNC_H 1' include/config.h; then
         echo -e "${YELLOW}Warning: linux/ntsync.h not found; building without ntsync support.${NC}"
     fi
+    if ! grep -q 'dlls/icu/x86_64-windows/icu.dll' Makefile; then
+        echo -e "${RED}Error: 64-bit ICU (icu.dll) was not enabled; MinGW C++ compiler (g++-mingw-w64 / mingw64-gcc-c++) is required for .NET globalization.${NC}" >&2
+        return 1
+    fi
 
     echo "Compiling Wine with $jobs parallel jobs..."
     make -j"$jobs"
     make install
+
+    # Verify icu.dll exists in the installed wine tree
+    if [ ! -s "$WINE_INSTALL_DIR/lib/wine/x86_64-windows/icu.dll" ]; then
+        echo -e "${RED}Error: icu.dll not found in $WINE_INSTALL_DIR/lib/wine/x86_64-windows/; Wine will fail to run .NET 9 apps like Rhino.${NC}" >&2
+        return 1
+    fi
+
     echo "local-build" > "$RUNTIME_STAMP"
 
     WINE_BIN="$WINE_INSTALL_DIR/bin/wine"

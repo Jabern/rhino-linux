@@ -397,6 +397,9 @@ if [ ! -f "$FONTS_DIR/arial.ttf" ]; then
                 bsdtar -xf "$ARIAL_EXE" -C "$temp_extract" 2>/dev/null || true
             elif command -v 7z >/dev/null 2>&1; then
                 7z x -y -o"$temp_extract" "$ARIAL_EXE" >/dev/null 2>&1 || true
+            elif [ -x "$WINE_BIN" ]; then
+                # Self-extract directly using Wine if no native unpacker is installed
+                "$WINE_BIN" "$ARIAL_EXE" /q /c "/t:Z:$temp_extract" >/dev/null 2>&1 || true
             fi
 
             for font in "$temp_extract"/*.[tT][tT][fF]; do
