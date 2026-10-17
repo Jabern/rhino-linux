@@ -19,6 +19,7 @@ on:
   push:
     branches:
       - main
+      - dev
     paths:
       - 'patches/**'
       - '.github/workflows/build-wine.yml'
@@ -48,6 +49,8 @@ jobs:
             bison \
             gcc-mingw-w64-x86-64 \
             gcc-mingw-w64-i686 \
+            g++-mingw-w64-x86-64 \
+            g++-mingw-w64-i686 \
             libx11-dev \
             libxext-dev \
             libxrandr-dev \
@@ -71,6 +74,11 @@ jobs:
             wayland-protocols \
             libxkbcommon-dev \
             xz-utils
+          echo "=== MinGW Toolchain Versions ==="
+          x86_64-w64-mingw32-gcc --version | head -n 1
+          x86_64-w64-mingw32-g++ --version | head -n 1
+          i686-w64-mingw32-gcc --version | head -n 1
+          i686-w64-mingw32-g++ --version | head -n 1
 
       - name: Setup ccache
         uses: actions/cache@v6
@@ -99,8 +107,14 @@ jobs:
           for patch_file in "$GITHUB_WORKSPACE"/patches/*.patch; do
             if [ -f "$patch_file" ]; then
               patch_name="$(basename "$patch_file")"
-              echo "Applying: $patch_name"
-              patch -p1 -N < "$patch_file" || { echo "Failed to apply $patch_name"; exit 1; }
+              echo "::group::Applying $patch_name"
+              if ! patch -p1 -N < "$patch_file"; then
+                echo "::error file=patches/$patch_name::Failed to apply patch $patch_name"
+                echo "=== Rejected hunks ==="
+                find . -name "*.rej" -exec echo "--- {} ---" \; -exec cat {} \;
+                exit 1
+              fi
+              echo "::endgroup::"
             fi
           done
           echo "All patches applied successfully."
@@ -126,10 +140,34 @@ jobs:
             --without-gstreamer \
             CPPFLAGS="-I$GITHUB_WORKSPACE/kernel-headers" \
             CC="ccache gcc" \
+            CXX="ccache g++" \
             i386_CC="ccache i686-w64-mingw32-gcc" \
-            x86_64_CC="ccache x86_64-w64-mingw32-gcc"
-          grep -q '^#define SONAME_LIBXDAMAGE ' include/config.h || { echo "XDamage support missing"; exit 1; }
-          grep -q '^#define HAVE_LINUX_NTSYNC_H 1' include/config.h || { echo "ntsync support missing"; exit 1; }
+            i386_CXX="ccache i686-w64-mingw32-g++" \
+            x86_64_CC="ccache x86_64-w64-mingw32-gcc" \
+            x86_64_CXX="ccache x86_64-w64-mingw32-g++"
+
+          echo "=== Verifying critical configuration requirements ==="
+          err=0
+          grep -q '^#define SONAME_LIBXDAMAGE ' include/config.h || { echo "::error::XDamage support missing from Wine configuration"; err=1; }
+          grep -q '^#define HAVE_LINUX_NTSYNC_H 1' include/config.h || { echo "::error::ntsync support missing from Wine configuration"; err=1; }
+          grep -q '^#define SONAME_LIBX11 ' include/config.h || { echo "::error::X11 support missing from Wine configuration"; err=1; }
+          grep -q '^#define SONAME_LIBFREETYPE ' include/config.h || { echo "::error::FreeType font rendering missing from Wine configuration"; err=1; }
+
+          # Verify that ICU is enabled in Makefile for both architectures
+          if ! grep -q 'dlls/icu/x86_64-windows/icu.dll' Makefile; then
+            echo "::error::64-bit ICU (x86_64 icu.dll) was not enabled by configure; MinGW C++ compiler or ICU headers missing"
+            err=1
+          fi
+          if ! grep -q 'dlls/icu/i386-windows/icu.dll' Makefile; then
+            echo "::error::32-bit ICU (i386 icu.dll) was not enabled by configure; MinGW C++ compiler or ICU headers missing"
+            err=1
+          fi
+          if [ $err -ne 0 ]; then
+            echo "=== Relevant configure warnings / errors ==="
+            grep -i -E "warning|error|unsupported|c\+\+|icu" config.log | tail -n 50 || true
+            exit 1
+          fi
+          echo "Configuration validation passed successfully."
 
       - name: Compile Wine
         run: |
@@ -143,6 +181,23 @@ jobs:
           make install DESTDIR="$GITHUB_WORKSPACE/staging"
           cd "$GITHUB_WORKSPACE/staging/opt/wine-rhino"
 
+          # icuuc/icuin are forwarders to icu.dll: without the C++ compiler Wine silently
+          # omits icu.dll, and .NET exits with "Cannot get symbol u_charsToUChars".
+          echo "=== Verifying ICU implementation and forwarders ==="
+          for arch in x86_64 i386; do
+            test -s "lib/wine/$arch-windows/icu.dll" || { echo "::error::Missing $arch ICU implementation (icu.dll); check MinGW C++ compiler"; exit 1; }
+            test -s "lib/wine/$arch-windows/icuuc.dll" || { echo "::error::Missing $arch icuuc.dll forwarder"; exit 1; }
+            test -s "lib/wine/$arch-windows/icuin.dll" || { echo "::error::Missing $arch icuin.dll forwarder"; exit 1; }
+          done
+
+          # Verify u_charsToUChars export in x86_64 icu.dll
+          if command -v x86_64-w64-mingw32-objdump >/dev/null 2>&1; then
+            x86_64-w64-mingw32-objdump -p lib/wine/x86_64-windows/icu.dll | grep -q "u_charsToUChars" || {
+              echo "::error::Required symbol u_charsToUChars missing from x86_64 icu.dll exports (.NET globalization will fail)"; exit 1;
+            }
+            echo "Verified u_charsToUChars export in x86_64 icu.dll."
+          fi
+
           # Runtime only: drop headers and import libraries, strip debug
           # information and symbols (Wine only needs exports at run time).
           rm -rf include
@@ -155,7 +210,7 @@ jobs:
           # Refuse runtimes that only start on newer CPUs: glibc will not load a binary
           # whose ISA note asks for more than baseline x86-64 (v1.1.0 asked for v4).
           if find bin lib/wine/x86_64-unix -type f -exec readelf -n {} + 2>/dev/null | grep -E 'x86 ISA needed:.*x86-64-v[2-4]'; then
-            echo "Runtime requires a newer x86-64 level than baseline"; exit 1
+            echo "::error::Runtime requires a newer x86-64 level than baseline"; exit 1
           fi
 
           WINE_VER="${{ inputs.wine_version || 'wine-11.18' }}"
@@ -179,6 +234,14 @@ jobs:
             ${{ env.TARBALL }}
             ${{ env.TARBALL }}.sha256
           retention-days: 14
+
+      - name: Upload config.log on failure
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: wine-configure-log
+          path: build-wine/config.log
+          retention-days: 7
 
       - name: Publish to GitHub Releases
         if: github.event_name == 'release' || inputs.create_release == true
