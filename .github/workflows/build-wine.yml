@@ -120,12 +120,22 @@ jobs:
           echo "All patches applied successfully."
 
       - name: Provide the ntsync kernel header
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           # The runner's kernel headers predate ntsync (Linux 6.14); the header
           # is only needed at build time, Wine uses /dev/ntsync when available.
           mkdir -p kernel-headers/linux
-          curl -fsSL -o kernel-headers/linux/ntsync.h \
-            https://raw.githubusercontent.com/torvalds/linux/v6.17/include/uapi/linux/ntsync.h
+          if [ ! -s kernel-headers/linux/ntsync.h ]; then
+            echo "Fetching ntsync.h..."
+            curl -fsSL \
+              ${GH_TOKEN:+-H "Authorization: token $GH_TOKEN"} \
+              -H "Accept: application/vnd.github.v3.raw" \
+              -o kernel-headers/linux/ntsync.h \
+              https://api.github.com/repos/torvalds/linux/contents/include/uapi/linux/ntsync.h?ref=v6.17 || \
+            curl -fsSL --retry 3 -o kernel-headers/linux/ntsync.h \
+              https://raw.githubusercontent.com/torvalds/linux/v6.17/include/uapi/linux/ntsync.h
+          fi
           echo "006437ee52a3e04f921df77081eb5c21c44c71f598b10ac534c6ef9e78296262  kernel-headers/linux/ntsync.h" | sha256sum -c
 
       - name: Configure Wine (dual WoW64)
