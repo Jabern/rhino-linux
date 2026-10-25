@@ -138,13 +138,21 @@ def menu_files(version):
     return [os.path.join(share, "applications", entry), os.path.join(share, "icons/hicolor/256x256/apps", icon)]
 
 
+def spawn(cmd, **kwargs):
+    """Start a program the app does not wait for; GLib collects its exit
+    status, so a closed Rhino does not linger as a zombie process."""
+    proc = subprocess.Popen(cmd, **kwargs)
+    GLib.child_watch_add(GLib.PRIORITY_DEFAULT, proc.pid, lambda *_: None)
+    return proc
+
+
 def refresh_menu_entries():
     """One menu entry per installed version, in the background; also brings the
     entries of an earlier release up to date."""
     try:
-        subprocess.Popen(["bash", "-c", '. "$1" && rhino_write_menu_entries', "bash",
-                          os.path.join(REPO_DIR, "tools", "rhino-versions.sh")],
-                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        spawn(["bash", "-c", '. "$1" && rhino_write_menu_entries', "bash",
+               os.path.join(REPO_DIR, "tools", "rhino-versions.sh")],
+              stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     except OSError:
         pass
 
@@ -684,8 +692,8 @@ class Window(Adw.ApplicationWindow):
         if version not in RHINO_VERSIONS:
             version = versions[0] if versions else None
         try:
-            subprocess.Popen([launcher()] + (["--version", version] if version else []), start_new_session=True,
-                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            spawn([launcher()] + (["--version", version] if version else []), start_new_session=True,
+                  stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
             self.toast(f"Opening {rhino_name(version) or 'Rhino'}…")
         except OSError as e:
             self.show_failure("Rhino could not be started", str(e))
@@ -910,8 +918,8 @@ class Window(Adw.ApplicationWindow):
 
     def wine_tool(self, tool):
         env = dict(os.environ, WINEPREFIX=self.tool_prefix())
-        subprocess.Popen([wine_path(), tool], env=env, start_new_session=True,
-                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        spawn([wine_path(), tool], env=env, start_new_session=True,
+              stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
     def on_terminal(self, *_):
         prefix = self.tool_prefix()
@@ -919,7 +927,7 @@ class Window(Adw.ApplicationWindow):
                    PATH=os.path.dirname(wine_path()) + os.pathsep + os.environ.get("PATH", ""))
         for term in (os.environ.get("TERMINAL"), "kgx", "gnome-terminal", "konsole", "xfce4-terminal", "xterm"):
             if term and shutil.which(term):
-                subprocess.Popen([term], cwd=prefix, env=env, start_new_session=True)
+                spawn([term], cwd=prefix, env=env, start_new_session=True)
                 return
         self.toast("No terminal application found")
 
@@ -989,4 +997,7 @@ class App(Adw.Application):
 
 
 if __name__ == "__main__":
+    # The window class follows the program name; the app id makes it match the
+    # app's menu entry, so the taskbar shows the app's icon.
+    GLib.set_prgname(APP_ID)
     sys.exit(App().run(sys.argv))

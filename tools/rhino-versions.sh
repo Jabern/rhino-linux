@@ -168,8 +168,12 @@ rhino_write_menu_entries() {
             rm -f "$file" "$RHINO_ICON_DIR/$icon.png"
             continue
         fi
-        if ! python3 -I "$tools/exe-icon.py" "$prefix/drive_c/Program Files/$name/System/Rhino.exe" \
+        # A full path: running desktops (Cinnamon) do not rescan the icon theme
+        # when a file is added to one of its size folders.
+        if python3 -I "$tools/exe-icon.py" "$prefix/drive_c/Program Files/$name/System/Rhino.exe" \
                 "$RHINO_ICON_DIR/$icon.png" >/dev/null 2>&1; then
+            icon="$RHINO_ICON_DIR/$icon.png"
+        else
             icon="$fallback_icon"
         fi
         cat > "$file" << ENTRY
