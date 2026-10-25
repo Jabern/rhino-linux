@@ -1,0 +1,56 @@
+diff --git a/dlls/winex11.drv/init.c b/dlls/winex11.drv/init.c
+index 2758a26..e5065b5 100644
+--- a/dlls/winex11.drv/init.c
++++ b/dlls/winex11.drv/init.c
+@@ -396,6 +396,41 @@ static void x11drv_client_surface_detach( struct client_surface *client )
+     }
+ }
+ 
++/* Like DXGI_SCALING_STRETCH on Windows: until the application presents a frame
++ * at the new size, show its last frame stretched to the new client area, rather
++ * than the black the X server fills newly exposed areas with. */
++static void client_surface_stretch_last_frame( HWND hwnd, struct x11drv_client_surface *surface )
++{
++    RECT rect_dst = surface->client.monitor_rect, rect_src, rect;
++    int src_width = surface->changes.width, src_height = surface->changes.height;
++    Drawable window;
++    HRGN region;
++    HDC hdc;
++
++    if (!surface->client.offscreen || !surface->hdc_src || !surface->hdc_dst) return;
++    if (src_width <= 1 || src_height <= 1 || IsRectEmpty( &rect_dst )) return;
++    if (!(window = X11DRV_get_whole_window( surface->client.toplevel ))) return;
++    if (!(hdc = NtUserGetDCEx( hwnd, 0, DCX_CACHE | DCX_USESTYLE ))) return;
++
++    TRACE( "hwnd %p stretching %dx%d to %s\n", hwnd, src_width, src_height, wine_dbgstr_rect( &rect_dst ) );
++
++    region = get_dc_monitor_region( hwnd, hdc );
++    if (get_dc_drawable( surface->hdc_dst, &rect ) != window || !EqualRect( &rect, &rect_dst ))
++        set_dc_drawable( surface->hdc_dst, window, &rect_dst, IncludeInferiors );
++    if (region) NtGdiExtSelectClipRgn( surface->hdc_dst, region, RGN_COPY );
++
++    SetRect( &rect_src, 0, 0, src_width, src_height );
++    if (get_dc_drawable( surface->hdc_src, &rect ) != surface->window || !EqualRect( &rect, &rect_src ))
++        set_dc_drawable( surface->hdc_src, surface->window, &rect_src, IncludeInferiors );
++
++    NtGdiStretchBlt( surface->hdc_dst, 0, 0, rect_dst.right - rect_dst.left, rect_dst.bottom - rect_dst.top,
++                     surface->hdc_src, 0, 0, src_width, src_height, SRCCOPY, 0 );
++    XFlush( gdi_display );
++
++    if (region) NtGdiDeleteObjectApp( region );
++    NtUserReleaseDC( hwnd, hdc );
++}
++
+ static void client_surface_update_geometry( HWND hwnd, struct x11drv_client_surface *surface )
+ {
+     RECT rect = surface->client.raw ? surface->client.monitor_rect : surface->client.virtual_rect;
+@@ -413,6 +448,9 @@ static void client_surface_update_geometry( HWND hwnd, struct x11drv_client_surf
+     if (changes.height != surface->changes.height) mask |= CWHeight;
+     if (!mask) return;
+ 
++    /* The resize below discards the hidden window's contents outside its old size. */
++    if (mask & (CWWidth | CWHeight)) client_surface_stretch_last_frame( hwnd, surface );
++
+     surface->changes = changes;
+     TRACE( "client window %p/%lx, requesting position %d,%d size %d,%d mask %#x\n", hwnd,
+            surface->window, changes.x, changes.y, changes.width, changes.height, mask );
