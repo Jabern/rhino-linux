@@ -134,6 +134,25 @@ else
     echo "[1/6] Existing prefix detected at $TARGET_PREFIX."
 fi
 
+# wineboot only installs the 32-bit Gecko, but Rhino is 64-bit: its HTML views
+# (RhinoScript's Rhino.HtmlBox) need the 64-bit one. Also fixes older prefixes.
+GECKO64_MSI="${XDG_CACHE_HOME:-$HOME/.cache}/wine/wine-gecko-2.47.4-x86_64.msi"
+if [ ! -d "$TARGET_PREFIX/drive_c/windows/system32/gecko/2.47.4" ]; then
+    if [ ! -f "$GECKO64_MSI" ]; then
+        mkdir -p "$(dirname "$GECKO64_MSI")"
+        curl -fsSL --retry 3 --retry-delay 5 --retry-all-errors -o "$GECKO64_MSI.part" \
+            "https://dl.winehq.org/wine/wine-gecko/2.47.4/wine-gecko-2.47.4-x86_64.msi" &&
+            echo "e590b7d988a32d6aa4cf1d8aa3aa3d33766fdd4cf4c89c2dcc2095ecb28d066f  $GECKO64_MSI.part" | sha256sum -c --status 2>/dev/null &&
+            mv -f "$GECKO64_MSI.part" "$GECKO64_MSI"
+        rm -f "$GECKO64_MSI.part"
+    fi
+    if [ -f "$GECKO64_MSI" ] && "$WINE_BIN" msiexec /i "$GECKO64_MSI" /qn; then
+        echo "      [PASS] 64-bit Wine Gecko installed (HTML dialogs)"
+    else
+        echo "      [WARN] Could not install the 64-bit Wine Gecko; Rhino.HtmlBox will not work"
+    fi
+fi
+
 # 2. Deploy DXVK DLLs to system32
 echo "[2/6] Deploying DXVK 64-bit runtime libraries..."
 SYSTEM32_DIR="$TARGET_PREFIX/drive_c/windows/system32"

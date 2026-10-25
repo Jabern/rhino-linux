@@ -1,0 +1,112 @@
+diff --git a/dlls/win32u/window.c b/dlls/win32u/window.c
+index 713d744..dc74e03 100644
+--- a/dlls/win32u/window.c
++++ b/dlls/win32u/window.c
+@@ -502,6 +502,7 @@ void use_window_client_surface( struct client_surface *surface, BOOL use )
+     else if (use)
+     {
+         /* surface wasn't used, it shouldn't be in any list */
++        surface->unused = FALSE;
+         list_add_tail( &client_surfaces, &surface->entry );
+         client_surface_update_locked( surface );
+     }
+@@ -509,6 +510,7 @@ void use_window_client_surface( struct client_surface *surface, BOOL use )
+     {
+         list_remove( &surface->entry ); /* remove it from client_surfaces, if it was used */
+         list_add_head( &unused_surfaces, &surface->entry ); /* add it to the head, so we discard older ones */
++        surface->unused = TRUE;
+         client_surface_add_ref( surface );
+     }
+ 
+diff --git a/dlls/winex11.drv/init.c b/dlls/winex11.drv/init.c
+index e5065b5..919bf31 100644
+--- a/dlls/winex11.drv/init.c
++++ b/dlls/winex11.drv/init.c
+@@ -208,6 +208,7 @@ static typeof(XDamageCreate) *pXDamageCreate;
+ static typeof(XDamageDestroy) *pXDamageDestroy;
+ static typeof(XDamageSubtract) *pXDamageSubtract;
+ static pthread_once_t damage_once = PTHREAD_ONCE_INIT;
++static __thread BOOL presenting_damage; /* copying because a frame has landed */
+ static XContext damage_context;
+ static BOOL damage_available;
+ 
+@@ -231,7 +232,9 @@ static BOOL client_surface_damage_notify( HWND unused, XEvent *event )
+     XFlush( event->xany.display );
+     release_win_data( data );
+     TRACE( "damage %lx drawable %lx hwnd %p\n", damage->damage, damage->drawable, hwnd );
++    presenting_damage = TRUE;
+     present_client_surfaces( hwnd );
++    presenting_damage = FALSE;
+     return TRUE;
+ }
+ 
+@@ -408,6 +411,8 @@ static void client_surface_stretch_last_frame( HWND hwnd, struct x11drv_client_s
+     HDC hdc;
+ 
+     if (!surface->client.offscreen || !surface->hdc_src || !surface->hdc_dst) return;
++    /* a new surface has nothing to show yet; copying it would paint black */
++    if (!surface->has_frame) return;
+     if (src_width <= 1 || src_height <= 1 || IsRectEmpty( &rect_dst )) return;
+     if (!(window = X11DRV_get_whole_window( surface->client.toplevel ))) return;
+     if (!(hdc = NtUserGetDCEx( hwnd, 0, DCX_CACHE | DCX_USESTYLE ))) return;
+@@ -464,6 +469,8 @@ static void client_surface_update_offscreen( HWND hwnd, struct x11drv_client_sur
+ 
+     if (InterlockedExchange( &surface->client.offscreen, offscreen ) == offscreen)
+     {
++        /* detaching an unused surface turned damage off; turn it back on when it is reused */
++        if (offscreen && !surface->damage) client_surface_set_damage( surface, TRUE );
+         if (!offscreen && (data = get_win_data( hwnd )))
+         {
+             attach_client_window( data, surface->window );
+@@ -523,6 +530,9 @@ static void x11drv_client_surface_update( struct client_surface *client )
+     struct x11drv_client_surface *surface = impl_from_client_surface( client );
+     HWND hwnd = client->hwnd;
+ 
++    /* a surface kept for reuse loses its contents: wait for a new frame before showing it */
++    if (client->unused) surface->has_frame = FALSE;
++
+     client_surface_update_geometry( hwnd, surface );
+     client_surface_update_offscreen( hwnd, surface );
+ }
+@@ -536,6 +546,9 @@ static void X11DRV_client_surface_present( struct client_surface *client, HDC hd
+     HRGN region;
+ 
+     if (!hdc) return;
++    /* right after vkQueuePresentKHR the frame usually hasn't reached the offscreen window yet;
++     * for a new surface that would show black, so let the damage event copy its first frame */
++    if (!surface->has_frame && surface->damage && !presenting_damage) return;
+     window = X11DRV_get_whole_window( toplevel );
+     if (!window) return;
+ 
+@@ -559,6 +572,7 @@ static void X11DRV_client_surface_present( struct client_surface *client, HDC hd
+     NtGdiStretchBlt( surface->hdc_dst, 0, 0, rect_dst.right - rect_dst.left, rect_dst.bottom - rect_dst.top,
+                      surface->hdc_src, 0, 0, rect_src.right - rect_src.left, rect_src.bottom - rect_src.top, SRCCOPY, 0 );
+     XFlush( gdi_display );
++    surface->has_frame = TRUE;
+ 
+     if (region) NtGdiDeleteObjectApp( region );
+ }
+diff --git a/dlls/winex11.drv/x11drv.h b/dlls/winex11.drv/x11drv.h
+index 4c9677a..b1a9fc7 100644
+--- a/dlls/winex11.drv/x11drv.h
++++ b/dlls/winex11.drv/x11drv.h
+@@ -375,6 +375,7 @@ struct x11drv_client_surface
+     HDC hdc_src;
+     HDC hdc_dst;
+     XID damage;
++    BOOL has_frame; /* a frame was presented, so the window holds something to show */
+ };
+ 
+ extern struct x11drv_client_surface *impl_from_client_surface( struct client_surface *client );
+diff --git a/include/wine/gdi_driver.h b/include/wine/gdi_driver.h
+index 602e69d..814a602 100644
+--- a/include/wine/gdi_driver.h
++++ b/include/wine/gdi_driver.h
+@@ -272,6 +272,7 @@ struct client_surface
+     RECT                               virtual_rect;   /* virtual size and position in the toplevel ancestor, relative to its visible rect */
+     RECT                               monitor_rect;   /* raw physical size and position in the toplevel ancestor, relative to its visible rect */
+     BOOL                               raw;            /* use the raw physical position and size for the host client surface */
++    BOOL                               unused;         /* kept for reuse, no GL/VK drawable is using it */
+ };
+ 
+ W32KAPI void *client_surface_create( const struct client_surface_funcs *funcs, HWND hwnd, int format, BOOL raw );

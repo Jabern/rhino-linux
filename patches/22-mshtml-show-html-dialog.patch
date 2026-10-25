@@ -1,0 +1,1538 @@
+diff --git a/dlls/ieframe/events.c b/dlls/ieframe/events.c
+index 9c0711d..826cf4d 100644
+--- a/dlls/ieframe/events.c
++++ b/dlls/ieframe/events.c
+@@ -201,6 +201,7 @@ static HRESULT WINAPI EnumConnections_Next(IEnumConnections *iface, ULONG cConne
+             break;
+ 
+         pgcd[cnt].pUnk = (IUnknown*)This->cp->sinks[This->iter];
++        IUnknown_AddRef(pgcd[cnt].pUnk);
+         pgcd[cnt].dwCookie = cnt+1;
+         This->iter++;
+         cnt++;
+diff --git a/dlls/mshtml/Makefile.in b/dlls/mshtml/Makefile.in
+index 6cce210..58bb082 100644
+--- a/dlls/mshtml/Makefile.in
++++ b/dlls/mshtml/Makefile.in
+@@ -16,6 +16,7 @@ SOURCES = \
+ 	htmlattr.c \
+ 	htmlbody.c \
+ 	htmlcurstyle.c \
++	htmldlg.c \
+ 	htmldoc.c \
+ 	htmlelem.c \
+ 	htmlelemcol.c \
+diff --git a/dlls/mshtml/htmldlg.c b/dlls/mshtml/htmldlg.c
+new file mode 100644
+index 0000000..05c2683
+--- /dev/null
++++ b/dlls/mshtml/htmldlg.c
+@@ -0,0 +1,1327 @@
++/*
++ * HTML dialogs (ShowHTMLDialogEx)
++ *
++ * This library is free software; you can redistribute it and/or
++ * modify it under the terms of the GNU Lesser General Public
++ * License as published by the Free Software Foundation; either
++ * version 2.1 of the License, or (at your option) any later version.
++ *
++ * This library is distributed in the hope that it will be useful,
++ * but WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
++ * Lesser General Public License for more details.
++ *
++ * You should have received a copy of the GNU Lesser General Public
++ * License along with this library; if not, write to the Free Software
++ * Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301, USA
++ */
++
++#include <stdarg.h>
++
++#define COBJMACROS
++
++#include "windef.h"
++#include "winbase.h"
++#include "winuser.h"
++#include "ole2.h"
++#include "exdisp.h"
++#include "exdispid.h"
++#include "mshtmhst.h"
++
++#include "wine/debug.h"
++
++#include "mshtml_private.h"
++
++WINE_DEFAULT_DEBUG_CHANNEL(mshtml);
++
++static const WCHAR dialog_classW[] = L"Internet Explorer_TridentDlgFrame";
++
++/* Options from ShowHTMLDialogEx's options string. */
++typedef struct {
++    int width;
++    int height;
++    int left;
++    int top;
++    BOOL has_width;
++    BOOL has_height;
++    BOOL has_left;
++    BOOL has_top;
++    BOOL center;
++    BOOL resizable;
++    BOOL scroll;
++    BOOL unadorned;
++} dialog_options_t;
++
++#define DIALOG_SHOW_TIMER 1
++#define DIALOG_SHOW_TIMEOUT 3000  /* show the dialog even if the page never finishes loading */
++#define DIALOG_MIN_HEIGHT 100     /* documented minimum dialogHeight */
++#define EM_PIXELS 16              /* em unit of dialog sizes */
++
++/* The dialog window and the WebBrowser control hosted in it. */
++typedef struct {
++    IOleClientSite IOleClientSite_iface;
++    IOleInPlaceSite IOleInPlaceSite_iface;
++    IOleInPlaceFrame IOleInPlaceFrame_iface;
++    IDocHostUIHandler IDocHostUIHandler_iface;
++    IDispatch IDispatch_iface; /* DWebBrowserEvents2 sink */
++    LONG ref;
++
++    HWND hwnd;
++    HWND owner;
++    BOOL modal;
++    BOOL scroll;
++    BOOL closed;
++    BOOL noui;
++    BOOL shown;
++    BOOL sized;
++    dialog_options_t options;
++    struct html_dialog *dialog;
++
++    IOleObject *ole_obj;
++    IWebBrowser2 *web_browser;
++    IConnectionPoint *events_cp;
++    DWORD events_cookie;
++} dialog_host_t;
++
++static void show_dialog(dialog_host_t *host);
++static void size_from_document(dialog_host_t *host);
++
++void html_dialog_release(struct html_dialog *dialog)
++{
++    if(InterlockedDecrement(&dialog->ref))
++        return;
++    VariantClear(&dialog->args);
++    VariantClear(&dialog->ret);
++    free(dialog);
++}
++
++static void host_addref(dialog_host_t *host)
++{
++    InterlockedIncrement(&host->ref);
++}
++
++static void host_release(dialog_host_t *host)
++{
++    if(InterlockedDecrement(&host->ref))
++        return;
++    if(host->dialog)
++        html_dialog_release(host->dialog);
++    free(host);
++}
++
++static inline dialog_host_t *impl_from_IOleClientSite(IOleClientSite *iface)
++{
++    return CONTAINING_RECORD(iface, dialog_host_t, IOleClientSite_iface);
++}
++
++static HRESULT WINAPI ClientSite_QueryInterface(IOleClientSite *iface, REFIID riid, void **ppv)
++{
++    dialog_host_t *This = impl_from_IOleClientSite(iface);
++
++    if(IsEqualGUID(&IID_IUnknown, riid) || IsEqualGUID(&IID_IOleClientSite, riid))
++        *ppv = &This->IOleClientSite_iface;
++    else if(IsEqualGUID(&IID_IOleWindow, riid) || IsEqualGUID(&IID_IOleInPlaceSite, riid))
++        *ppv = &This->IOleInPlaceSite_iface;
++    else if(IsEqualGUID(&IID_IOleInPlaceUIWindow, riid) || IsEqualGUID(&IID_IOleInPlaceFrame, riid))
++        *ppv = &This->IOleInPlaceFrame_iface;
++    else if(IsEqualGUID(&IID_IDocHostUIHandler, riid))
++        *ppv = &This->IDocHostUIHandler_iface;
++    else {
++        TRACE("(%p)->(%s)\n", This, debugstr_mshtml_guid(riid));
++        *ppv = NULL;
++        return E_NOINTERFACE;
++    }
++
++    host_addref(This);
++    return S_OK;
++}
++
++static ULONG WINAPI ClientSite_AddRef(IOleClientSite *iface)
++{
++    dialog_host_t *This = impl_from_IOleClientSite(iface);
++    host_addref(This);
++    return This->ref;
++}
++
++static ULONG WINAPI ClientSite_Release(IOleClientSite *iface)
++{
++    dialog_host_t *This = impl_from_IOleClientSite(iface);
++    host_release(This);
++    return 1;
++}
++
++static HRESULT WINAPI ClientSite_SaveObject(IOleClientSite *iface)
++{
++    return E_NOTIMPL;
++}
++
++static HRESULT WINAPI ClientSite_GetMoniker(IOleClientSite *iface, DWORD assign, DWORD which, IMoniker **mk)
++{
++    return E_NOTIMPL;
++}
++
++static HRESULT WINAPI ClientSite_GetContainer(IOleClientSite *iface, IOleContainer **container)
++{
++    *container = NULL;
++    return E_NOINTERFACE;
++}
++
++static HRESULT WINAPI ClientSite_ShowObject(IOleClientSite *iface)
++{
++    return S_OK;
++}
++
++static HRESULT WINAPI ClientSite_OnShowWindow(IOleClientSite *iface, BOOL show)
++{
++    return E_NOTIMPL;
++}
++
++static HRESULT WINAPI ClientSite_RequestNewObjectLayout(IOleClientSite *iface)
++{
++    return E_NOTIMPL;
++}
++
++static const IOleClientSiteVtbl ClientSiteVtbl = {
++    ClientSite_QueryInterface,
++    ClientSite_AddRef,
++    ClientSite_Release,
++    ClientSite_SaveObject,
++    ClientSite_GetMoniker,
++    ClientSite_GetContainer,
++    ClientSite_ShowObject,
++    ClientSite_OnShowWindow,
++    ClientSite_RequestNewObjectLayout
++};
++
++static inline dialog_host_t *impl_from_IOleInPlaceSite(IOleInPlaceSite *iface)
++{
++    return CONTAINING_RECORD(iface, dialog_host_t, IOleInPlaceSite_iface);
++}
++
++static HRESULT WINAPI InPlaceSite_QueryInterface(IOleInPlaceSite *iface, REFIID riid, void **ppv)
++{
++    dialog_host_t *This = impl_from_IOleInPlaceSite(iface);
++    return IOleClientSite_QueryInterface(&This->IOleClientSite_iface, riid, ppv);
++}
++
++static ULONG WINAPI InPlaceSite_AddRef(IOleInPlaceSite *iface)
++{
++    dialog_host_t *This = impl_from_IOleInPlaceSite(iface);
++    return IOleClientSite_AddRef(&This->IOleClientSite_iface);
++}
++
++static ULONG WINAPI InPlaceSite_Release(IOleInPlaceSite *iface)
++{
++    dialog_host_t *This = impl_from_IOleInPlaceSite(iface);
++    return IOleClientSite_Release(&This->IOleClientSite_iface);
++}
++
++static HRESULT WINAPI InPlaceSite_GetWindow(IOleInPlaceSite *iface, HWND *hwnd)
++{
++    dialog_host_t *This = impl_from_IOleInPlaceSite(iface);
++    *hwnd = This->hwnd;
++    return S_OK;
++}
++
++static HRESULT WINAPI InPlaceSite_ContextSensitiveHelp(IOleInPlaceSite *iface, BOOL enter_mode)
++{
++    return E_NOTIMPL;
++}
++
++static HRESULT WINAPI InPlaceSite_CanInPlaceActivate(IOleInPlaceSite *iface)
++{
++    return S_OK;
++}
++
++static HRESULT WINAPI InPlaceSite_OnInPlaceActivate(IOleInPlaceSite *iface)
++{
++    return S_OK;
++}
++
++static HRESULT WINAPI InPlaceSite_OnUIActivate(IOleInPlaceSite *iface)
++{
++    return S_OK;
++}
++
++static HRESULT WINAPI InPlaceSite_GetWindowContext(IOleInPlaceSite *iface, IOleInPlaceFrame **frame,
++        IOleInPlaceUIWindow **doc, RECT *pos_rect, RECT *clip_rect, OLEINPLACEFRAMEINFO *frame_info)
++{
++    dialog_host_t *This = impl_from_IOleInPlaceSite(iface);
++
++    *frame = &This->IOleInPlaceFrame_iface;
++    IOleInPlaceFrame_AddRef(*frame);
++    *doc = NULL;
++
++    GetClientRect(This->hwnd, pos_rect);
++    *clip_rect = *pos_rect;
++
++    frame_info->cb = sizeof(*frame_info);
++    frame_info->fMDIApp = FALSE;
++    frame_info->hwndFrame = This->hwnd;
++    frame_info->haccel = NULL;
++    frame_info->cAccelEntries = 0;
++    return S_OK;
++}
++
++static HRESULT WINAPI InPlaceSite_Scroll(IOleInPlaceSite *iface, SIZE extent)
++{
++    return E_NOTIMPL;
++}
++
++static HRESULT WINAPI InPlaceSite_OnUIDeactivate(IOleInPlaceSite *iface, BOOL undoable)
++{
++    return S_OK;
++}
++
++static HRESULT WINAPI InPlaceSite_OnInPlaceDeactivate(IOleInPlaceSite *iface)
++{
++    return S_OK;
++}
++
++static HRESULT WINAPI InPlaceSite_DiscardUndoState(IOleInPlaceSite *iface)
++{
++    return E_NOTIMPL;
++}
++
++static HRESULT WINAPI InPlaceSite_DeactivateAndUndo(IOleInPlaceSite *iface)
++{
++    return E_NOTIMPL;
++}
++
++static HRESULT WINAPI InPlaceSite_OnPosRectChange(IOleInPlaceSite *iface, const RECT *rect)
++{
++    dialog_host_t *This = impl_from_IOleInPlaceSite(iface);
++    IOleInPlaceObject *inplace;
++
++    if(This->ole_obj && SUCCEEDED(IOleObject_QueryInterface(This->ole_obj, &IID_IOleInPlaceObject, (void**)&inplace))) {
++        IOleInPlaceObject_SetObjectRects(inplace, rect, rect);
++        IOleInPlaceObject_Release(inplace);
++    }
++    return S_OK;
++}
++
++static const IOleInPlaceSiteVtbl InPlaceSiteVtbl = {
++    InPlaceSite_QueryInterface,
++    InPlaceSite_AddRef,
++    InPlaceSite_Release,
++    InPlaceSite_GetWindow,
++    InPlaceSite_ContextSensitiveHelp,
++    InPlaceSite_CanInPlaceActivate,
++    InPlaceSite_OnInPlaceActivate,
++    InPlaceSite_OnUIActivate,
++    InPlaceSite_GetWindowContext,
++    InPlaceSite_Scroll,
++    InPlaceSite_OnUIDeactivate,
++    InPlaceSite_OnInPlaceDeactivate,
++    InPlaceSite_DiscardUndoState,
++    InPlaceSite_DeactivateAndUndo,
++    InPlaceSite_OnPosRectChange
++};
++
++static inline dialog_host_t *impl_from_IOleInPlaceFrame(IOleInPlaceFrame *iface)
++{
++    return CONTAINING_RECORD(iface, dialog_host_t, IOleInPlaceFrame_iface);
++}
++
++static HRESULT WINAPI InPlaceFrame_QueryInterface(IOleInPlaceFrame *iface, REFIID riid, void **ppv)
++{
++    dialog_host_t *This = impl_from_IOleInPlaceFrame(iface);
++    return IOleClientSite_QueryInterface(&This->IOleClientSite_iface, riid, ppv);
++}
++
++static ULONG WINAPI InPlaceFrame_AddRef(IOleInPlaceFrame *iface)
++{
++    dialog_host_t *This = impl_from_IOleInPlaceFrame(iface);
++    return IOleClientSite_AddRef(&This->IOleClientSite_iface);
++}
++
++static ULONG WINAPI InPlaceFrame_Release(IOleInPlaceFrame *iface)
++{
++    dialog_host_t *This = impl_from_IOleInPlaceFrame(iface);
++    return IOleClientSite_Release(&This->IOleClientSite_iface);
++}
++
++static HRESULT WINAPI InPlaceFrame_GetWindow(IOleInPlaceFrame *iface, HWND *hwnd)
++{
++    dialog_host_t *This = impl_from_IOleInPlaceFrame(iface);
++    *hwnd = This->hwnd;
++    return S_OK;
++}
++
++static HRESULT WINAPI InPlaceFrame_ContextSensitiveHelp(IOleInPlaceFrame *iface, BOOL enter_mode)
++{
++    return E_NOTIMPL;
++}
++
++static HRESULT WINAPI InPlaceFrame_GetBorder(IOleInPlaceFrame *iface, RECT *border)
++{
++    return E_NOTIMPL;
++}
++
++static HRESULT WINAPI InPlaceFrame_RequestBorderSpace(IOleInPlaceFrame *iface, const BORDERWIDTHS *widths)
++{
++    return E_NOTIMPL;
++}
++
++static HRESULT WINAPI InPlaceFrame_SetBorderSpace(IOleInPlaceFrame *iface, const BORDERWIDTHS *widths)
++{
++    return E_NOTIMPL;
++}
++
++static HRESULT WINAPI InPlaceFrame_SetActiveObject(IOleInPlaceFrame *iface,
++        IOleInPlaceActiveObject *active_object, const WCHAR *obj_name)
++{
++    return S_OK;
++}
++
++static HRESULT WINAPI InPlaceFrame_InsertMenus(IOleInPlaceFrame *iface, HMENU menu, OLEMENUGROUPWIDTHS *widths)
++{
++    return E_NOTIMPL;
++}
++
++static HRESULT WINAPI InPlaceFrame_SetMenu(IOleInPlaceFrame *iface, HMENU menu, HOLEMENU holemenu, HWND active_object)
++{
++    return S_OK;
++}
++
++static HRESULT WINAPI InPlaceFrame_RemoveMenus(IOleInPlaceFrame *iface, HMENU menu)
++{
++    return E_NOTIMPL;
++}
++
++static HRESULT WINAPI InPlaceFrame_SetStatusText(IOleInPlaceFrame *iface, const WCHAR *text)
++{
++    return S_OK;
++}
++
++static HRESULT WINAPI InPlaceFrame_EnableModeless(IOleInPlaceFrame *iface, BOOL enable)
++{
++    return S_OK;
++}
++
++static HRESULT WINAPI InPlaceFrame_TranslateAccelerator(IOleInPlaceFrame *iface, MSG *msg, WORD id)
++{
++    return S_FALSE;
++}
++
++static const IOleInPlaceFrameVtbl InPlaceFrameVtbl = {
++    InPlaceFrame_QueryInterface,
++    InPlaceFrame_AddRef,
++    InPlaceFrame_Release,
++    InPlaceFrame_GetWindow,
++    InPlaceFrame_ContextSensitiveHelp,
++    InPlaceFrame_GetBorder,
++    InPlaceFrame_RequestBorderSpace,
++    InPlaceFrame_SetBorderSpace,
++    InPlaceFrame_SetActiveObject,
++    InPlaceFrame_InsertMenus,
++    InPlaceFrame_SetMenu,
++    InPlaceFrame_RemoveMenus,
++    InPlaceFrame_SetStatusText,
++    InPlaceFrame_EnableModeless,
++    InPlaceFrame_TranslateAccelerator
++};
++
++static inline dialog_host_t *impl_from_IDocHostUIHandler(IDocHostUIHandler *iface)
++{
++    return CONTAINING_RECORD(iface, dialog_host_t, IDocHostUIHandler_iface);
++}
++
++static HRESULT WINAPI DocHostUIHandler_QueryInterface(IDocHostUIHandler *iface, REFIID riid, void **ppv)
++{
++    dialog_host_t *This = impl_from_IDocHostUIHandler(iface);
++    return IOleClientSite_QueryInterface(&This->IOleClientSite_iface, riid, ppv);
++}
++
++static ULONG WINAPI DocHostUIHandler_AddRef(IDocHostUIHandler *iface)
++{
++    dialog_host_t *This = impl_from_IDocHostUIHandler(iface);
++    return IOleClientSite_AddRef(&This->IOleClientSite_iface);
++}
++
++static ULONG WINAPI DocHostUIHandler_Release(IDocHostUIHandler *iface)
++{
++    dialog_host_t *This = impl_from_IDocHostUIHandler(iface);
++    return IOleClientSite_Release(&This->IOleClientSite_iface);
++}
++
++static HRESULT WINAPI DocHostUIHandler_ShowContextMenu(IDocHostUIHandler *iface, DWORD id, POINT *pt,
++        IUnknown *cmd_target, IDispatch *disp)
++{
++    return S_FALSE;
++}
++
++static HRESULT WINAPI DocHostUIHandler_GetHostInfo(IDocHostUIHandler *iface, DOCHOSTUIINFO *info)
++{
++    dialog_host_t *This = impl_from_IDocHostUIHandler(iface);
++
++    info->dwFlags = DOCHOSTUIFLAG_DIALOG | DOCHOSTUIFLAG_NO3DBORDER;
++    if(!This->scroll)
++        info->dwFlags |= DOCHOSTUIFLAG_SCROLL_NO;
++    info->dwDoubleClick = DOCHOSTUIDBLCLK_DEFAULT;
++    return S_OK;
++}
++
++static HRESULT WINAPI DocHostUIHandler_ShowUI(IDocHostUIHandler *iface, DWORD id, IOleInPlaceActiveObject *active_object,
++        IOleCommandTarget *cmd_target, IOleInPlaceFrame *frame, IOleInPlaceUIWindow *doc)
++{
++    return S_OK;
++}
++
++static HRESULT WINAPI DocHostUIHandler_HideUI(IDocHostUIHandler *iface)
++{
++    return S_OK;
++}
++
++static HRESULT WINAPI DocHostUIHandler_UpdateUI(IDocHostUIHandler *iface)
++{
++    return S_OK;
++}
++
++static HRESULT WINAPI DocHostUIHandler_EnableModeless(IDocHostUIHandler *iface, BOOL enable)
++{
++    return S_OK;
++}
++
++static HRESULT WINAPI DocHostUIHandler_OnDocWindowActivate(IDocHostUIHandler *iface, BOOL activate)
++{
++    return S_OK;
++}
++
++static HRESULT WINAPI DocHostUIHandler_OnFrameWindowActivate(IDocHostUIHandler *iface, BOOL activate)
++{
++    return S_OK;
++}
++
++static HRESULT WINAPI DocHostUIHandler_ResizeBorder(IDocHostUIHandler *iface, const RECT *border,
++        IOleInPlaceUIWindow *ui_window, BOOL frame_window)
++{
++    return S_OK;
++}
++
++static HRESULT WINAPI DocHostUIHandler_TranslateAccelerator(IDocHostUIHandler *iface, MSG *msg,
++        const GUID *cmd_group, DWORD cmd_id)
++{
++    return S_FALSE;
++}
++
++static HRESULT WINAPI DocHostUIHandler_GetOptionKeyPath(IDocHostUIHandler *iface, LPOLESTR *key, DWORD dw)
++{
++    return S_FALSE;
++}
++
++static HRESULT WINAPI DocHostUIHandler_GetDropTarget(IDocHostUIHandler *iface, IDropTarget *drop_target,
++        IDropTarget **ret)
++{
++    return E_NOTIMPL;
++}
++
++static HRESULT WINAPI DocHostUIHandler_GetExternal(IDocHostUIHandler *iface, IDispatch **disp)
++{
++    *disp = NULL;
++    return S_FALSE;
++}
++
++static HRESULT WINAPI DocHostUIHandler_TranslateUrl(IDocHostUIHandler *iface, DWORD translate,
++        OLECHAR *url_in, OLECHAR **url_out)
++{
++    *url_out = NULL;
++    return S_FALSE;
++}
++
++static HRESULT WINAPI DocHostUIHandler_FilterDataObject(IDocHostUIHandler *iface, IDataObject *data_obj,
++        IDataObject **ret)
++{
++    *ret = NULL;
++    return S_FALSE;
++}
++
++static const IDocHostUIHandlerVtbl DocHostUIHandlerVtbl = {
++    DocHostUIHandler_QueryInterface,
++    DocHostUIHandler_AddRef,
++    DocHostUIHandler_Release,
++    DocHostUIHandler_ShowContextMenu,
++    DocHostUIHandler_GetHostInfo,
++    DocHostUIHandler_ShowUI,
++    DocHostUIHandler_HideUI,
++    DocHostUIHandler_UpdateUI,
++    DocHostUIHandler_EnableModeless,
++    DocHostUIHandler_OnDocWindowActivate,
++    DocHostUIHandler_OnFrameWindowActivate,
++    DocHostUIHandler_ResizeBorder,
++    DocHostUIHandler_TranslateAccelerator,
++    DocHostUIHandler_GetOptionKeyPath,
++    DocHostUIHandler_GetDropTarget,
++    DocHostUIHandler_GetExternal,
++    DocHostUIHandler_TranslateUrl,
++    DocHostUIHandler_FilterDataObject
++};
++
++static inline dialog_host_t *impl_from_IDispatch(IDispatch *iface)
++{
++    return CONTAINING_RECORD(iface, dialog_host_t, IDispatch_iface);
++}
++
++static HRESULT WINAPI Events_QueryInterface(IDispatch *iface, REFIID riid, void **ppv)
++{
++    dialog_host_t *This = impl_from_IDispatch(iface);
++
++    if(IsEqualGUID(&IID_IUnknown, riid) || IsEqualGUID(&IID_IDispatch, riid)
++       || IsEqualGUID(&DIID_DWebBrowserEvents2, riid)) {
++        *ppv = &This->IDispatch_iface;
++        host_addref(This);
++        return S_OK;
++    }
++
++    *ppv = NULL;
++    return E_NOINTERFACE;
++}
++
++static ULONG WINAPI Events_AddRef(IDispatch *iface)
++{
++    dialog_host_t *This = impl_from_IDispatch(iface);
++    return IOleClientSite_AddRef(&This->IOleClientSite_iface);
++}
++
++static ULONG WINAPI Events_Release(IDispatch *iface)
++{
++    dialog_host_t *This = impl_from_IDispatch(iface);
++    return IOleClientSite_Release(&This->IOleClientSite_iface);
++}
++
++static HRESULT WINAPI Events_GetTypeInfoCount(IDispatch *iface, UINT *count)
++{
++    *count = 0;
++    return S_OK;
++}
++
++static HRESULT WINAPI Events_GetTypeInfo(IDispatch *iface, UINT index, LCID lcid, ITypeInfo **info)
++{
++    return E_NOTIMPL;
++}
++
++static HRESULT WINAPI Events_GetIDsOfNames(IDispatch *iface, REFIID riid, LPOLESTR *names, UINT count,
++        LCID lcid, DISPID *ids)
++{
++    return E_NOTIMPL;
++}
++
++static HRESULT WINAPI Events_Invoke(IDispatch *iface, DISPID id, REFIID riid, LCID lcid, WORD flags,
++        DISPPARAMS *params, VARIANT *res, EXCEPINFO *ei, UINT *arg_err)
++{
++    dialog_host_t *This = impl_from_IDispatch(iface);
++
++    switch(id) {
++    case DISPID_TITLECHANGE:
++        if(params->cArgs == 1 && V_VT(params->rgvarg) == VT_BSTR && V_BSTR(params->rgvarg)
++           && *V_BSTR(params->rgvarg) && This->hwnd)
++            SetWindowTextW(This->hwnd, V_BSTR(params->rgvarg));
++        break;
++    case DISPID_DOCUMENTCOMPLETE:
++        /* the top-level document, not a frame */
++        if(!This->sized && params->cArgs == 2 && V_VT(params->rgvarg + 1) == VT_DISPATCH && This->web_browser) {
++            IUnknown *unk1 = NULL, *unk2 = NULL;
++            IDispatch_QueryInterface(V_DISPATCH(params->rgvarg + 1), &IID_IUnknown, (void**)&unk1);
++            IWebBrowser2_QueryInterface(This->web_browser, &IID_IUnknown, (void**)&unk2);
++            if(unk1 && unk1 == unk2) {
++                This->sized = TRUE;
++                size_from_document(This);
++                show_dialog(This);
++            }
++            if(unk1) IUnknown_Release(unk1);
++            if(unk2) IUnknown_Release(unk2);
++        }
++        break;
++    case DISPID_WINDOWCLOSING:
++        /* window.close() from the page: close the dialog instead of the browser. */
++        if(params->cArgs == 2 && V_VT(params->rgvarg) == (VT_BYREF|VT_BOOL)) {
++            *V_BOOLREF(params->rgvarg) = VARIANT_TRUE;
++            if(This->hwnd)
++                PostMessageW(This->hwnd, WM_CLOSE, 0, 0);
++        }
++        break;
++    }
++    return S_OK;
++}
++
++static const IDispatchVtbl EventsVtbl = {
++    Events_QueryInterface,
++    Events_AddRef,
++    Events_Release,
++    Events_GetTypeInfoCount,
++    Events_GetTypeInfo,
++    Events_GetIDsOfNames,
++    Events_Invoke
++};
++
++static void release_browser(dialog_host_t *host)
++{
++    thread_data_t *thread_data = get_thread_data(FALSE);
++
++    /* The document was never created: don't hand the state to an unrelated one later. */
++    if(thread_data && host->dialog && thread_data->pending_dialog == host->dialog) {
++        thread_data->pending_dialog = NULL;
++        html_dialog_release(host->dialog);
++    }
++
++    if(host->events_cp) {
++        IConnectionPoint_Unadvise(host->events_cp, host->events_cookie);
++        IConnectionPoint_Release(host->events_cp);
++        host->events_cp = NULL;
++    }
++    if(host->web_browser) {
++        IWebBrowser2_Release(host->web_browser);
++        host->web_browser = NULL;
++    }
++    if(host->ole_obj) {
++        IOleObject_Close(host->ole_obj, OLECLOSE_NOSAVE);
++        IOleObject_SetClientSite(host->ole_obj, NULL);
++        IOleObject_Release(host->ole_obj);
++        host->ole_obj = NULL;
++    }
++}
++
++static BOOL translate_accelerator(dialog_host_t *host, MSG *msg)
++{
++    IOleInPlaceActiveObject *active;
++    HRESULT hres;
++
++    if(msg->message < WM_KEYFIRST || msg->message > WM_KEYLAST || !host->web_browser)
++        return FALSE;
++
++    hres = IWebBrowser2_QueryInterface(host->web_browser, &IID_IOleInPlaceActiveObject, (void**)&active);
++    if(FAILED(hres))
++        return FALSE;
++    hres = IOleInPlaceActiveObject_TranslateAccelerator(active, msg);
++    IOleInPlaceActiveObject_Release(active);
++    return hres == S_OK;
++}
++
++static LRESULT WINAPI dialog_wnd_proc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam)
++{
++    dialog_host_t *host = (dialog_host_t*)GetWindowLongPtrW(hwnd, GWLP_USERDATA);
++
++    switch(msg) {
++    case WM_NCCREATE:
++        host = ((CREATESTRUCTW*)lparam)->lpCreateParams;
++        SetWindowLongPtrW(hwnd, GWLP_USERDATA, (LONG_PTR)host);
++        host->hwnd = hwnd;
++        host_addref(host);
++        break;
++    case WM_SIZE:
++        if(host && host->web_browser) {
++            RECT rect = {0, 0, LOWORD(lparam), HIWORD(lparam)};
++            IOleInPlaceSite_OnPosRectChange(&host->IOleInPlaceSite_iface, &rect);
++        }
++        return 0;
++    case WM_TIMER:
++        if(wparam == DIALOG_SHOW_TIMER && host)
++            show_dialog(host);
++        return 0;
++    case WM_CLOSE:
++        /* Re-enable the owner first, so Windows activates it rather than another app. */
++        if(host && host->modal && host->owner)
++            EnableWindow(host->owner, TRUE);
++        DestroyWindow(hwnd);
++        return 0;
++    case WM_DESTROY:
++        if(host) {
++            host->closed = TRUE;
++            release_browser(host);
++        }
++        break;
++    case WM_NCDESTROY:
++        if(host) {
++            SetWindowLongPtrW(hwnd, GWLP_USERDATA, 0);
++            host->hwnd = NULL;
++            if(host->dialog)
++                host->dialog->hwnd = NULL;
++            host_release(host);
++        }
++        break;
++    }
++
++    return DefWindowProcW(hwnd, msg, wparam, lparam);
++}
++
++static BOOL register_dialog_class(void)
++{
++    static LONG registered;
++    WNDCLASSEXW wndclass = {sizeof(wndclass)};
++
++    if(registered)
++        return TRUE;
++
++    wndclass.lpfnWndProc = dialog_wnd_proc;
++    wndclass.hInstance = hInst;
++    wndclass.hCursor = LoadCursorW(NULL, (LPCWSTR)IDC_ARROW);
++    wndclass.hbrBackground = (HBRUSH)(COLOR_BTNFACE + 1);
++    wndclass.lpszClassName = dialog_classW;
++    if(!RegisterClassExW(&wndclass) && GetLastError() != ERROR_CLASS_ALREADY_EXISTS)
++        return FALSE;
++
++    InterlockedExchange(&registered, 1);
++    return TRUE;
++}
++
++/* Lengths are "300px", "20em", "10cm"... Like IE 5 and later, a number without
++ * a unit is in em. */
++static BOOL parse_length(const WCHAR *value, int *ret)
++{
++    WCHAR *end;
++    double val = wcstod(value, &end);
++
++    if(end == value)
++        return FALSE;
++    while(*end == ' ')
++        end++;
++
++    if(!wcsnicmp(end, L"px", 2))
++        ;
++    else if(!wcsnicmp(end, L"pt", 2))
++        val = val * 96 / 72;
++    else if(!wcsnicmp(end, L"pc", 2))
++        val = val * 16;
++    else if(!wcsnicmp(end, L"cm", 2))
++        val = val * 96 / 2.54;
++    else if(!wcsnicmp(end, L"mm", 2))
++        val = val * 96 / 25.4;
++    else if(!wcsnicmp(end, L"in", 2))
++        val *= 96;
++    else if(!wcsnicmp(end, L"ex", 2))
++        val *= EM_PIXELS / 2;
++    else /* "em" or no unit */
++        val *= EM_PIXELS;
++
++    *ret = (int)(val + 0.5);
++    return TRUE;
++}
++
++static BOOL parse_bool(const WCHAR *value)
++{
++    return !wcsicmp(value, L"yes") || !wcsicmp(value, L"on") || !wcsicmp(value, L"true") || !wcscmp(value, L"1");
++}
++
++static void trim(WCHAR **start, WCHAR **end)
++{
++    while(*start < *end && (**start == ' ' || **start == '\t'))
++        (*start)++;
++    while(*end > *start && ((*end)[-1] == ' ' || (*end)[-1] == '\t'))
++        (*end)--;
++}
++
++/* Options look like "dialogWidth:300px; dialogHeight:200px; center:yes; resizable:no". */
++static void parse_options(const WCHAR *options, dialog_options_t *ret)
++{
++    WCHAR *buf, *ptr, *next, *name, *name_end, *value, *value_end;
++
++    ret->width = 600;
++    ret->height = 400;
++    ret->has_width = ret->has_height = FALSE;
++    ret->has_left = ret->has_top = FALSE;
++    ret->unadorned = FALSE;
++    ret->center = TRUE;
++    ret->resizable = FALSE;
++    ret->scroll = TRUE;
++
++    if(!options || !(buf = wcsdup(options)))
++        return;
++
++    for(ptr = buf; ptr && *ptr; ptr = next) {
++        next = wcspbrk(ptr, L";,");
++        if(next)
++            *next++ = 0;
++
++        name = ptr;
++        value = wcspbrk(ptr, L":=");
++        if(!value)
++            continue;
++        name_end = value++;
++        value_end = value + wcslen(value);
++        trim(&name, &name_end);
++        trim(&value, &value_end);
++        *name_end = 0;
++        *value_end = 0;
++
++        if(!wcsicmp(name, L"dialogWidth"))
++            ret->has_width = parse_length(value, &ret->width);
++        else if(!wcsicmp(name, L"dialogHeight"))
++            ret->has_height = parse_length(value, &ret->height);
++        else if(!wcsicmp(name, L"dialogLeft"))
++            ret->has_left = parse_length(value, &ret->left);
++        else if(!wcsicmp(name, L"dialogTop"))
++            ret->has_top = parse_length(value, &ret->top);
++        else if(!wcsicmp(name, L"center"))
++            ret->center = parse_bool(value);
++        else if(!wcsicmp(name, L"resizable"))
++            ret->resizable = parse_bool(value);
++        else if(!wcsicmp(name, L"scroll"))
++            ret->scroll = parse_bool(value);
++        else if(!wcsicmp(name, L"unadorned"))
++            ret->unadorned = parse_bool(value);
++        else
++            TRACE("ignoring option %s=%s\n", debugstr_w(name), debugstr_w(value));
++    }
++
++    free(buf);
++}
++
++static DWORD dialog_style(const dialog_options_t *options, DWORD *ex_style)
++{
++    DWORD style = WS_POPUP | WS_CLIPCHILDREN;
++
++    *ex_style = 0;
++    if(!options->unadorned) {
++        style |= WS_CAPTION | WS_SYSMENU;
++        *ex_style = WS_EX_DLGMODALFRAME | WS_EX_WINDOWEDGE;
++    }
++    if(options->resizable)
++        style |= options->unadorned ? WS_THICKFRAME : WS_THICKFRAME | WS_MAXIMIZEBOX;
++    return style;
++}
++
++/* Window rect for a page area of width x height, placed as the options ask. */
++static RECT dialog_window_rect(const dialog_host_t *host, int width, int height)
++{
++    const dialog_options_t *options = &host->options;
++    RECT rect = {0, 0, width, max(height, DIALOG_MIN_HEIGHT)}, work;
++    MONITORINFO mi = {sizeof(mi)};
++    DWORD style, ex_style;
++    int x, y;
++
++    style = dialog_style(options, &ex_style);
++    AdjustWindowRectEx(&rect, style, FALSE, ex_style);
++    width = rect.right - rect.left;
++    height = rect.bottom - rect.top;
++
++    GetMonitorInfoW(MonitorFromWindow(host->owner, MONITOR_DEFAULTTOPRIMARY), &mi);
++    work = mi.rcWork;
++    width = min(width, work.right - work.left);
++    height = min(height, work.bottom - work.top);
++
++    if(host->owner && !options->has_left && !options->has_top) {
++        RECT owner_rect;
++        GetWindowRect(host->owner, &owner_rect);
++        x = owner_rect.left + (owner_rect.right - owner_rect.left - width) / 2;
++        y = owner_rect.top + (owner_rect.bottom - owner_rect.top - height) / 2;
++    }else {
++        x = work.left + (work.right - work.left - width) / 2;
++        y = work.top + (work.bottom - work.top - height) / 2;
++    }
++    if(options->has_left)
++        x = options->left;
++    if(options->has_top)
++        y = options->top;
++
++    /* Keep the title bar on screen. */
++    if(x + width > work.right) x = work.right - width;
++    if(y + height > work.bottom) y = work.bottom - height;
++    if(x < work.left) x = work.left;
++    if(y < work.top) y = work.top;
++
++    SetRect(&rect, x, y, x + width, y + height);
++    return rect;
++}
++
++static HWND create_dialog_window(dialog_host_t *host)
++{
++    RECT rect = dialog_window_rect(host, host->options.width, host->options.height);
++    DWORD style, ex_style;
++
++    style = dialog_style(&host->options, &ex_style);
++    return CreateWindowExW(ex_style, dialog_classW, L"", style, rect.left, rect.top,
++                           rect.right - rect.left, rect.bottom - rect.top, host->owner, NULL, hInst, host);
++}
++
++static void show_dialog(dialog_host_t *host)
++{
++    if(host->shown || !host->hwnd)
++        return;
++    host->shown = TRUE;
++    KillTimer(host->hwnd, DIALOG_SHOW_TIMER);
++    if(host->noui)
++        return;
++    ShowWindow(host->hwnd, SW_SHOW);
++    SetForegroundWindow(host->hwnd);
++}
++
++/* Without dialogWidth/dialogHeight, IE sizes a dialog from its page's root
++ * element, e.g. <HTML style="width: 22em; height: 12em">. */
++static void size_from_document(dialog_host_t *host)
++{
++    int width = host->options.width, height = host->options.height;
++    IHTMLDocument3 *doc3 = NULL;
++    IHTMLElement *elem = NULL;
++    IHTMLStyle *style = NULL;
++    IDispatch *disp = NULL;
++    BOOL found = FALSE;
++    VARIANT v;
++    RECT rect;
++
++    if(host->options.has_width && host->options.has_height)
++        return;
++    if(FAILED(IWebBrowser2_get_Document(host->web_browser, &disp)) || !disp)
++        return;
++    if(SUCCEEDED(IDispatch_QueryInterface(disp, &IID_IHTMLDocument3, (void**)&doc3))
++       && SUCCEEDED(IHTMLDocument3_get_documentElement(doc3, &elem)) && elem
++       && SUCCEEDED(IHTMLElement_get_style(elem, &style))) {
++        if(!host->options.has_width && SUCCEEDED(IHTMLStyle_get_width(style, &v))) {
++            if(V_VT(&v) == VT_BSTR && V_BSTR(&v) && parse_length(V_BSTR(&v), &width))
++                found = TRUE;
++            VariantClear(&v);
++        }
++        if(!host->options.has_height && SUCCEEDED(IHTMLStyle_get_height(style, &v))) {
++            if(V_VT(&v) == VT_BSTR && V_BSTR(&v) && parse_length(V_BSTR(&v), &height))
++                found = TRUE;
++            VariantClear(&v);
++        }
++    }
++    if(style) IHTMLStyle_Release(style);
++    if(elem) IHTMLElement_Release(elem);
++    if(doc3) IHTMLDocument3_Release(doc3);
++    IDispatch_Release(disp);
++
++    if(!found)
++        return;
++    TRACE("page size %dx%d\n", width, height);
++    rect = dialog_window_rect(host, width, height);
++    SetWindowPos(host->hwnd, NULL, rect.left, rect.top, rect.right - rect.left, rect.bottom - rect.top,
++                 SWP_NOZORDER | SWP_NOACTIVATE);
++}
++
++static HRESULT create_browser(dialog_host_t *host)
++{
++    IConnectionPointContainer *cp_container;
++    IOleInPlaceObject *inplace;
++    HRESULT hres;
++    RECT rect;
++
++    hres = CoCreateInstance(&CLSID_WebBrowser, NULL, CLSCTX_INPROC_SERVER, &IID_IOleObject, (void**)&host->ole_obj);
++    if(FAILED(hres)) {
++        ERR("Could not create WebBrowser: %08lx\n", hres);
++        return hres;
++    }
++
++    hres = IOleObject_SetClientSite(host->ole_obj, &host->IOleClientSite_iface);
++    if(FAILED(hres))
++        return hres;
++
++    GetClientRect(host->hwnd, &rect);
++    hres = IOleObject_DoVerb(host->ole_obj, OLEIVERB_INPLACEACTIVATE, NULL, &host->IOleClientSite_iface, -1,
++                             host->hwnd, &rect);
++    if(FAILED(hres))
++        return hres;
++
++    if(SUCCEEDED(IOleObject_QueryInterface(host->ole_obj, &IID_IOleInPlaceObject, (void**)&inplace))) {
++        IOleInPlaceObject_SetObjectRects(inplace, &rect, &rect);
++        IOleInPlaceObject_Release(inplace);
++    }
++
++    hres = IOleObject_QueryInterface(host->ole_obj, &IID_IWebBrowser2, (void**)&host->web_browser);
++    if(FAILED(hres))
++        return hres;
++
++    if(SUCCEEDED(IOleObject_QueryInterface(host->ole_obj, &IID_IConnectionPointContainer, (void**)&cp_container))) {
++        if(SUCCEEDED(IConnectionPointContainer_FindConnectionPoint(cp_container, &DIID_DWebBrowserEvents2,
++                                                                   &host->events_cp))) {
++            if(FAILED(IConnectionPoint_Advise(host->events_cp, (IUnknown*)&host->IDispatch_iface,
++                                              &host->events_cookie))) {
++                IConnectionPoint_Release(host->events_cp);
++                host->events_cp = NULL;
++            }
++        }
++        IConnectionPointContainer_Release(cp_container);
++    }
++
++    return S_OK;
++}
++
++static HRESULT navigate(dialog_host_t *host, IMoniker *mk)
++{
++    IBindCtx *bind_ctx;
++    WCHAR *url = NULL;
++    VARIANT empty, url_var;
++    HRESULT hres;
++
++    hres = CreateBindCtx(0, &bind_ctx);
++    if(FAILED(hres))
++        return hres;
++    hres = IMoniker_GetDisplayName(mk, bind_ctx, NULL, &url);
++    IBindCtx_Release(bind_ctx);
++    if(FAILED(hres))
++        return hres;
++
++    TRACE("url %s\n", debugstr_w(url));
++
++    V_VT(&empty) = VT_EMPTY;
++    V_VT(&url_var) = VT_BSTR;
++    V_BSTR(&url_var) = SysAllocString(url);
++    CoTaskMemFree(url);
++    if(!V_BSTR(&url_var))
++        return E_OUTOFMEMORY;
++
++    hres = IWebBrowser2_Navigate2(host->web_browser, &url_var, &empty, &empty, &empty, &empty);
++    SysFreeString(V_BSTR(&url_var));
++    return hres;
++}
++
++static void run_modal_loop(dialog_host_t *host)
++{
++    MSG msg;
++
++    while(!host->closed) {
++        BOOL ret = GetMessageW(&msg, NULL, 0, 0);
++        if(ret <= 0) {
++            /* Keep WM_QUIT for the application's own message loop. */
++            if(!ret)
++                PostQuitMessage(msg.wParam);
++            if(host->hwnd)
++                DestroyWindow(host->hwnd);
++            break;
++        }
++
++        if(host->hwnd && (msg.hwnd == host->hwnd || IsChild(host->hwnd, msg.hwnd))
++           && translate_accelerator(host, &msg))
++            continue;
++
++        TranslateMessage(&msg);
++        DispatchMessageW(&msg);
++    }
++}
++
++/***********************************************************************
++ *          ShowHTMLDialogEx (MSHTML.@)
++ */
++HRESULT WINAPI ShowHTMLDialogEx(HWND hwndParent, IMoniker *pMk, DWORD dwDialogFlags,
++        VARIANT *pvarArgIn, WCHAR *pchOptions, VARIANT *pvArgOut)
++{
++    thread_data_t *thread_data;
++    dialog_options_t options;
++    struct html_dialog *dialog;
++    dialog_host_t *host;
++    HRESULT hres;
++
++    TRACE("(%p %p %lx %s %s %p)\n", hwndParent, pMk, dwDialogFlags, debugstr_variant(pvarArgIn),
++          debugstr_w(pchOptions), pvArgOut);
++
++    if(!pMk)
++        return E_INVALIDARG;
++    if(dwDialogFlags & ~(HTMLDLG_NOUI | HTMLDLG_MODAL | HTMLDLG_MODELESS | HTMLDLG_VERIFY | HTMLDLG_ALLOW_UNKNOWN_THREAD))
++        FIXME("unsupported flags %lx\n", dwDialogFlags);
++
++    if(pvArgOut)
++        V_VT(pvArgOut) = VT_EMPTY;
++
++    if(!register_dialog_class())
++        return E_FAIL;
++
++    parse_options(pchOptions, &options);
++
++    dialog = calloc(1, sizeof(*dialog));
++    host = calloc(1, sizeof(*host));
++    if(!dialog || !host) {
++        free(dialog);
++        free(host);
++        return E_OUTOFMEMORY;
++    }
++
++    dialog->ref = 1;
++    V_VT(&dialog->args) = VT_EMPTY;
++    V_VT(&dialog->ret) = VT_EMPTY;
++    if(pvarArgIn) {
++        hres = VariantCopyInd(&dialog->args, pvarArgIn);
++        if(FAILED(hres)) {
++            free(dialog);
++            free(host);
++            return hres;
++        }
++    }
++
++    host->IOleClientSite_iface.lpVtbl = &ClientSiteVtbl;
++    host->IOleInPlaceSite_iface.lpVtbl = &InPlaceSiteVtbl;
++    host->IOleInPlaceFrame_iface.lpVtbl = &InPlaceFrameVtbl;
++    host->IDocHostUIHandler_iface.lpVtbl = &DocHostUIHandlerVtbl;
++    host->IDispatch_iface.lpVtbl = &EventsVtbl;
++    host->ref = 1;
++    host->dialog = dialog;
++    host->modal = !(dwDialogFlags & HTMLDLG_MODELESS);
++    host->scroll = options.scroll;
++    host->options = options;
++    host->noui = !!(dwDialogFlags & HTMLDLG_NOUI);
++    host->owner = hwndParent ? GetAncestor(hwndParent, GA_ROOT) : NULL;
++
++    if(!create_dialog_window(host)) {
++        ERR("Could not create dialog window\n");
++        host_release(host);
++        return E_FAIL;
++    }
++    dialog->hwnd = host->hwnd;
++
++    hres = create_browser(host);
++    if(SUCCEEDED(hres)) {
++        /* The document the WebBrowser creates next picks the dialog state up. */
++        thread_data = get_thread_data(TRUE);
++        if(thread_data) {
++            InterlockedIncrement(&dialog->ref);
++            thread_data->pending_dialog = dialog;
++        }
++
++        hres = navigate(host, pMk);
++
++        if(thread_data && thread_data->pending_dialog == dialog && FAILED(hres)) {
++            thread_data->pending_dialog = NULL;
++            html_dialog_release(dialog);
++        }
++    }
++
++    if(FAILED(hres)) {
++        ERR("Could not open the dialog: %08lx\n", hres);
++        DestroyWindow(host->hwnd);
++        host_release(host);
++        return hres;
++    }
++
++    /* Without a size, wait for the page to give one before showing the dialog. */
++    if(options.has_width && options.has_height)
++        show_dialog(host);
++    else if(!host->shown)
++        SetTimer(host->hwnd, DIALOG_SHOW_TIMER, DIALOG_SHOW_TIMEOUT, NULL);
++
++    if(!host->modal) {
++        host_release(host);
++        return S_OK;
++    }
++
++    if(host->owner)
++        EnableWindow(host->owner, FALSE);
++
++    run_modal_loop(host);
++
++    if(host->owner) {
++        EnableWindow(host->owner, TRUE);
++        SetActiveWindow(host->owner);
++    }
++
++    if(pvArgOut)
++        hres = VariantCopy(pvArgOut, &dialog->ret);
++
++    host_release(host);
++    return hres;
++}
++
++static const WCHAR *dialog_props[] = {
++    L"dialogArguments", L"returnValue", L"dialogWidth", L"dialogHeight", L"dialogLeft", L"dialogTop"
++};
++
++/* Names a dialog's window adds: returns the canonical name, or NULL. */
++const WCHAR *html_dialog_prop_name(const WCHAR *name, DWORD grfdex)
++{
++    unsigned i;
++
++    for(i = 0; i < ARRAYSIZE(dialog_props); i++) {
++        if(!((grfdex & fdexNameCaseInsensitive) ? wcsicmp(name, dialog_props[i]) : wcscmp(name, dialog_props[i])))
++            return dialog_props[i];
++    }
++    return NULL;
++}
++
++/* window.dialogWidth etc.: "352px" strings for the page area and window position. */
++static HRESULT get_dialog_geometry(struct html_dialog *dialog, const WCHAR *name, VARIANT *res)
++{
++    WCHAR buf[32];
++    RECT rect;
++    int val;
++
++    V_VT(res) = VT_EMPTY;
++    if(!dialog->hwnd)
++        return S_OK;
++
++    if(!wcscmp(name, L"dialogWidth") || !wcscmp(name, L"dialogHeight")) {
++        GetClientRect(dialog->hwnd, &rect);
++        val = name[6] == 'W' ? rect.right - rect.left : rect.bottom - rect.top;
++    }else {
++        GetWindowRect(dialog->hwnd, &rect);
++        val = name[6] == 'L' ? rect.left : rect.top;
++    }
++
++    swprintf(buf, ARRAYSIZE(buf), L"%dpx", val);
++    V_VT(res) = VT_BSTR;
++    return (V_BSTR(res) = SysAllocString(buf)) ? S_OK : E_OUTOFMEMORY;
++}
++
++static HRESULT put_dialog_geometry(struct html_dialog *dialog, const WCHAR *name, VARIANT *value)
++{
++    DWORD style, ex_style;
++    RECT rect, client;
++    VARIANT str;
++    HRESULT hres;
++    int val;
++
++    if(!dialog->hwnd)
++        return S_OK;
++
++    V_VT(&str) = VT_EMPTY;
++    hres = VariantChangeType(&str, value, 0, VT_BSTR);
++    if(FAILED(hres))
++        return hres;
++    if(!parse_length(V_BSTR(&str), &val)) {
++        VariantClear(&str);
++        return S_OK;
++    }
++    VariantClear(&str);
++
++    GetWindowRect(dialog->hwnd, &rect);
++    if(!wcscmp(name, L"dialogLeft") || !wcscmp(name, L"dialogTop")) {
++        if(name[6] == 'L') OffsetRect(&rect, val - rect.left, 0);
++        else OffsetRect(&rect, 0, val - rect.top);
++        SetWindowPos(dialog->hwnd, NULL, rect.left, rect.top, 0, 0, SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE);
++        return S_OK;
++    }
++
++    GetClientRect(dialog->hwnd, &client);
++    if(name[6] == 'W') client.right = val;
++    else client.bottom = max(val, DIALOG_MIN_HEIGHT);
++    style = GetWindowLongW(dialog->hwnd, GWL_STYLE);
++    ex_style = GetWindowLongW(dialog->hwnd, GWL_EXSTYLE);
++    AdjustWindowRectEx(&client, style, FALSE, ex_style);
++    SetWindowPos(dialog->hwnd, NULL, 0, 0, client.right - client.left, client.bottom - client.top,
++                 SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE);
++    return S_OK;
++}
++
++HRESULT html_dialog_invoke(struct html_dialog *dialog, const WCHAR *name, WORD flags, DISPPARAMS *params, VARIANT *res)
++{
++    BOOL geometry = wcscmp(name, L"returnValue") && wcscmp(name, L"dialogArguments");
++    VARIANT *val = wcscmp(name, L"returnValue") ? &dialog->args : &dialog->ret;
++    HRESULT hres;
++
++    switch(flags) {
++    case DISPATCH_PROPERTYGET|DISPATCH_METHOD:
++    case DISPATCH_PROPERTYGET:
++        if(!res)
++            return S_OK;
++        if(geometry)
++            return get_dialog_geometry(dialog, name, res);
++        V_VT(res) = VT_EMPTY;
++        return VariantCopy(res, val);
++    case DISPATCH_PROPERTYPUT:
++    case DISPATCH_PROPERTYPUTREF: {
++        VARIANT tmp;
++
++        if(!params->cArgs)
++            return DISP_E_BADPARAMCOUNT;
++        if(geometry)
++            return put_dialog_geometry(dialog, name, params->rgvarg);
++        V_VT(&tmp) = VT_EMPTY;
++        hres = VariantCopyInd(&tmp, params->rgvarg);
++        if(FAILED(hres))
++            return hres;
++        VariantClear(val);
++        *val = tmp;
++        return S_OK;
++    }
++    default:
++        FIXME("Not supported flags: %x\n", flags);
++        return E_NOTIMPL;
++    }
++}
+diff --git a/dlls/mshtml/htmlwindow.c b/dlls/mshtml/htmlwindow.c
+index 0fb6e18..0ff588b 100644
+--- a/dlls/mshtml/htmlwindow.c
++++ b/dlls/mshtml/htmlwindow.c
+@@ -793,6 +793,11 @@ static HRESULT WINAPI HTMLWindow2_close(IHTMLWindow2 *iface)
+     if(!notify_webbrowser_close(window, window->browser->doc))
+         return S_OK;
+ 
++    if(window->browser->doc->dialog && !window->parent) {
++        PostMessageW(window->browser->doc->dialog->hwnd, WM_CLOSE, 0, 0);
++        return S_OK;
++    }
++
+     FIXME("default action not implemented\n");
+     return E_NOTIMPL;
+ }
+@@ -3825,6 +3830,15 @@ static void HTMLWindow_last_release(DispatchEx *dispex)
+     remove_target_tasks(This->task_magic);
+ }
+ 
++struct html_dialog *get_window_dialog(HTMLInnerWindow *window)
++{
++    HTMLOuterWindow *outer = window->base.outer_window;
++
++    if(!outer || outer->parent || !outer->browser || !outer->browser->doc)
++        return NULL;
++    return outer->browser->doc->dialog;
++}
++
+ static HRESULT HTMLWindow_lookup_dispid(DispatchEx *dispex, const WCHAR *name, DWORD grfdex, DISPID *dispid)
+ {
+     HTMLInnerWindow *This = impl_from_DispatchEx(dispex);
+@@ -3876,6 +3890,19 @@ static HRESULT HTMLWindow_find_dispid(DispatchEx *dispex, const WCHAR *name, DWO
+         }
+     }
+ 
++    if(get_window_dialog(This)) {
++        const WCHAR *dialog_prop = html_dialog_prop_name(name, grfdex);
++
++        if(dialog_prop) {
++            prop = alloc_global_prop(This, GLOBAL_DIALOGVAR, dialog_prop);
++            if(!prop)
++                return E_OUTOFMEMORY;
++
++            *dispid = prop_to_dispid(This, prop);
++            return S_OK;
++        }
++    }
++
+     hres = get_frame_by_name(This->base.outer_window, name, FALSE, &frame);
+     if(SUCCEEDED(hres) && frame) {
+         prop = alloc_global_prop(This, GLOBAL_FRAMEVAR, name);
+@@ -3998,6 +4025,13 @@ HRESULT HTMLWindow_invoke(DispatchEx *dispex, DISPID id, LCID lcid, WORD flags,
+         }
+     case GLOBAL_DISPEXVAR:
+         return IWineJSDispatchHost_InvokeEx(&This->event_target.dispex.IWineJSDispatchHost_iface, prop->id, 0, flags, params, res, ei, caller);
++    case GLOBAL_DIALOGVAR: {
++        struct html_dialog *dialog = get_window_dialog(This);
++
++        if(!dialog)
++            return DISP_E_MEMBERNOTFOUND;
++        return html_dialog_invoke(dialog, prop->name, flags, params, res);
++    }
+     default:
+         ERR("invalid type %d\n", prop->type);
+         hres = DISP_E_MEMBERNOTFOUND;
+diff --git a/dlls/mshtml/main.c b/dlls/mshtml/main.c
+index a45a2c1..1332132 100644
+--- a/dlls/mshtml/main.c
++++ b/dlls/mshtml/main.c
+@@ -640,8 +640,8 @@ HRESULT WINAPI DllInstall(BOOL install, const WCHAR *cmdline)
+ HRESULT WINAPI ShowHTMLDialog(HWND hwndParent, IMoniker *pMk, VARIANT *pvarArgIn,
+         WCHAR *pchOptions, VARIANT *pvarArgOut)
+ {
+-    FIXME("(%p %p %p %s %p)\n", hwndParent, pMk, pvarArgIn, debugstr_w(pchOptions), pvarArgOut);
+-    return E_NOTIMPL;
++    TRACE("(%p %p %p %s %p)\n", hwndParent, pMk, pvarArgIn, debugstr_w(pchOptions), pvarArgOut);
++    return ShowHTMLDialogEx(hwndParent, pMk, HTMLDLG_MODAL, pvarArgIn, pchOptions, pvarArgOut);
+ }
+ 
+ /***********************************************************************
+diff --git a/dlls/mshtml/mshtml.spec b/dlls/mshtml/mshtml.spec
+index 8fd737a..0c65528 100644
+--- a/dlls/mshtml/mshtml.spec
++++ b/dlls/mshtml/mshtml.spec
+@@ -10,6 +10,7 @@
+ @ stdcall RNIGetCompatibleVersion()
+ @ stdcall RunHTMLApplication(long long str long)
+ @ stdcall ShowHTMLDialog(ptr ptr ptr wstr ptr)
++@ stdcall ShowHTMLDialogEx(ptr ptr long ptr wstr ptr)
+ @ stub ShowModalDialog
+ @ stub ShowModelessHTMLDialog
+ 
+diff --git a/dlls/mshtml/mshtml_private.h b/dlls/mshtml/mshtml_private.h
+index e5236ed..238682b 100644
+--- a/dlls/mshtml/mshtml_private.h
++++ b/dlls/mshtml/mshtml_private.h
+@@ -711,7 +711,8 @@ typedef enum {
+     GLOBAL_SCRIPTVAR,
+     GLOBAL_ELEMENTVAR,
+     GLOBAL_DISPEXVAR,
+-    GLOBAL_FRAMEVAR
++    GLOBAL_FRAMEVAR,
++    GLOBAL_DIALOGVAR
+ } global_prop_type_t;
+ 
+ typedef struct {
+@@ -963,6 +964,7 @@ struct HTMLDocumentObj {
+     IAdviseSink *view_sink;
+     IDocObjectService *doc_object_service;
+     IUnknown *webbrowser;
++    struct html_dialog *dialog;
+     ITravelLog *travel_log;
+     IUnknown *browser_service;
+     IOleAdviseHolder *advise_holder;
+@@ -1549,9 +1551,23 @@ typedef struct {
+     void *blocking_xhr;
+     unsigned tasks_locked;
+     BOOL timer_blocked;
++    struct html_dialog *pending_dialog;
+ } thread_data_t;
+ 
+ thread_data_t *get_thread_data(BOOL);
++
++/* State shared between ShowHTMLDialogEx and the dialog's top-level window. */
++struct html_dialog {
++    LONG ref;
++    HWND hwnd;
++    VARIANT args;
++    VARIANT ret;
++};
++
++void html_dialog_release(struct html_dialog*);
++const WCHAR *html_dialog_prop_name(const WCHAR*,DWORD);
++HRESULT html_dialog_invoke(struct html_dialog*,const WCHAR*,WORD,DISPPARAMS*,VARIANT*);
++struct html_dialog *get_window_dialog(HTMLInnerWindow*);
+ HWND get_thread_hwnd(void);
+ void unblock_tasks_and_timers(thread_data_t*);
+ int session_storage_map_cmp(const void*,const struct wine_rb_entry*);
+diff --git a/dlls/mshtml/oleobj.c b/dlls/mshtml/oleobj.c
+index 7dffdbe..a50539d 100644
+--- a/dlls/mshtml/oleobj.c
++++ b/dlls/mshtml/oleobj.c
+@@ -3479,6 +3479,8 @@ static ULONG WINAPI HTMLDocumentObj_Release(IUnknown *iface)
+         }
+         if(This->window)
+             IHTMLWindow2_Release(&This->window->base.IHTMLWindow2_iface);
++        if(This->dialog)
++            html_dialog_release(This->dialog);
+         if(This->advise_holder)
+             IOleAdviseHolder_Release(This->advise_holder);
+ 
+@@ -3777,6 +3779,15 @@ static HRESULT create_document_object(BOOL is_mhtml, IUnknown *outer, REFIID rii
+ 
+     get_thread_hwnd();
+ 
++    /* ShowHTMLDialogEx hands its state to the first document created for it. */
++    {
++        thread_data_t *thread_data = get_thread_data(FALSE);
++        if(thread_data && thread_data->pending_dialog) {
++            doc->dialog = thread_data->pending_dialog;
++            thread_data->pending_dialog = NULL;
++        }
++    }
++
+     return S_OK;
+ }
+ 
+diff --git a/dlls/mshtml/script.c b/dlls/mshtml/script.c
+index 786c499..457ef03 100644
+--- a/dlls/mshtml/script.c
++++ b/dlls/mshtml/script.c
+@@ -1898,6 +1898,8 @@ HRESULT global_prop_still_exists(HTMLInnerWindow *window, global_prop_t *prop)
+ 
+         return frame ? S_OK : DISP_E_MEMBERNOTFOUND;
+     }
++    case GLOBAL_DIALOGVAR:
++        return get_window_dialog(window) ? S_OK : DISP_E_MEMBERNOTFOUND;
+     default:
+         break;
+     }

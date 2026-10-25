@@ -1,0 +1,83 @@
+diff --git a/dlls/winex11.drv/event.c b/dlls/winex11.drv/event.c
+index e1a1aa2..7867a62 100644
+--- a/dlls/winex11.drv/event.c
++++ b/dlls/winex11.drv/event.c
+@@ -1149,6 +1149,46 @@ static void handle_net_wm_state_notify( HWND hwnd, XPropertyEvent *event )
+     NtUserPostMessage( hwnd, WM_WINE_WINDOW_STATE_CHANGED, 0, 0 );
+ }
+ 
++/* The window manager draws the title bar of managed windows, but Wine still lays
++ * windows out with its own caption height. When a window is maximized, Wine places
++ * the client area that many pixels below the work area, while the WM places it below
++ * its title bar; any difference triggers a second layout once the WM's geometry
++ * arrives. Follow the WM's title bar height, for this session only. */
++static void handle_net_frame_extents_notify( HWND hwnd, XPropertyEvent *event )
++{
++    NONCLIENTMETRICSW ncm = {.cbSize = sizeof(ncm)};
++    unsigned long count, remaining;
++    struct x11drv_win_data *data;
++    unsigned char *extents;
++    BOOL managed;
++    long top;
++    int format;
++    Atom type;
++
++    if (event->state != PropertyNewValue) return;
++    if ((NtUserGetWindowLongW( hwnd, GWL_STYLE ) & WS_CAPTION) != WS_CAPTION) return;
++    if (!(data = get_win_data( hwnd ))) return;
++    managed = data->managed;
++    release_win_data( data );
++    if (!managed) return;
++
++    if (XGetWindowProperty( event->display, event->window, x11drv_atom(_NET_FRAME_EXTENTS), 0, 4, False,
++                            XA_CARDINAL, &type, &format, &count, &remaining, &extents ) != Success)
++        return;
++    top = (type == XA_CARDINAL && format == 32 && count == 4) ? ((long *)extents)[2] : 0;
++    XFree( extents );
++
++    /* ignore undecorated frames and implausible values */
++    if (top < 8 || top > 128) return;
++    if (!NtUserSystemParametersInfo( SPI_GETNONCLIENTMETRICS, sizeof(ncm), &ncm, 0 )) return;
++    if (ncm.iCaptionHeight + 1 == top) return;
++
++    TRACE( "window %p/%lx frame top %ld, caption height %d -> %ld\n", hwnd, event->window, top,
++           ncm.iCaptionHeight, top - 1 );
++    ncm.iCaptionHeight = top - 1;
++    NtUserSystemParametersInfo( SPI_SETNONCLIENTMETRICS, sizeof(ncm), &ncm, 0 );
++}
++
+ static void handle_wm_hints_notify( HWND hwnd, XPropertyEvent *event )
+ {
+     struct x11drv_win_data *data;
+@@ -1223,6 +1263,7 @@ static BOOL X11DRV_PropertyNotify( HWND hwnd, XEvent *xev )
+     if (event->atom == x11drv_atom(WM_STATE)) handle_wm_state_notify( hwnd, event );
+     if (event->atom == x11drv_atom(_XEMBED_INFO)) handle_xembed_info_notify( hwnd, event );
+     if (event->atom == x11drv_atom(_NET_WM_STATE)) handle_net_wm_state_notify( hwnd, event );
++    if (event->atom == x11drv_atom(_NET_FRAME_EXTENTS)) handle_net_frame_extents_notify( hwnd, event );
+     if (event->atom == x11drv_atom(WM_HINTS)) handle_wm_hints_notify( hwnd, event );
+     if (event->atom == x11drv_atom(_MOTIF_WM_HINTS)) handle_mwm_hints_notify( hwnd, event );
+     if (event->atom == x11drv_atom(WM_NORMAL_HINTS)) handle_wm_normal_hints_notify( hwnd, event );
+diff --git a/dlls/winex11.drv/x11drv.h b/dlls/winex11.drv/x11drv.h
+index 8d7eca1..4c9677a 100644
+--- a/dlls/winex11.drv/x11drv.h
++++ b/dlls/winex11.drv/x11drv.h
+@@ -528,6 +528,7 @@ enum x11drv_atoms
+     XATOM__KDE_NET_WM_STATE_SKIP_SWITCHER,
+     XATOM__MOTIF_WM_HINTS,
+     XATOM__NET_ACTIVE_WINDOW,
++    XATOM__NET_FRAME_EXTENTS,
+     XATOM__NET_STARTUP_INFO_BEGIN,
+     XATOM__NET_STARTUP_INFO,
+     XATOM__NET_SUPPORTED,
+diff --git a/dlls/winex11.drv/x11drv_main.c b/dlls/winex11.drv/x11drv_main.c
+index a26f5ad..a5d7d8d 100644
+--- a/dlls/winex11.drv/x11drv_main.c
++++ b/dlls/winex11.drv/x11drv_main.c
+@@ -130,6 +130,7 @@ const char * const X11DRV_atom_names[NB_XATOMS - FIRST_XATOM] =
+     "_KDE_NET_WM_STATE_SKIP_SWITCHER",
+     "_MOTIF_WM_HINTS",
+     "_NET_ACTIVE_WINDOW",
++    "_NET_FRAME_EXTENTS",
+     "_NET_STARTUP_INFO_BEGIN",
+     "_NET_STARTUP_INFO",
+     "_NET_SUPPORTED",
