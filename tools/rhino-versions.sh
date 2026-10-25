@@ -1,6 +1,6 @@
 # shellcheck shell=bash
 # rhino-versions.sh — Rhino major versions and where each one lives.
-# Sourced by install.sh, deploy-rhino.sh, install-plugin.sh and rhino-9;
+# Sourced by install.sh, deploy-rhino.sh, install-plugin.sh and rhino-linux;
 # tools/rhino-on-linux.py follows the same rules.
 #
 # Every major version gets its own Wine prefix, so Rhino 7's .NET Framework
@@ -147,17 +147,17 @@ rhino_menu_icon_name() {
 RHINO_ICON_DIR="$HOME/.local/share/icons/hicolor/256x256/apps"
 
 # One menu entry per installed version, named after its folder ("Rhino 9 WIP"),
-# with the icon of its own Rhino.exe and the window class rhino-9 gives it
+# with the icon of its own Rhino.exe and the window class rhino-linux gives it
 # (WINE_WM_CLASS=rhinoN), so menus and taskbars keep the versions apart as on
 # Windows. Entries of versions no longer installed are removed.
 rhino_write_menu_entries() {
     local tools v prefix name file icon exec_cmd fallback_icon
     tools="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
     if [ -n "${FLATPAK_ID:-}" ]; then
-        exec_cmd="flatpak run --command=rhino-9 $FLATPAK_ID"
+        exec_cmd="flatpak run --command=rhino-linux $FLATPAK_ID"
         fallback_icon="$FLATPAK_ID"
     else
-        exec_cmd="$HOME/.local/bin/rhino-9"
+        exec_cmd="$HOME/.local/bin/rhino-linux"
         fallback_icon="rhino9"
     fi
     mkdir -p "$HOME/.local/share/applications" "$RHINO_ICON_DIR"

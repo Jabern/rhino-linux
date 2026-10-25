@@ -607,7 +607,10 @@ else
 fi
 
 # Ensure launcher symlink exists in repo root
-if [ -w "$REPO_DIR" ]; then ln -sf "tools/rhino-9" "$REPO_DIR/rhino-9"; fi
+if [ -w "$REPO_DIR" ]; then
+    rm -f "$REPO_DIR/rhino-9"   # its name before 1.2
+    ln -sf "tools/rhino-linux" "$REPO_DIR/rhino-linux"
+fi
 
 echo -e "\n${BOLD}${GREEN}==========================================================================${NC}"
 echo -e "${BOLD}${GREEN}  Setup Complete!${NC}"
@@ -616,19 +619,19 @@ echo -e " Prefix  : ${BOLD}$TARGET_PREFIX${NC}"
 echo -e " Wine    : ${BOLD}$WINE_BIN${NC}"
 if [ -n "$RHINO_VERSION" ]; then
     echo -e " Rhino   : ${BOLD}Rhino $RHINO_VERSION${NC}"
-    echo -e " Launcher: ${BOLD}rhino-9 --version $RHINO_VERSION${NC}"
+    echo -e " Launcher: ${BOLD}rhino-linux --version $RHINO_VERSION${NC}"
 else
-    echo -e " Launcher: ${BOLD}rhino-9${NC} or ${BOLD}./rhino-9${NC}"
+    echo -e " Launcher: ${BOLD}rhino-linux${NC} or ${BOLD}./rhino-linux${NC}"
 fi
 echo "=========================================================================="
 
 if [ "$RUN_RHINO" -eq 1 ]; then
     echo -e "\n${BOLD}${CYAN}Launching Rhinoceros...${NC}"
-    exec "$REPO_DIR/tools/rhino-9" ${RHINO_VERSION:+--version "$RHINO_VERSION"}
+    exec "$REPO_DIR/tools/rhino-linux" ${RHINO_VERSION:+--version "$RHINO_VERSION"}
 elif rhino_present && [ "$NON_INTERACTIVE" -eq 0 ]; then
     echo ""
     read -rp "Would you like to launch Rhino now? [Y/n] " run_ans
     if [[ "${run_ans:-y}" =~ ^[Yy] ]]; then
-        exec "$REPO_DIR/tools/rhino-9" ${RHINO_VERSION:+--version "$RHINO_VERSION"}
+        exec "$REPO_DIR/tools/rhino-linux" ${RHINO_VERSION:+--version "$RHINO_VERSION"}
     fi
 fi

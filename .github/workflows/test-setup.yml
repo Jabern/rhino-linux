@@ -36,8 +36,8 @@ jobs:
 
       - name: Check shell scripts
         run: |
-          bash -n install.sh tools/*.sh tools/rhino-9 tests/*.sh
-          shellcheck --severity=error install.sh tools/*.sh tools/rhino-9 tests/*.sh
+          bash -n install.sh tools/*.sh tools/rhino-linux tests/*.sh
+          shellcheck --severity=error install.sh tools/*.sh tools/rhino-linux tests/*.sh
 
       - name: Check the app compiles
         run: python3 -m py_compile tools/rhino-on-linux.py

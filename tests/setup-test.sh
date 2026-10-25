@@ -54,7 +54,10 @@ check "prefix has 32-bit system files (WoW64)" test -f "$PREFIX/drive_c/windows/
 check "DXVK is the native d3d11" bash -c "! grep -qa 'Wine builtin DLL' '$PREFIX/drive_c/windows/system32/d3d11.dll'"
 check "Arial is installed" test -f "$PREFIX/drive_c/windows/Fonts/arial.ttf"
 check "launcher config saved" grep -q "^RHINO_WINE=\"$WINE\"" "$T/.config/rhino-linux/config"
-check "rhino-9 launcher installed" test -x "$T/.local/bin/rhino-9"
+check "rhino-linux launcher installed" test -x "$T/.local/bin/rhino-linux"
+for v in 7 8 9; do
+    check "rhino-$v opens it" test "$(readlink "$T/.local/bin/rhino-$v")" = rhino-linux
+done
 check "Tahoma registered by file name" grep -q '"Tahoma (TrueType)"="tahoma.ttf"' "$PREFIX/system.reg"
 check "Wine's menu builder is off" grep -q '"winemenubuilder.exe"=""' "$PREFIX/user.reg"
 

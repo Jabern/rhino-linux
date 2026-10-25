@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Rhino on Linux — a small setup and launch app for people who prefer not to
 use the terminal. It drives the repository's own scripts (install.sh,
-deploy-rhino.sh, rhino-9), so the app and the command line always do exactly
+deploy-rhino.sh, rhino-linux), so the app and the command line always do exactly
 the same thing.
 
 Requires: Python 3, PyGObject, GTK 4, libadwaita 1.5+.
@@ -115,9 +115,9 @@ def version_from_installer(path):
 
 def launcher():
     if IN_FLATPAK:
-        return shutil.which("rhino-9") or "rhino-9"
-    local = os.path.join(HOME, ".local/bin/rhino-9")
-    return local if os.path.exists(local) else (shutil.which("rhino-9") or local)
+        return shutil.which("rhino-linux") or "rhino-linux"
+    local = os.path.join(HOME, ".local/bin/rhino-linux")
+    return local if os.path.exists(local) else (shutil.which("rhino-linux") or local)
 
 
 def run_quiet(*cmd):
@@ -632,7 +632,7 @@ class Window(Adw.ApplicationWindow):
 
     def graphics_group(self, gpus):
         """With several graphics cards: the one Rhino draws with (RHINO_GPU, which
-        rhino-9 passes to DXVK as DXVK_FILTER_DEVICE_NAME)."""
+        rhino-linux passes to DXVK as DXVK_FILTER_DEVICE_NAME)."""
         group = Adw.PreferencesGroup(title="Graphics card",
                                      description="With several graphics cards, Rhino can hang at its start screen. "
                                                  "Choose the card your monitor is connected to.")
@@ -886,8 +886,8 @@ class Window(Adw.ApplicationWindow):
             targets += [os.path.join(cache, "wine"), os.path.join(cache, "dxvk")]
         else:
             apps = os.path.join(data, "applications")
-            targets += [os.path.join(HOME, ".local/bin", n) for n in ("rhino-9", "rhino-8", "rhino-7")]
-            targets += [os.path.join(apps, "rhino-9.desktop"), os.path.join(apps, "io.github.jabern.RhinoOnLinux.desktop")]
+            targets += [os.path.join(HOME, ".local/bin", n) for n in ("rhino-linux", "rhino-9", "rhino-8", "rhino-7")]
+            targets += [os.path.join(apps, n) for n in ("rhino-linux.desktop", "rhino-9.desktop", "io.github.jabern.RhinoOnLinux.desktop")]
             targets += [os.path.join(data, "mime/packages/io.github.jabern.RhinoOnLinux.xml"),
                         os.path.join(data, "icons/hicolor/256x256/apps/rhino9.png")]
         return self.safe_targets(targets)

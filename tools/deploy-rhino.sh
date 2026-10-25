@@ -416,7 +416,7 @@ Windows Registry Editor Version 5.00
 "vcomp140"="builtin"
 "d3dcompiler_47"="native,builtin"
 ; Wine's menu builder turns Windows shortcuts into desktop entries that call the
-; system's wine, not ours (and outside the Flatpak); rhino-9 has its own entries.
+; system's wine, not ours (and outside the Flatpak); rhino-linux has its own entries.
 "winemenubuilder.exe"=""
 
 ; Rhino executable: native DXVK for viewport acceleration
@@ -740,11 +740,12 @@ echo "[6/6] Installing launcher script & desktop entries..."
 BIN_DIR="$HOME/.local/bin"
 if [ "$SKIP_DESKTOP" -eq 0 ]; then
     mkdir -p "$BIN_DIR"
-    cp -f "$SCRIPT_DIR/rhino-9" "$BIN_DIR/rhino-9"
-    chmod +x "$BIN_DIR/rhino-9"
+    cp -f "$SCRIPT_DIR/rhino-linux" "$BIN_DIR/rhino-linux"
+    chmod +x "$BIN_DIR/rhino-linux"
     # rhino-7 and rhino-8 open that version (the launcher reads its own name)
-    ln -sf rhino-9 "$BIN_DIR/rhino-7"
-    ln -sf rhino-9 "$BIN_DIR/rhino-8"
+    ln -sf rhino-linux "$BIN_DIR/rhino-7"
+    ln -sf rhino-linux "$BIN_DIR/rhino-8"
+    ln -sf rhino-linux "$BIN_DIR/rhino-9"
 fi
 
 if [ "$SKIP_DESKTOP" -eq 0 ]; then
@@ -758,12 +759,13 @@ if [ "$SKIP_DESKTOP" -eq 0 ]; then
 
     # Opens the newest Rhino and .3dm files; the menu lists every version
     # through rhino_write_menu_entries instead.
-    cat << EOF > "$APPS_DIR/rhino-9.desktop"
+    rm -f "$APPS_DIR/rhino-9.desktop"   # its name before 1.2
+    cat << EOF > "$APPS_DIR/rhino-linux.desktop"
 [Desktop Entry]
 Name=Rhinoceros
 GenericName=3D CAD Modeler
 Comment=Design, model, and fabricate with Rhinoceros on Linux
-Exec=$BIN_DIR/rhino-9 %F
+Exec=$BIN_DIR/rhino-linux %F
 Icon=rhino9
 Terminal=false
 Type=Application
@@ -772,7 +774,7 @@ MimeType=application/x-3dm;
 NoDisplay=true
 StartupNotify=true
 EOF
-    chmod +x "$APPS_DIR/rhino-9.desktop"
+    chmod +x "$APPS_DIR/rhino-linux.desktop"
 
     # The setup and maintenance app (needs Python with GTK 4 and libadwaita).
     if python3 -c 'import gi; gi.require_version("Gtk", "4.0"); gi.require_version("Adw", "1")' 2>/dev/null; then
@@ -814,5 +816,5 @@ if [ "$SKIP_MENU_ENTRIES" -eq 0 ]; then
 fi
 
 echo "=========================================================="
-echo " Prefix setup complete. Launch with: rhino-9"
+echo " Prefix setup complete. Launch with: rhino-linux"
 echo "=========================================================="

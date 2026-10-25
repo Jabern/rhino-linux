@@ -29,10 +29,10 @@ To run your Rhino installer directly, pass `--installer`:
 After install, launch it with:
 
 ```bash
-rhino-9
+rhino-linux
 
 # or open a model directly:
-rhino-9 model.3dm
+rhino-linux model.3dm
 ```
 
 ### Rhino 7, 8 and 9 side by side
@@ -47,10 +47,13 @@ interfere and each can be repaired or removed on its own. A prefix from an
 earlier release is kept as the home of the version it already holds.
 
 ```bash
-rhino-9                  # the newest installed Rhino
-rhino-9 --version 8      # Rhino 8; rhino-8 and rhino-7 do the same
-rhino-9 --stop           # close every Rhino that is running
+rhino-linux              # the newest installed Rhino
+rhino-linux --version 8  # Rhino 8; rhino-8 does the same (rhino-7 and rhino-9 too)
+rhino-linux --stop       # close every Rhino that is running
 ```
+
+Before 1.2 the command was `rhino-9`, whatever the version. It still works: it
+opens Rhino 9, or the newest Rhino when Rhino 9 is not installed.
 
 Rhino 7 runs on Microsoft's .NET Framework 4.8 instead of the .NET that Rhino 8
 and 9 ship with. The installer sets it up first with
@@ -187,8 +190,8 @@ monitor is connected to in the app's **Graphics card** section, or give part of
 its name when starting Rhino:
 
 ```bash
-RHINO_GPU=4080 rhino-9
-flatpak run --env=RHINO_GPU=4080 --command=rhino-9 io.github.jabern.RhinoOnLinux
+RHINO_GPU=4080 rhino-linux
+flatpak run --env=RHINO_GPU=4080 --command=rhino-linux io.github.jabern.RhinoOnLinux
 ```
 
 ## Dependencies

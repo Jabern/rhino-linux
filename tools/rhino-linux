@@ -1,12 +1,14 @@
 #!/usr/bin/env bash
-# rhino-9 — Launch and control Rhinoceros under Wine with optimized X11/DXVK settings.
+# rhino-linux — Launch and control Rhinoceros under Wine with optimized X11/DXVK settings.
 #
 # Usage:
-#   rhino-9                open the newest installed Rhino
-#   rhino-9 <file...>      open .3dm models or supported CAD files (Linux or Windows paths)
-#   rhino-9 --version 8    open Rhino 8 (also: rhino-7, rhino-8, or RHINO_VERSION=8)
-#   rhino-9 --fresh        restart wineserver before launch for clean state
-#   rhino-9 --stop         stop Rhino (every installed version, or the one given)
+#   rhino-linux            open the newest installed Rhino
+#   rhino-linux <file...>  open .3dm models or supported CAD files (Linux or Windows paths)
+#   rhino-linux --version 8  open Rhino 8 (also: rhino-8, or RHINO_VERSION=8)
+#   rhino-7, rhino-8, rhino-9  open that version; rhino-9 opens the newest
+#                          when Rhino 9 is not installed (it was the only command before 1.2)
+#   rhino-linux --fresh    restart wineserver before launch for clean state
+#   rhino-linux --stop     stop Rhino (every installed version, or the one given)
 #
 set -euo pipefail
 
@@ -39,11 +41,13 @@ fi
 # shellcheck source=rhino-versions.sh
 . "$versions_lib"
 
-# Which Rhino: rhino-7 / rhino-8 by name, --version N, or RHINO_VERSION.
+# Which Rhino: rhino-7 / rhino-8 / rhino-9 by name, --version N, or RHINO_VERSION.
 REQ_VERSION="${RHINO_VERSION:-}"
+NAME_VERSION=""
 case "$(basename "$0")" in
-    rhino-7) REQ_VERSION=7 ;;
-    rhino-8) REQ_VERSION=8 ;;
+    rhino-7) NAME_VERSION=7 ;;
+    rhino-8) NAME_VERSION=8 ;;
+    rhino-9) NAME_VERSION=9 ;;
 esac
 STOP=0 FRESH=0
 while [ $# -gt 0 ]; do
@@ -53,7 +57,7 @@ while [ $# -gt 0 ]; do
         --fresh) FRESH=1; shift ;;
         --stop) STOP=1; shift ;;
         -h|--help)
-            echo "Usage: rhino-9 [OPTIONS] [file.3dm ...]"
+            echo "Usage: rhino-linux [OPTIONS] [file.3dm ...]"
             echo ""
             echo "Options:"
             echo "  -h, --help       Show this help message"
@@ -72,6 +76,13 @@ while [ $# -gt 0 ]; do
         *) break ;;
     esac
 done
+# rhino-9 was the only command before 1.2, whatever the version installed: it
+# opens the newest Rhino when Rhino 9 is not there.
+if [ -z "$REQ_VERSION" ] && [ -n "$NAME_VERSION" ]; then
+    if [ "$NAME_VERSION" != 9 ] || rhino_installed_versions | grep -x 9 >/dev/null; then
+        REQ_VERSION="$NAME_VERSION"
+    fi
+fi
 case "$REQ_VERSION" in ""|7|8|9) ;; *) echo "error: unknown Rhino version '$REQ_VERSION' (7, 8 or 9)" >&2; exit 1 ;; esac
 
 # Prefix: an explicit one, the requested version's, else the newest installed.

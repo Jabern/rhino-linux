@@ -232,4 +232,4 @@ Below is the technical breakdown of all 20 patches.
 ### Patch 28: One Taskbar Entry per Rhino Version
 - **File**: [`28-x11-wm-class-from-env.patch`](../patches/28-x11-wm-class-from-env.patch)
 - **Problem**: Wine names every window's X11 class after the program, and Rhino 7, 8 and 9 are all `Rhino.exe`. Taskbars match windows to menu entries by that class, so Cinnamon and KDE grouped the three versions under one button and one icon.
-- **Solution**: when `WINE_WM_CLASS` is set, Wine uses it as the window class instead. `rhino-9` sets `rhino7`, `rhino8` or `rhino9`, and each version's menu entry has the matching `StartupWMClass` and the icon of its own `Rhino.exe`, as on Windows. Without the variable nothing changes.
+- **Solution**: when `WINE_WM_CLASS` is set, Wine uses it as the window class instead. `rhino-linux` sets `rhino7`, `rhino8` or `rhino9`, and each version's menu entry has the matching `StartupWMClass` and the icon of its own `Rhino.exe`, as on Windows. Without the variable nothing changes.
