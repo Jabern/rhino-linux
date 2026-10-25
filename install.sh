@@ -607,10 +607,7 @@ else
 fi
 
 # Ensure launcher symlink exists in repo root
-if [ -w "$REPO_DIR" ]; then
-    rm -f "$REPO_DIR/rhino-9"   # its name before 1.2
-    ln -sf "tools/rhino-linux" "$REPO_DIR/rhino-linux"
-fi
+if [ -w "$REPO_DIR" ]; then ln -sf "tools/rhino-linux" "$REPO_DIR/rhino-linux"; fi
 
 echo -e "\n${BOLD}${GREEN}==========================================================================${NC}"
 echo -e "${BOLD}${GREEN}  Setup Complete!${NC}"
