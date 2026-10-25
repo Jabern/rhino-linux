@@ -172,14 +172,15 @@ such as a USB license dongle. Bella renders on the CPU, so it isn't affected.
 ## GPU rendering on NVIDIA
 
 Rhino Render and the Raytraced display mode (Cycles) render on NVIDIA GPUs
-through CUDA. When the setup finds the NVIDIA driver, it adds `nvcuda` from
-[nvidia-libs](https://github.com/SveSop/nvidia-libs), which passes Rhino's CUDA
-calls to the Linux driver. In Rhino, pick the GPU under **Options > Cycles**,
-or with `RhinoCycles_SelectDevice`.
+with CUDA or OptiX. When the setup finds the NVIDIA driver, it adds `nvcuda` and
+`nvoptix` from [nvidia-libs](https://github.com/SveSop/nvidia-libs), which pass
+Rhino's calls to the Linux driver. In Rhino, pick the GPU under
+**Options > Cycles**, or with `RhinoCycles_SelectDevice`.
 
-- Needs the proprietary NVIDIA driver; the Flatpak gets CUDA from its NVIDIA
-  driver extension.
-- OptiX is not enabled yet: the Raytraced viewport stays at "Uploading" with it.
+- Needs the proprietary NVIDIA driver; the Flatpak gets CUDA and OptiX from its
+  NVIDIA driver extension.
+- The first Raytraced start on OptiX shows "Uploading" for about half a minute
+  while the driver compiles the kernels; later starts are quick.
 - To skip this step, run the setup with `RHINO_NO_CUDA=1`.
 
 ### Computers with several graphics cards

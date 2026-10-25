@@ -670,11 +670,12 @@ USER_DXVK_DIR="$TARGET_PREFIX/drive_c/users/$WINE_USER_NAME/AppData/Local/dxvk"
 mkdir -p "$USER_DXVK_DIR"
 cp -v "$SCRIPT_DIR/dxvk-rhino.conf" "$USER_DXVK_DIR/dxvk.conf" 2>/dev/null || true
 
-# Rhino Render and Raytraced (Cycles) on NVIDIA GPUs. Wine has no nvcuda.dll, so
-# Cycles finds no CUDA device and renders on the CPU. nvcuda from nvidia-libs
-# relays CUDA to the Linux driver's libcuda.so.1 (in the Flatpak, NVIDIA's GL
-# extension provides it). OptiX (nvoptix) is left out: its viewport stays at
-# "Uploading". RHINO_NO_CUDA=1 skips this step.
+# Rhino Render and Raytraced (Cycles) on NVIDIA GPUs. Wine has no nvcuda.dll or
+# nvoptix.dll, so Cycles finds no GPU and renders on the CPU. nvidia-libs relays
+# CUDA and OptiX to the Linux driver's libcuda.so.1 and libnvoptix.so.1 (in the
+# Flatpak, NVIDIA's GL extension provides them). The first Raytraced start on
+# OptiX shows "Uploading" for about half a minute while the driver compiles the
+# kernels into its OptiX cache. RHINO_NO_CUDA=1 skips this step.
 NVLIBS_VERSION="v1.0.3"
 NVLIBS_SHA256="7557c9ef7dc26d1a7d5b561acf5d756319cec05cf30b9cb756efd81a7f472feb"
 # grep reads all of ldconfig's output: with -q, ldconfig dies of SIGPIPE and
@@ -683,9 +684,8 @@ have_libcuda() {
     ldconfig -p 2>/dev/null | grep 'libcuda\.so\.1 ' >/dev/null ||
         compgen -G '/usr/lib/x86_64-linux-gnu/GL/*/lib/libcuda.so.1' >/dev/null
 }
-SYSTEM32_NVCUDA="$TARGET_PREFIX/drive_c/windows/system32/nvcuda.dll"
 if [ "${RHINO_NO_CUDA:-0}" = "1" ]; then
-    echo "      CUDA rendering skipped (RHINO_NO_CUDA=1)"
+    echo "      GPU rendering skipped (RHINO_NO_CUDA=1)"
 elif [ -e /proc/driver/nvidia/version ] && have_libcuda; then
     NVLIBS_TARBALL="${XDG_CACHE_HOME:-$HOME/.cache}/rhino-linux/nvidia-libs-$NVLIBS_VERSION.tar.xz"
     mkdir -p "$(dirname "$NVLIBS_TARBALL")"
@@ -698,24 +698,33 @@ elif [ -e /proc/driver/nvidia/version ] && have_libcuda; then
             rm -f "$NVLIBS_TARBALL.part"
         fi
     fi
-    if [ -f "$NVLIBS_TARBALL" ] &&
-       tar -xJOf "$NVLIBS_TARBALL" "nvidia-libs-$NVLIBS_VERSION/x64/nvcuda.dll" > "$SYSTEM32_NVCUDA.new" 2>/dev/null &&
-       [ -s "$SYSTEM32_NVCUDA.new" ]; then
-        cuda_new=1
-        [ -e "$SYSTEM32_NVCUDA" ] && cuda_new=0
-        mv -f "$SYSTEM32_NVCUDA.new" "$SYSTEM32_NVCUDA"
-        "$WINE_BIN" reg add 'HKCU\Software\Wine\DllOverrides' /v nvcuda /d native /f >/dev/null 2>&1 || true
-        # Cycles remembers a missing or failed GPU; give CUDA a fresh start once.
-        # disable_gpus is the user's own RhinoCyclesDisableGpu and stays.
-        if [ "$cuda_new" = 1 ]; then
-            find "$TARGET_PREFIX/drive_c/users" -path '*/McNeel/Rhinoceros/*/Plug-ins/RhinoCycles*' \
-                \( -name gpu_absent -o -name disable_cuda \) -type f -delete 2>/dev/null || true
+    gpu_libs=""
+    for dll in nvcuda nvoptix; do
+        target="$TARGET_PREFIX/drive_c/windows/system32/$dll.dll"
+        if [ -f "$NVLIBS_TARBALL" ] &&
+           tar -xJOf "$NVLIBS_TARBALL" "nvidia-libs-$NVLIBS_VERSION/x64/$dll.dll" > "$target.new" 2>/dev/null &&
+           [ -s "$target.new" ]; then
+            first_time=1
+            [ -e "$target" ] && first_time=0
+            mv -f "$target.new" "$target"
+            "$WINE_BIN" reg add 'HKCU\Software\Wine\DllOverrides' /v "$dll" /d native /f >/dev/null 2>&1 || true
+            # Cycles remembers a missing or failed GPU; give it a fresh start once.
+            # disable_gpus is the user's own RhinoCyclesDisableGpu and stays.
+            if [ "$first_time" = 1 ]; then
+                if [ "$dll" = nvcuda ]; then blocker=disable_cuda; else blocker=disable_optix; fi
+                find "$TARGET_PREFIX/drive_c/users" -path '*/McNeel/Rhinoceros/*/Plug-ins/RhinoCycles*' \
+                    \( -name gpu_absent -o -name "$blocker" \) -type f -delete 2>/dev/null || true
+            fi
+            gpu_libs="$gpu_libs $dll"
+        else
+            rm -f "$target.new"
         fi
-        echo "      [PASS] CUDA rendering for Rhino Render and Raytraced (nvidia-libs $NVLIBS_VERSION)"
-    else
-        rm -f "$SYSTEM32_NVCUDA.new"
-        echo "      [WARN] Could not fetch nvidia-libs; Rhino Render will use the CPU"
-    fi
+    done
+    case "$gpu_libs" in
+        *nvcuda*nvoptix*) echo "      [PASS] GPU rendering with CUDA and OptiX (nvidia-libs $NVLIBS_VERSION)" ;;
+        *nvcuda*) echo "      [PASS] GPU rendering with CUDA (nvidia-libs $NVLIBS_VERSION)" ;;
+        *) echo "      [WARN] Could not fetch nvidia-libs; Rhino Render will use the CPU" ;;
+    esac
 fi
 
 # 5. Shared Companion Assets & Config Persistence
