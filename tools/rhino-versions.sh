@@ -1,3 +1,4 @@
+# shellcheck shell=bash
 # rhino-versions.sh — Rhino major versions and where each one lives.
 # Sourced by install.sh, deploy-rhino.sh, install-plugin.sh and rhino-9;
 # tools/rhino-on-linux.py follows the same rules.
