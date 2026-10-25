@@ -127,6 +127,29 @@ def run_quiet(*cmd):
         return ""
 
 
+def write_config(key, value):
+    """Set KEY="VALUE" in the launcher's config, keeping every other line, as
+    rhino_config_set does; an empty value removes the key."""
+    try:
+        with open(CONFIG_FILE) as f:
+            lines = [line for line in f if not line.startswith(key + "=")]
+    except OSError:
+        lines = ["# Rhino on Linux configuration\n"]
+    if value:
+        lines.append(f'{key}="{value.replace(chr(34), "")}"\n')
+    os.makedirs(CONFIG_DIR, exist_ok=True)
+    with open(CONFIG_FILE + ".tmp", "w") as f:
+        f.writelines(lines)
+    os.replace(CONFIG_FILE + ".tmp", CONFIG_FILE)
+
+
+def graphics_cards():
+    """Vulkan devices as (kind, name), kind "gpu" or "cpu" (software); [] without
+    Vulkan. tools/list-gpus.py runs apart, so a faulty driver cannot take the app down."""
+    out = run_quiet(sys.executable, "-I", os.path.join(REPO_DIR, "tools", "list-gpus.py"))
+    return [tuple(line.split("\t", 1)) for line in out.splitlines() if "\t" in line]
+
+
 def menu_files(version):
     """The menu entry and icon rhino_write_menu_entries writes for a version, in
     the host's ~/.local/share (HOME is the real home folder in the Flatpak)."""
@@ -160,12 +183,11 @@ def refresh_menu_entries():
 # --- system checks -------------------------------------------------------------
 
 def check_graphics():
-    summary = run_quiet("vulkaninfo", "--summary")
-    names = re.findall(r"deviceName\s*=\s*(.+)", summary)
-    gpus = [n.strip() for n in names if "llvmpipe" not in n.lower()]
+    cards = graphics_cards()
+    gpus = [name for kind, name in cards if kind == "gpu"]
     if gpus:
-        return True, "3D graphics ready", gpus[0]
-    if names:
+        return True, "3D graphics ready", ", ".join(gpus)
+    if cards:
         return False, "No 3D graphics driver", "Only software rendering was found. Install the driver for your graphics card."
     if run_quiet("sh", "-c", "ldconfig -p | grep -q libvulkan.so.1 && echo yes").strip():
         return True, "3D graphics available", "Vulkan is installed"
@@ -222,6 +244,12 @@ def app_icon_path():
     return None
 
 
+def version_icon_path(version):
+    """The version's own icon, read from its Rhino.exe for its menu entry; else the app's."""
+    icon = menu_files(version)[1]
+    return icon if os.path.isfile(icon) else app_icon_path()
+
+
 def app_status_page(title, description):
     """Status page showing Rhino's icon when the deploy step has installed it."""
     page = Adw.StatusPage(title=title, description=description)
@@ -233,10 +261,10 @@ def app_status_page(title, description):
     return page
 
 
-def app_header(title, description):
+def app_header(title, description, icon=None):
     """Compact icon and title for pages with more content below."""
     box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6, margin_top=12)
-    icon = app_icon_path()
+    icon = icon or app_icon_path()
     if icon:
         box.append(Gtk.Image(file=icon, pixel_size=96, margin_bottom=6))
     else:
@@ -561,13 +589,17 @@ class Window(Adw.ApplicationWindow):
         versions = installed_versions()
         if len(versions) == 1:
             v = versions[0]
-            box.append(app_header(rhino_name(v), "Installed and ready."))
+            box.append(app_header(rhino_name(v), "Installed and ready.", version_icon_path(v)))
             open_btn = self.pill("Open Rhino")
             open_btn.connect("clicked", lambda *_: self.on_open_rhino(v))
             box.append(open_btn)
         else:
             box.append(app_header("Rhino on Linux", f"{len(versions)} versions of Rhino are installed."))
         box.append(self.versions_group(versions))
+
+        gpus = [name for kind, name in graphics_cards() if kind == "gpu"]
+        if len(gpus) > 1:
+            box.append(self.graphics_group(gpus))
 
         plugins = Adw.PreferencesGroup(title="Plug-ins",
                                        description="You can also drop a plug-in file on this window, or double-click it in your file manager.")
@@ -598,12 +630,35 @@ class Window(Adw.ApplicationWindow):
             box.append(self.expert_group())
         return self.page("Rhino on Linux", box, "home")
 
+    def graphics_group(self, gpus):
+        """With several graphics cards: the one Rhino draws with (RHINO_GPU, which
+        rhino-9 passes to DXVK as DXVK_FILTER_DEVICE_NAME)."""
+        group = Adw.PreferencesGroup(title="Graphics card",
+                                     description="With several graphics cards, Rhino can hang at its start screen. "
+                                                 "Choose the card your monitor is connected to.")
+        choices = ["Automatic"] + gpus
+        row = Adw.ComboRow(title="Rhino uses", model=Gtk.StringList.new(choices))
+        current = read_config().get("RHINO_GPU", "")
+        row.set_selected(choices.index(current) if current in gpus else 0)
+
+        def changed(combo, _param):
+            name = choices[combo.get_selected()]
+            write_config("RHINO_GPU", "" if name == "Automatic" else name)
+            self.toast("Rhino chooses its graphics card itself from its next start" if name == "Automatic"
+                       else f"Rhino uses the {name} from its next start")
+        row.connect("notify::selected", changed)
+        group.add(row)
+        return group
+
     def versions_group(self, versions):
         """One row per installed Rhino, plus a row to add another version."""
         group = Adw.PreferencesGroup(title="Installed" if len(versions) > 1 else "")
         if len(versions) > 1:
             for v in versions:
                 row = Adw.ActionRow(title=rhino_name(v), subtitle=prefix_for(v) if self.expert else "Ready")
+                icon = version_icon_path(v)
+                if icon:
+                    row.add_prefix(Gtk.Image(file=icon, pixel_size=32))
                 open_btn = Gtk.Button(label="Open", valign=Gtk.Align.CENTER)
                 open_btn.add_css_class("suggested-action")
                 open_btn.connect("clicked", lambda _b, v=v: self.on_open_rhino(v))
@@ -612,8 +667,10 @@ class Window(Adw.ApplicationWindow):
                 group.add(row)
         missing = [v for v in RHINO_VERSIONS if v not in versions]
         if missing:
+            names = sorted(missing, key=int)
+            names = ", ".join(names[:-1]) + " or " + names[-1] if len(names) > 1 else names[0]
             add = Adw.ActionRow(title="Install another Rhino version…",
-                                subtitle="Rhino " + ", ".join(missing) + " can be installed next to "
+                                subtitle=f"Rhino {names} can be installed next to "
                                          + ("it" if len(versions) == 1 else "them"),
                                 activatable=True)
             add.add_prefix(Gtk.Image(icon_name="list-add-symbolic"))

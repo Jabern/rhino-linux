@@ -309,6 +309,14 @@ if [ -n "$RHINO_MAJOR" ]; then
     export WINE_WM_CLASS="rhino$RHINO_MAJOR"
 fi
 
+# The graphics card Rhino draws with, chosen in the app or with RHINO_GPU=<part
+# of its name>. With several cards DXVK can pick one that hangs Rhino at the
+# start screen; it then only uses cards whose name contains this text.
+RHINO_GPU="${RHINO_GPU-$(rhino_config_get RHINO_GPU)}"
+if [ -n "$RHINO_GPU" ] && [ -z "${DXVK_FILTER_DEVICE_NAME:-}" ]; then
+    export DXVK_FILTER_DEVICE_NAME="$RHINO_GPU"
+fi
+
 # Rhino 7 runs on the .NET Framework 4.8 installed into its prefix (not Wine
 # Mono) and draws its viewports with OpenGL 4.1.
 if [ "$RHINO_MAJOR" = 7 ]; then
