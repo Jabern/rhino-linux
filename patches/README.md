@@ -34,6 +34,7 @@ This directory contains 20 modular topic patches for Wine (19 core patches for X
 | **24** | `24-x11-follow-wm-frame-extents.patch` | `winex11.drv` | Prototype: reads the window manager's `_NET_FRAME_EXTENTS` and matches Wine's caption height to its title bar (runtime only), so maximizing or restoring lays the window out once instead of twice. |
 | **25** | `25-x11-offscreen-first-frame.patch` | `winex11.drv` / `win32u` | Prototype: a new or reused offscreen surface is shown only once its first frame has landed (copied on its XDamage event, re-enabled on reuse), instead of copying it straight after `vkQueuePresentKHR` when it still holds black. |
 | **26** | `26-x11-restore-frames-on-expose.patch` | `winex11.drv` | Prototype: on `Expose` (e.g. restoring a minimized window), copies every offscreen surface's last frame back at once, at its last on-screen position while the Win32 window is still minimized. |
+| **27** | `27-x11-frame-extents-unscaled-only.patch` | `winex11.drv` | Patch 24 only follows the WM's title bar for unscaled (96 DPI) windows: the extents are physical pixels. |
 
 ---
 

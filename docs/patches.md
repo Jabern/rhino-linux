@@ -34,6 +34,11 @@ Below is the technical breakdown of all 20 patches.
 | 20 | [`20-wine-xrandr-primary-anchor.patch`](../patches/20-wine-xrandr-primary-anchor.patch) | `winex11.drv` | Anchor primary display at `(0, 0)` under XRandR for Wayland bridges |
 | 21 | [`21-gdiplus-flatten-s-curve-beziers.patch`](../patches/21-gdiplus-flatten-s-curve-beziers.patch) | `gdiplus` | Correct flattening of S-shaped Bezier curves (curved Grasshopper wires) |
 | 22 | [`22-mshtml-show-html-dialog.patch`](../patches/22-mshtml-show-html-dialog.patch) | `mshtml` / `ieframe` | HTML dialogs (`ShowHTMLDialogEx`) for RhinoScript's `Rhino.HtmlBox` |
+| 23 | [`23-x11-stretch-last-frame-on-resize.patch`](../patches/23-x11-stretch-last-frame-on-resize.patch) | `winex11.drv` | Show a resized viewport's last frame stretched instead of black |
+| 24 | [`24-x11-follow-wm-frame-extents.patch`](../patches/24-x11-follow-wm-frame-extents.patch) | `winex11.drv` | Match Wine's caption height to the WM's title bar: one layout per maximize/restore |
+| 25 | [`25-x11-offscreen-first-frame.patch`](../patches/25-x11-offscreen-first-frame.patch) | `winex11.drv` / `win32u` | Show new or reused offscreen surfaces only once their first frame has landed |
+| 26 | [`26-x11-restore-frames-on-expose.patch`](../patches/26-x11-restore-frames-on-expose.patch) | `winex11.drv` | Put offscreen frames back at once when a window is exposed (e.g. restored) |
+| 27 | [`27-x11-frame-extents-unscaled-only.patch`](../patches/27-x11-frame-extents-unscaled-only.patch) | `winex11.drv` | Follow the WM's title bar only for unscaled windows |
 
 ---
 
@@ -216,3 +221,9 @@ Below is the technical breakdown of all 20 patches.
   ieframe's `IEnumConnections::Next` returned sinks without AddRef, so mshtml's `window.close()` path released every `DWebBrowserEvents2` sink once too often; it now AddRefs as COM requires.
 - **Needs**: the 64-bit Wine Gecko in the prefix, which `deploy-rhino.sh` now installs (wineboot only installs the 32-bit one).
 - **Follows McNeel's `Rhino.HtmlBox` documentation**: a size without a unit is in em (as in IE 5 and later), `dialogHeight` is at least 100 px, and without `dialogWidth`/`dialogHeight` the dialog takes its size from the page's root element (`<HTML style="width: 22em; height: 12em">`, as in McNeel's example) before it is shown. `window.dialogWidth`, `dialogHeight`, `dialogLeft` and `dialogTop` read and change the dialog's geometry, and `unadorned:yes` gives a dialog without a frame. `tests/htmlbox/run_tests.sh` checks all of this in Rhino.
+
+### Patches 23-27: No Black Flashes When Windows Change State
+- **Files**: [`23`](../patches/23-x11-stretch-last-frame-on-resize.patch), [`24`](../patches/24-x11-follow-wm-frame-extents.patch), [`25`](../patches/25-x11-offscreen-first-frame.patch), [`26`](../patches/26-x11-restore-frames-on-expose.patch), [`27`](../patches/27-x11-frame-extents-unscaled-only.patch)
+- **Problem**: Rhino's viewports and WPF panels are child windows, which Wine renders offscreen and copies into the main window. When the window was resized, maximized or restored, the X server filled the new or exposed areas with black until Rhino had presented new frames; a maximize also laid everything out twice, because Wine placed the client area below its own 26 px caption while the window manager drew a 28 px title bar.
+- **Solution**: resized surfaces show their last frame stretched (23); Wine reads `_NET_FRAME_EXTENTS` and matches its caption height to the window manager's title bar, for unscaled windows (24, 27); a new or reused surface is only shown once its first frame has landed, copied on its XDamage event (25); and on `Expose` every surface's last frame is put back at once (26).
+- **Measured** with `tests/ui-timing` (Rhino 8, KDE Wayland): restoring a minimized window went from ~510 ms of black to ~25 ms. Rhino 9 on Cinnamon: restore 370 ms -> 0 ms; maximize 1523 ms -> 750 ms, the rest being Rhino rebuilding each WPF panel's swap chain.

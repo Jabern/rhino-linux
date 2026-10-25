@@ -1,0 +1,13 @@
+diff --git a/dlls/winex11.drv/event.c b/dlls/winex11.drv/event.c
+index d5128ef..e1b48be 100644
+--- a/dlls/winex11.drv/event.c
++++ b/dlls/winex11.drv/event.c
+@@ -1171,6 +1171,8 @@ static void handle_net_frame_extents_notify( HWND hwnd, XPropertyEvent *event )
+ 
+     if (event->state != PropertyNewValue) return;
+     if ((NtUserGetWindowLongW( hwnd, GWL_STYLE ) & WS_CAPTION) != WS_CAPTION) return;
++    /* the extents are physical pixels; only match them when the window isn't scaled */
++    if (NtUserGetDpiForWindow( hwnd ) != USER_DEFAULT_SCREEN_DPI) return;
+     if (!(data = get_win_data( hwnd ))) return;
+     managed = data->managed;
+     release_win_data( data );
