@@ -162,8 +162,20 @@ download `.zip` and rendering its sample scene:
 ![Bella for Rhino rendering a glass jug of orange juice, a glass and two oranges on a checked tablecloth, next to the Rhino viewports](docs/images/bella-in-rhino.jpg)
 
 Some plug-ins won't work under Wine: anything that installs a Windows driver,
-such as a USB license dongle, and features that need NVIDIA CUDA. Bella renders
-on the CPU, so it isn't affected.
+such as a USB license dongle. Bella renders on the CPU, so it isn't affected.
+
+## GPU rendering on NVIDIA
+
+Rhino Render and the Raytraced display mode (Cycles) render on NVIDIA GPUs
+through CUDA. When the setup finds the NVIDIA driver, it adds `nvcuda` from
+[nvidia-libs](https://github.com/SveSop/nvidia-libs), which passes Rhino's CUDA
+calls to the Linux driver. In Rhino, pick the GPU under **Options > Cycles**,
+or with `RhinoCycles_SelectDevice`.
+
+- Needs the proprietary NVIDIA driver; the Flatpak gets CUDA from its NVIDIA
+  driver extension.
+- OptiX is not enabled yet: the Raytraced viewport stays at "Uploading" with it.
+- To skip this step, run the setup with `RHINO_NO_CUDA=1`.
 
 ## Dependencies
 
