@@ -1,0 +1,20 @@
+diff --git a/dlls/winex11.drv/window.c b/dlls/winex11.drv/window.c
+index af9c99e..38e3587 100644
+--- a/dlls/winex11.drv/window.c
++++ b/dlls/winex11.drv/window.c
+@@ -1210,8 +1210,13 @@ static void set_initial_wm_hints( Display *display, Window window )
+     /* class hints */
+     if ((class_hints = XAllocClassHint()))
+     {
+-        class_hints->res_name = process_name;
+-        class_hints->res_class = process_name;
++        /* WINE_WM_CLASS lets launchers tell apart programs that share an exe
++         * name, such as several versions of one application. */
++        char *wm_class = getenv( "WINE_WM_CLASS" );
++
++        if (!wm_class || !*wm_class) wm_class = process_name;
++        class_hints->res_name = wm_class;
++        class_hints->res_class = wm_class;
+         XSetClassHint( display, window, class_hints );
+         XFree( class_hints );
+     }

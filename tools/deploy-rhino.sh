@@ -53,7 +53,9 @@ fi
 
 CUSTOM_DXVK_DIR=""
 SKIP_DESKTOP=0
-# The Flatpak exports its own launcher and menu entries.
+# The Flatpak exports its own app entry; only the per-version Rhino entries are
+# written to the host (rhino_write_menu_entries).
+SKIP_MENU_ENTRIES=0
 [ -n "${FLATPAK_ID:-}" ] && SKIP_DESKTOP=1
 
 while [[ $# -gt 0 ]]; do
@@ -76,6 +78,7 @@ while [[ $# -gt 0 ]]; do
             ;;
         --skip-desktop)
             SKIP_DESKTOP=1
+            SKIP_MENU_ENTRIES=1
             shift
             ;;
         -h|--help)
@@ -705,6 +708,8 @@ if [ "$SKIP_DESKTOP" -eq 0 ]; then
         cp -f "$SCRIPT_DIR/rhino9-256.png" "$ICON_DIR/rhino9.png"
     fi
 
+    # Opens the newest Rhino and .3dm files; the menu lists every version
+    # through rhino_write_menu_entries instead.
     cat << EOF > "$APPS_DIR/rhino-9.desktop"
 [Desktop Entry]
 Name=Rhinoceros
@@ -716,33 +721,10 @@ Terminal=false
 Type=Application
 Categories=Graphics;3DGraphics;Engineering;
 MimeType=application/x-3dm;
-StartupWMClass=Rhino.exe
+NoDisplay=true
 StartupNotify=true
 EOF
     chmod +x "$APPS_DIR/rhino-9.desktop"
-
-    # With more than one Rhino installed, one entry per version as well.
-    installed_versions="$(rhino_installed_versions)"
-    for v in $RHINO_VERSIONS; do
-        rm -f "$APPS_DIR/rhino-$v-version.desktop"
-        if [ "$(echo "$installed_versions" | grep -c .)" -gt 1 ] && echo "$installed_versions" | grep -qx "$v"; then
-            cat << EOF > "$APPS_DIR/rhino-$v-version.desktop"
-[Desktop Entry]
-Name=Rhinoceros $v
-GenericName=3D CAD Modeler
-Comment=Open Rhino $v
-Exec=$BIN_DIR/rhino-9 --version $v %F
-Icon=rhino9
-Terminal=false
-Type=Application
-Categories=Graphics;3DGraphics;Engineering;
-MimeType=application/x-3dm;
-StartupWMClass=Rhino.exe
-StartupNotify=true
-EOF
-            chmod +x "$APPS_DIR/rhino-$v-version.desktop"
-        fi
-    done
 
     # The setup and maintenance app (needs Python with GTK 4 and libadwaita).
     if python3 -c 'import gi; gi.require_version("Gtk", "4.0"); gi.require_version("Adw", "1")' 2>/dev/null; then
@@ -776,6 +758,11 @@ EOF
     echo "      Desktop integration complete."
 else
     echo "      Desktop integration skipped."
+fi
+
+if [ "$SKIP_MENU_ENTRIES" -eq 0 ]; then
+    rhino_write_menu_entries
+    echo "      Menu entries: $(rhino_installed_versions | sed 's/^/Rhino /' | paste -sd, - | sed 's/,/, /g')"
 fi
 
 echo "=========================================================="

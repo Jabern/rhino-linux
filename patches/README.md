@@ -35,6 +35,7 @@ This directory contains 20 modular topic patches for Wine (19 core patches for X
 | **25** | `25-x11-offscreen-first-frame.patch` | `winex11.drv` / `win32u` | Prototype: a new or reused offscreen surface is shown only once its first frame has landed (copied on its XDamage event, re-enabled on reuse), instead of copying it straight after `vkQueuePresentKHR` when it still holds black. |
 | **26** | `26-x11-restore-frames-on-expose.patch` | `winex11.drv` | Prototype: on `Expose` (e.g. restoring a minimized window), copies every offscreen surface's last frame back at once, at its last on-screen position while the Win32 window is still minimized. |
 | **27** | `27-x11-frame-extents-unscaled-only.patch` | `winex11.drv` | Patch 24 only follows the WM's title bar for unscaled (96 DPI) windows: the extents are physical pixels. |
+| **28** | `28-x11-wm-class-from-env.patch` | `winex11.drv` | The window class (`WM_CLASS`) comes from `WINE_WM_CLASS` when set, so the taskbar keeps Rhino 7, 8 and 9 apart; all are `Rhino.exe`. |
 
 ---
 

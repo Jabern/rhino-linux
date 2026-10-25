@@ -39,6 +39,7 @@ Below is the technical breakdown of all 20 patches.
 | 25 | [`25-x11-offscreen-first-frame.patch`](../patches/25-x11-offscreen-first-frame.patch) | `winex11.drv` / `win32u` | Show new or reused offscreen surfaces only once their first frame has landed |
 | 26 | [`26-x11-restore-frames-on-expose.patch`](../patches/26-x11-restore-frames-on-expose.patch) | `winex11.drv` | Put offscreen frames back at once when a window is exposed (e.g. restored) |
 | 27 | [`27-x11-frame-extents-unscaled-only.patch`](../patches/27-x11-frame-extents-unscaled-only.patch) | `winex11.drv` | Follow the WM's title bar only for unscaled windows |
+| 28 | [`28-x11-wm-class-from-env.patch`](../patches/28-x11-wm-class-from-env.patch) | `winex11.drv` | Window class from `WINE_WM_CLASS`, one taskbar entry per Rhino version |
 
 ---
 
@@ -227,3 +228,8 @@ Below is the technical breakdown of all 20 patches.
 - **Problem**: Rhino's viewports and WPF panels are child windows, which Wine renders offscreen and copies into the main window. When the window was resized, maximized or restored, the X server filled the new or exposed areas with black until Rhino had presented new frames; a maximize also laid everything out twice, because Wine placed the client area below its own 26 px caption while the window manager drew a 28 px title bar.
 - **Solution**: resized surfaces show their last frame stretched (23); Wine reads `_NET_FRAME_EXTENTS` and matches its caption height to the window manager's title bar, for unscaled windows (24, 27); a new or reused surface is only shown once its first frame has landed, copied on its XDamage event (25); and on `Expose` every surface's last frame is put back at once (26).
 - **Measured** with `tests/ui-timing` (Rhino 8, KDE Wayland): restoring a minimized window went from ~510 ms of black to ~25 ms. Rhino 9 on Cinnamon: restore 370 ms -> 0 ms; maximize 1523 ms -> 750 ms, the rest being Rhino rebuilding each WPF panel's swap chain.
+
+### Patch 28: One Taskbar Entry per Rhino Version
+- **File**: [`28-x11-wm-class-from-env.patch`](../patches/28-x11-wm-class-from-env.patch)
+- **Problem**: Wine names every window's X11 class after the program, and Rhino 7, 8 and 9 are all `Rhino.exe`. Taskbars match windows to menu entries by that class, so Cinnamon and KDE grouped the three versions under one button and one icon.
+- **Solution**: when `WINE_WM_CLASS` is set, Wine uses it as the window class instead. `rhino-9` sets `rhino7`, `rhino8` or `rhino9`, and each version's menu entry has the matching `StartupWMClass` and the icon of its own `Rhino.exe`, as on Windows. Without the variable nothing changes.

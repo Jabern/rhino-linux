@@ -130,3 +130,65 @@ rhino_newest_version() {
     done
     return 0
 }
+
+# Menu entry and icon of version $1, in the host's ~/.local/share (HOME is the
+# real home folder in the Flatpak too).
+rhino_menu_entry_file() {
+    if [ -n "${FLATPAK_ID:-}" ]; then
+        echo "$HOME/.local/share/applications/$FLATPAK_ID.Rhino$1.desktop"
+    else
+        echo "$HOME/.local/share/applications/rhino-$1-version.desktop"
+    fi
+}
+rhino_menu_icon_name() {
+    if [ -n "${FLATPAK_ID:-}" ]; then echo "$FLATPAK_ID.Rhino$1"; else echo "rhino-on-linux-rhino$1"; fi
+}
+RHINO_ICON_DIR="$HOME/.local/share/icons/hicolor/256x256/apps"
+
+# One menu entry per installed version, named after its folder ("Rhino 9 WIP"),
+# with the icon of its own Rhino.exe and the window class rhino-9 gives it
+# (WINE_WM_CLASS=rhinoN), so menus and taskbars keep the versions apart as on
+# Windows. Entries of versions no longer installed are removed.
+rhino_write_menu_entries() {
+    local tools v prefix name file icon exec_cmd fallback_icon
+    tools="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+    if [ -n "${FLATPAK_ID:-}" ]; then
+        exec_cmd="flatpak run --command=rhino-9 $FLATPAK_ID"
+        fallback_icon="$FLATPAK_ID"
+    else
+        exec_cmd="$HOME/.local/bin/rhino-9"
+        fallback_icon="rhino9"
+    fi
+    mkdir -p "$HOME/.local/share/applications" "$RHINO_ICON_DIR"
+    for v in $RHINO_VERSIONS; do
+        file="$(rhino_menu_entry_file "$v")"
+        icon="$(rhino_menu_icon_name "$v")"
+        prefix="$(rhino_prefix_for "$v")"
+        if ! name="$(find_rhino_dir "$prefix" "$v")"; then
+            rm -f "$file" "$RHINO_ICON_DIR/$icon.png"
+            continue
+        fi
+        if ! python3 -I "$tools/exe-icon.py" "$prefix/drive_c/Program Files/$name/System/Rhino.exe" \
+                "$RHINO_ICON_DIR/$icon.png" >/dev/null 2>&1; then
+            icon="$fallback_icon"
+        fi
+        cat > "$file" << ENTRY
+[Desktop Entry]
+Name=$name
+GenericName=3D CAD Modeler
+Comment=Design, model and fabricate with $name
+Exec=$exec_cmd --version $v %F
+Icon=$icon
+Terminal=false
+Type=Application
+Categories=Graphics;3DGraphics;Engineering;
+MimeType=application/x-3dm;
+StartupWMClass=rhino$v
+StartupNotify=true
+ENTRY
+        chmod +x "$file"
+    done
+    if command -v update-desktop-database >/dev/null 2>&1; then
+        update-desktop-database "$HOME/.local/share/applications" 2>/dev/null || true
+    fi
+}

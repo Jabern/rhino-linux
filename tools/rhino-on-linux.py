@@ -127,6 +127,28 @@ def run_quiet(*cmd):
         return ""
 
 
+def menu_files(version):
+    """The menu entry and icon rhino_write_menu_entries writes for a version, in
+    the host's ~/.local/share (HOME is the real home folder in the Flatpak)."""
+    share = os.path.join(HOME, ".local/share")
+    if IN_FLATPAK:
+        entry, icon = f"{os.environ['FLATPAK_ID']}.Rhino{version}.desktop", f"{os.environ['FLATPAK_ID']}.Rhino{version}.png"
+    else:
+        entry, icon = f"rhino-{version}-version.desktop", f"rhino-on-linux-rhino{version}.png"
+    return [os.path.join(share, "applications", entry), os.path.join(share, "icons/hicolor/256x256/apps", icon)]
+
+
+def refresh_menu_entries():
+    """One menu entry per installed version, in the background; also brings the
+    entries of an earlier release up to date."""
+    try:
+        subprocess.Popen(["bash", "-c", '. "$1" && rhino_write_menu_entries', "bash",
+                          os.path.join(REPO_DIR, "tools", "rhino-versions.sh")],
+                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    except OSError:
+        pass
+
+
 # --- system checks -------------------------------------------------------------
 
 def check_graphics():
@@ -786,12 +808,13 @@ class Window(Adw.ApplicationWindow):
             prefixes = set()  # an old shared prefix also holds another version: keep it
         targets = sorted(p for p in prefixes if os.path.isdir(os.path.join(p, "drive_c")))
         if version:
-            return self.safe_targets(targets)
+            return self.safe_targets(targets + menu_files(version) if targets else [])
         runtime = os.path.dirname(os.path.dirname(wine_path()))
         if os.path.exists(os.path.join(runtime, ".rhino-linux-runtime")) or os.path.basename(runtime) == "wine-rhino":
             targets.append(runtime)
         cache = os.environ.get("XDG_CACHE_HOME", os.path.join(HOME, ".cache"))
         targets += [os.path.join(data, "rhino-linux"), CONFIG_DIR, os.path.join(cache, "rhino-linux")]
+        targets += [f for v in RHINO_VERSIONS for f in menu_files(v)]
         if IN_FLATPAK:
             # The sandbox's own cache: Wine Mono/Gecko and DXVK's shader cache.
             # Nothing outside ~/.var/app: HOME is the real home folder here.
@@ -800,7 +823,6 @@ class Window(Adw.ApplicationWindow):
             apps = os.path.join(data, "applications")
             targets += [os.path.join(HOME, ".local/bin", n) for n in ("rhino-9", "rhino-8", "rhino-7")]
             targets += [os.path.join(apps, "rhino-9.desktop"), os.path.join(apps, "io.github.jabern.RhinoOnLinux.desktop")]
-            targets += [os.path.join(apps, f"rhino-{v}-version.desktop") for v in RHINO_VERSIONS]
             targets += [os.path.join(data, "mime/packages/io.github.jabern.RhinoOnLinux.xml"),
                         os.path.join(data, "icons/hicolor/256x256/apps/rhino9.png")]
         return self.safe_targets(targets)
@@ -954,6 +976,8 @@ class App(Adw.Application):
             Gtk.Settings.get_default().set_property("gtk-icon-theme-name", "Adwaita")
 
     def do_activate(self):
+        if not self.props.active_window and installed_versions():
+            refresh_menu_entries()
         win = self.props.active_window or Window(self)
         win.present()
 

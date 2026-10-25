@@ -303,6 +303,12 @@ unset LD_PRELOAD
 # - d3dcompiler_47=native,builtin: Required for complex HLSL shader compiling.
 export WINEDLLOVERRIDES="vcomp140=builtin;d3dcompiler_47=native,builtin;${WINEDLLOVERRIDES:-}"
 
+# Every version is "Rhino.exe"; its own window class (Wine patch 28) lets the
+# taskbar show Rhino 7, 8 and 9 apart, each under its menu entry's icon.
+if [ -n "$RHINO_MAJOR" ]; then
+    export WINE_WM_CLASS="rhino$RHINO_MAJOR"
+fi
+
 # Rhino 7 runs on the .NET Framework 4.8 installed into its prefix (not Wine
 # Mono) and draws its viewports with OpenGL 4.1.
 if [ "$RHINO_MAJOR" = 7 ]; then
