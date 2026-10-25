@@ -31,6 +31,7 @@ This directory contains 20 modular topic patches for Wine (19 core patches for X
 | **21** | `21-gdiplus-flatten-s-curve-beziers.patch` | `gdiplus` | Fixes Bezier flattening of S-shaped curves (control points on opposite sides of the chord), which were reduced to a straight line; restores curved Grasshopper wires. |
 | **22** | `22-mshtml-show-html-dialog.patch` | `mshtml` / `ieframe` | Implements `ShowHTMLDialog`/`ShowHTMLDialogEx` (HTML dialogs with `dialogArguments`, `returnValue` and `window.close()`) for RhinoScript's `Rhino.HtmlBox`; fixes a missing AddRef in ieframe's `IEnumConnections::Next`. |
 | **23** | `23-x11-stretch-last-frame-on-resize.patch` | `winex11.drv` | Prototype: while a child window's GL/Vulkan surface is resized, shows its last frame stretched (like `DXGI_SCALING_STRETCH`) instead of the black the X server fills new areas with. |
+| **24** | `24-x11-follow-wm-frame-extents.patch` | `winex11.drv` | Prototype: reads the window manager's `_NET_FRAME_EXTENTS` and matches Wine's caption height to its title bar (runtime only), so maximizing or restoring lays the window out once instead of twice. |
 
 ---
 
