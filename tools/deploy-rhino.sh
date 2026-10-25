@@ -15,7 +15,8 @@
 #   ./deploy-rhino.sh [OPTIONS]
 #
 # Options:
-#   --prefix <PATH>     Target Wine prefix (default: $RHINO_PREFIX or ~/.wine-rhino)
+#   --prefix <PATH>     Target Wine prefix (default: $RHINO_PREFIX, else the version's own)
+#   --version <7|8|9>   Rhino major version (default: whichever the prefix holds)
 #   --wine <PATH>       Path to patched Wine binary (default: $WINE or system wine)
 #   --dxvk-dir <PATH>   Path to custom DXVK 64-bit DLL directory
 #   --skip-desktop      Skip installing desktop menu launcher and icons
@@ -26,12 +27,13 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
 REPO_DIR="$(dirname "$SCRIPT_DIR")"
 
-# Default values
+# Rhino versions and their prefixes (rhino_prefix_for, find_rhino_dir, ...)
+# shellcheck source=rhino-versions.sh
+. "$SCRIPT_DIR/rhino-versions.sh"
+
+# Default values: the prefix is settled once the version is known
 TARGET_PREFIX="${RHINO_PREFIX:-${WINEPREFIX:-}}"
-if [ -z "$TARGET_PREFIX" ]; then
-    # Inside the Flatpak the prefix lives in the app's private data directory.
-    if [ -n "${FLATPAK_ID:-}" ]; then TARGET_PREFIX="$XDG_DATA_HOME/prefix"; else TARGET_PREFIX="$HOME/.wine-rhino"; fi
-fi
+RHINO_VERSION="${RHINO_VERSION:-}"
 
 WINE_BIN="${WINE:-}"
 if [ -z "$WINE_BIN" ]; then
@@ -68,6 +70,10 @@ while [[ $# -gt 0 ]]; do
             CUSTOM_DXVK_DIR="$2"
             shift 2
             ;;
+        --version)
+            RHINO_VERSION="$2"
+            shift 2
+            ;;
         --skip-desktop)
             SKIP_DESKTOP=1
             shift
@@ -83,10 +89,24 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
+case "$RHINO_VERSION" in
+    ""|7|8|9) ;;
+    *) echo "Unknown Rhino version: $RHINO_VERSION (7, 8 or 9)" >&2; exit 1 ;;
+esac
+if [ -z "$TARGET_PREFIX" ]; then
+    if [ -n "$RHINO_VERSION" ]; then TARGET_PREFIX="$(rhino_prefix_for "$RHINO_VERSION")"
+    else TARGET_PREFIX="$(rhino_legacy_prefix)"; fi
+fi
+# A repair names no version: take the one the prefix holds.
+if [ -z "$RHINO_VERSION" ] && installed_dir="$(find_rhino_dir "$TARGET_PREFIX")"; then
+    RHINO_VERSION="$(rhino_version_of_dir "$installed_dir")"
+fi
+
 echo "=========================================================="
 echo " Rhino Prefix Setup"
 echo "=========================================================="
 echo "Prefix: $TARGET_PREFIX"
+if [ -n "$RHINO_VERSION" ]; then echo "Rhino : Rhino $RHINO_VERSION"; else echo "Rhino : not installed yet"; fi
 echo "Wine  : $WINE_BIN"
 echo "Script: $SCRIPT_DIR"
 echo "=========================================================="
@@ -151,6 +171,122 @@ if [ ! -d "$TARGET_PREFIX/drive_c/windows/system32/gecko/2.47.4" ]; then
     else
         echo "      [WARN] Could not install the 64-bit Wine Gecko; Rhino.HtmlBox will not work"
     fi
+fi
+
+# Rhino 7: .NET Framework 4.8, Visual C++ runtime and settings, ported from
+# Rhino7-Linux (github.com/JonasPedrotti/Rhino7-Linux). This runs before
+# Rhino's installer, which aborts without a real .NET Framework.
+WINETRICKS_VERSION=20260125
+WINETRICKS_SHA256=431f82fc74000e6c864409f1d8fb495d696c03928808e3e8acffc45179312a7b
+
+# A pinned winetricks: distributions often ship one too old for dotnet48, and
+# the Flatpak has none.
+get_winetricks() {
+    local dir="${XDG_CACHE_HOME:-$HOME/.cache}/rhino-linux" file
+    file="$dir/winetricks-$WINETRICKS_VERSION"
+    if [ ! -f "$file" ] || ! echo "$WINETRICKS_SHA256  $file" | sha256sum -c --status 2>/dev/null; then
+        mkdir -p "$dir"
+        if ! curl -fsSL --retry 3 --retry-delay 5 -o "$file.part" \
+                "https://raw.githubusercontent.com/Winetricks/winetricks/$WINETRICKS_VERSION/src/winetricks" ||
+           ! echo "$WINETRICKS_SHA256  $file.part" | sha256sum -c --status 2>/dev/null; then
+            rm -f "$file.part"
+            return 1
+        fi
+        mv -f "$file.part" "$file"
+        chmod +x "$file"
+    fi
+    echo "$file"
+}
+
+# winetricks VERB [timeout in minutes], with our DLL overrides out of the way
+run_winetricks() {
+    env -u WINEDLLOVERRIDES WINE="$WINE_BIN" WINESERVER="$WINESERVER_BIN" WINEPREFIX="$TARGET_PREFIX" \
+        timeout "${2:-20}m" "$WINETRICKS" -q -f "$1"
+}
+
+if [ "$RHINO_VERSION" = 7 ]; then
+    echo "[1/6] Rhino 7: .NET Framework 4.8 and the Visual C++ runtime..."
+    CLR_PATH="$TARGET_PREFIX/drive_c/windows/Microsoft.NET/Framework64/v4.0.30319/clr.dll"
+    MFC_PATH="$TARGET_PREFIX/drive_c/windows/system32/mfc140u.dll"
+    if [ -f "$CLR_PATH" ] && [ -f "$MFC_PATH" ]; then
+        echo "      [PASS] .NET Framework 4.8 and MFC already installed"
+    elif ! WINETRICKS="$(get_winetricks)"; then
+        echo "      [FAIL] Could not download winetricks; Rhino 7 needs it for .NET Framework 4.8" >&2
+        exit 1
+    else
+        if [ ! -f "$CLR_PATH" ]; then
+            echo "      Installing .NET Framework 4.8. This is the slow step: 15 to 40 minutes,"
+            echo "      and Microsoft's installer prints nothing while it works."
+            run_winetricks dotnet48 60 &
+            dotnet_pid=$!
+            minutes=0
+            while kill -0 "$dotnet_pid" 2>/dev/null; do
+                sleep 60
+                minutes=$((minutes + 1))
+                echo "      ... ${minutes} min, .NET Framework 4.8 still installing"
+            done
+            wait "$dotnet_pid" || echo "      [WARN] winetricks dotnet48 exited with code $?" >&2
+            # The .NET setup leaves its NGen service running; it never exits under Wine.
+            pkill -u "$(id -u)" -f 'mscorsvw|ngen\.exe' 2>/dev/null || true
+            "$WINESERVER_BIN" -k 2>/dev/null || true
+            timeout 30 "$WINESERVER_BIN" -w 2>/dev/null || true
+        fi
+        echo "      Installing core fonts (Rhino 7's dialogs need them)..."
+        run_winetricks corefonts 10 || echo "      [WARN] corefonts did not finish; continuing" >&2
+        if [ ! -f "$MFC_PATH" ]; then
+            echo "      Installing the Visual C++ runtime with MFC (RhinoCore.dll needs mfc140u.dll)..."
+            run_winetricks vcrun2019 15 || echo "      [WARN] vcrun2019 did not finish cleanly" >&2
+        fi
+        "$WINESERVER_BIN" -k 2>/dev/null || true
+        timeout 30 "$WINESERVER_BIN" -w 2>/dev/null || true
+        if [ -f "$CLR_PATH" ]; then
+            echo "      [PASS] .NET Framework 4.8 installed"
+        else
+            echo "      [FAIL] .NET Framework 4.8 is missing; Rhino 7 will not start" >&2
+            exit 1
+        fi
+        if [ -f "$MFC_PATH" ]; then
+            echo "      [PASS] MFC (mfc140u.dll) installed"
+        else
+            echo "      [WARN] mfc140u.dll is missing; Rhino 7 will not start until vcrun2019 succeeds" >&2
+        fi
+    fi
+
+    RHINO7_REG="$(mktemp "${TMPDIR:-/tmp}/rhino7-XXXXXX.reg")"
+    cat > "$RHINO7_REG" << 'REG'
+Windows Registry Editor Version 5.00
+
+; The real .NET Framework 4.8, not Wine Mono, for Rhino and its installer.
+[HKEY_CURRENT_USER\Software\Wine\DllOverrides]
+"mscoree"="native"
+[HKEY_CURRENT_USER\Software\Wine\AppDefaults\Rhino.exe\DllOverrides]
+"mscoree"="native"
+[HKEY_CURRENT_USER\Software\Wine\AppDefaults\msiexec.exe\DllOverrides]
+"mscoree"="native"
+[HKEY_USERS\.Default\Software\Wine\DllOverrides]
+"mscoree"="native"
+; wineboot runs rundll32 for wine.inf; with mscoree native the 32-bit CLR fails
+; there and shows "This application could not be started". It needs no CLR.
+[HKEY_CURRENT_USER\Software\Wine\AppDefaults\rundll32.exe\DllOverrides]
+"mscoree"=""
+; Rhino 7's WPF panels and popups render black through Direct3D 9 under Wine;
+; software rendering for the UI costs nothing (the viewports use OpenGL).
+[HKEY_CURRENT_USER\Software\Microsoft\Avalon.Graphics]
+"DisableHWAcceleration"=dword:00000001
+; Rhino 7 checks for Windows 10.
+[HKEY_LOCAL_MACHINE\Software\Microsoft\Windows NT\CurrentVersion]
+"CurrentBuild"="19045"
+"CurrentBuildNumber"="19045"
+"ProductName"="Windows 10 Pro"
+REG
+    "$WINE_BIN" regedit /S "$RHINO7_REG"
+    rm -f "$RHINO7_REG"
+    if [ -f "$SCRIPT_DIR/font-substitutes.reg" ]; then
+        "$WINE_BIN" regedit /S "$SCRIPT_DIR/font-substitutes.reg"
+    fi
+    "$WINE_BIN" winecfg -v win10 >/dev/null 2>&1 || true
+    timeout 30 "$WINESERVER_BIN" -w 2>/dev/null || true
+    echo "      [PASS] Rhino 7 settings applied (mscoree native, Windows 10, font substitutes)"
 fi
 
 # 2. Deploy DXVK DLLs to system32
@@ -476,19 +612,8 @@ else
     echo "      [WARN] Wine's own fonts not found next to $WINE_BIN; web views may not start"
 fi
 
-# Rhino's folder under Program Files: the newest release first, then the WIP build.
-find_rhino_dir() {
-    local name
-    for name in "Rhino 9" "Rhino 9 WIP" "Rhino 8"; do
-        if [ -f "$1/drive_c/Program Files/$name/System/Rhino.exe" ]; then
-            printf '%s\n' "$name"
-            return 0
-        fi
-    done
-    return 1
-}
 RHINO_SYS_DIR=""   # stays empty until the Rhino installer has run
-if RHINO_NAME="$(find_rhino_dir "$TARGET_PREFIX")"; then
+if RHINO_NAME="$(find_rhino_dir "$TARGET_PREFIX" "${RHINO_VERSION:-$RHINO_VERSIONS}")"; then
     RHINO_SYS_DIR="$TARGET_PREFIX/drive_c/Program Files/$RHINO_NAME/System"
     cp -v "$SCRIPT_DIR/dxvk-rhino.conf" "$RHINO_SYS_DIR/dxvk.conf" 2>/dev/null || true
     for font in "$RHINO_SYS_DIR"/*.ttf; do
@@ -514,7 +639,7 @@ fi
 # Rhino compiles display-mode shaders at runtime (Artistic, Monochrome, ...); Wine's
 # builtin d3dcompiler_47 cannot compile them and those viewports stay black. Use
 # Microsoft's compiler from the WebView2 runtime that the Rhino installer put in
-# the prefix (newest 64-bit copy).
+# the prefix (newest 64-bit copy). Rhino 7 draws with OpenGL and needs none.
 # PE machine type 0x8664 (x86-64), read from the header: offset of "PE\0\0" at 0x3c.
 pe_is_x86_64() {
     local pe
@@ -531,7 +656,7 @@ done < <(ls -d "$TARGET_PREFIX/drive_c/Program Files (x86)/Microsoft/EdgeWebView
 if [ -n "$NATIVE_COMPILER" ]; then
     cp -f "$NATIVE_COMPILER" "$SYSTEM32_COMPILER"
     echo "      [PASS] Native d3dcompiler_47 installed from the WebView2 runtime"
-elif [ -n "$RHINO_SYS_DIR" ] && [ -d "$RHINO_SYS_DIR" ] && grep -qa "Wine builtin DLL" "$SYSTEM32_COMPILER" 2>/dev/null; then
+elif [ "$RHINO_VERSION" != 7 ] && [ -n "$RHINO_SYS_DIR" ] && [ -d "$RHINO_SYS_DIR" ] && grep -qa "Wine builtin DLL" "$SYSTEM32_COMPILER" 2>/dev/null; then
     echo "      [WARN] No native d3dcompiler_47 found; Artistic/Monochrome display modes will render black."
 fi
 WINE_USER_NAME="${USER:-}"
@@ -546,20 +671,18 @@ cp -v "$SCRIPT_DIR/dxvk-rhino.conf" "$USER_DXVK_DIR/dxvk.conf" 2>/dev/null || tr
 echo "[5/6] Deploying companion assets & saving launcher configuration..."
 DATA_DIR="${XDG_DATA_HOME:-$HOME/.local/share}/rhino-linux"
 mkdir -p "$DATA_DIR"
-for asset in "msedgewebview2-stub.exe" "dxvk-rhino.conf" "windows-fonts.reg" "rhino9-256.png" "rhino9-icon.png"; do
+for asset in "msedgewebview2-stub.exe" "dxvk-rhino.conf" "windows-fonts.reg" "rhino9-256.png" "rhino9-icon.png" "rhino-versions.sh"; do
     if [ -f "$SCRIPT_DIR/$asset" ]; then
         cp -f "$SCRIPT_DIR/$asset" "$DATA_DIR/$asset"
     fi
 done
 
-CONFIG_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/rhino-linux"
-mkdir -p "$CONFIG_DIR"
-cat << EOF > "$CONFIG_DIR/config"
-# Rhino Linux Configuration (Generated by deploy-rhino.sh)
-RHINO_PREFIX="$TARGET_PREFIX"
-RHINO_WINE="$WINE_BIN"
-RHINO_WINESERVER="$WINESERVER_BIN"
-EOF
+# One Wine runtime for every version; each version remembers a custom prefix.
+rhino_config_set RHINO_WINE "$WINE_BIN"
+rhino_config_set RHINO_WINESERVER "$WINESERVER_BIN"
+if [ -n "$RHINO_VERSION" ] && [ "$TARGET_PREFIX" != "$(rhino_prefix_for "$RHINO_VERSION")" ]; then
+    rhino_config_set "RHINO_PREFIX_$RHINO_VERSION" "$TARGET_PREFIX"
+fi
 
 # 6. Launcher Installation & Desktop Integration
 echo "[6/6] Installing launcher script & desktop entries..."
@@ -568,6 +691,9 @@ if [ "$SKIP_DESKTOP" -eq 0 ]; then
     mkdir -p "$BIN_DIR"
     cp -f "$SCRIPT_DIR/rhino-9" "$BIN_DIR/rhino-9"
     chmod +x "$BIN_DIR/rhino-9"
+    # rhino-7 and rhino-8 open that version (the launcher reads its own name)
+    ln -sf rhino-9 "$BIN_DIR/rhino-7"
+    ln -sf rhino-9 "$BIN_DIR/rhino-8"
 fi
 
 if [ "$SKIP_DESKTOP" -eq 0 ]; then
@@ -594,6 +720,29 @@ StartupWMClass=Rhino.exe
 StartupNotify=true
 EOF
     chmod +x "$APPS_DIR/rhino-9.desktop"
+
+    # With more than one Rhino installed, one entry per version as well.
+    installed_versions="$(rhino_installed_versions)"
+    for v in $RHINO_VERSIONS; do
+        rm -f "$APPS_DIR/rhino-$v-version.desktop"
+        if [ "$(echo "$installed_versions" | grep -c .)" -gt 1 ] && echo "$installed_versions" | grep -qx "$v"; then
+            cat << EOF > "$APPS_DIR/rhino-$v-version.desktop"
+[Desktop Entry]
+Name=Rhinoceros $v
+GenericName=3D CAD Modeler
+Comment=Open Rhino $v
+Exec=$BIN_DIR/rhino-9 --version $v %F
+Icon=rhino9
+Terminal=false
+Type=Application
+Categories=Graphics;3DGraphics;Engineering;
+MimeType=application/x-3dm;
+StartupWMClass=Rhino.exe
+StartupNotify=true
+EOF
+            chmod +x "$APPS_DIR/rhino-$v-version.desktop"
+        fi
+    done
 
     # The setup and maintenance app (needs Python with GTK 4 and libadwaita).
     if python3 -c 'import gi; gi.require_version("Gtk", "4.0"); gi.require_version("Adw", "1")' 2>/dev/null; then

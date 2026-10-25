@@ -2,30 +2,18 @@
 # rhino-9 — Launch and control Rhinoceros under Wine with optimized X11/DXVK settings.
 #
 # Usage:
-#   rhino-9                open Rhino with splash and start page
+#   rhino-9                open the newest installed Rhino
 #   rhino-9 <file...>      open .3dm models or supported CAD files (Linux or Windows paths)
+#   rhino-9 --version 8    open Rhino 8 (also: rhino-7, rhino-8, or RHINO_VERSION=8)
 #   rhino-9 --fresh        restart wineserver before launch for clean state
-#   rhino-9 --stop         stop this Wine prefix (terminates all processes in prefix cleanly)
+#   rhino-9 --stop         stop Rhino (every installed version, or the one given)
 #
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
-CONFIG_FILE="${CONFIG_FILE:-${XDG_CONFIG_HOME:-$HOME/.config}/rhino-linux/config}"
 
 # Explicit environment variables take precedence over saved config
-ENV_RHINO_PREFIX="${RHINO_PREFIX:-}"
-ENV_WINEPREFIX="${WINEPREFIX:-}"
-ENV_WINE="${WINE:-}"
-
-# Load saved deployment config if present
-if [ -f "$CONFIG_FILE" ]; then
-    # shellcheck disable=SC1090
-    . "$CONFIG_FILE"
-fi
-
-RHINO_PREFIX="${ENV_RHINO_PREFIX:-${RHINO_PREFIX:-}}"
-WINEPREFIX="${ENV_WINEPREFIX:-${WINEPREFIX:-${RHINO_PREFIX:-}}}"
-WINE="${ENV_WINE:-${WINE:-${RHINO_WINE:-}}}"
+ENV_PREFIX="${RHINO_PREFIX:-${WINEPREFIX:-}}"
 
 # Locate companion asset directory
 DATA_DIR="${XDG_DATA_HOME:-$HOME/.local/share}/rhino-linux"
@@ -42,29 +30,66 @@ find_asset() {
     fi
 }
 
-# Rhino's folder under Program Files: the newest release first, then the WIP build.
-find_rhino_dir() {
-    local name
-    for name in "Rhino 9" "Rhino 9 WIP" "Rhino 8"; do
-        if [ -f "$1/drive_c/Program Files/$name/System/Rhino.exe" ]; then
-            printf '%s\n' "$name"
-            return 0
-        fi
-    done
-    return 1
-}
+# Rhino versions and their prefixes (find_rhino_dir, rhino_prefix_for, ...)
+versions_lib="$(find_asset rhino-versions.sh)"
+if [ -z "$versions_lib" ]; then
+    echo "error: rhino-versions.sh not found next to $0 or in $DATA_DIR" >&2
+    exit 1
+fi
+# shellcheck source=rhino-versions.sh
+. "$versions_lib"
 
-# Default prefix
-if [ -n "${WINEPREFIX:-}" ]; then
-    export WINEPREFIX="$WINEPREFIX"
-elif [ -n "${FLATPAK_ID:-}" ]; then
-    export WINEPREFIX="$XDG_DATA_HOME/prefix"
+# Which Rhino: rhino-7 / rhino-8 by name, --version N, or RHINO_VERSION.
+REQ_VERSION="${RHINO_VERSION:-}"
+case "$(basename "$0")" in
+    rhino-7) REQ_VERSION=7 ;;
+    rhino-8) REQ_VERSION=8 ;;
+esac
+STOP=0 FRESH=0
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --version) REQ_VERSION="${2:-}"; shift 2 ;;
+        --version=*) REQ_VERSION="${1#--version=}"; shift ;;
+        --fresh) FRESH=1; shift ;;
+        --stop) STOP=1; shift ;;
+        -h|--help)
+            echo "Usage: rhino-9 [OPTIONS] [file.3dm ...]"
+            echo ""
+            echo "Options:"
+            echo "  -h, --help       Show this help message"
+            echo "  --version N      Open Rhino N (7, 8 or 9); default: the newest installed"
+            echo "  --fresh          Restart wineserver before launch (fixes Cloud Zoo port 1717)"
+            echo "  --stop           Stop Rhino: the version given, or every installed version"
+            echo ""
+            echo "Installed: $(rhino_installed_versions | sed 's/^/Rhino /' | paste -sd, - | sed 's/,/, /g')"
+            echo ""
+            echo "Environment:"
+            echo "  RHINO_VERSION    Same as --version"
+            echo "  RHINO_PREFIX     Use this Wine prefix instead"
+            echo "  WINE             Path to Wine binary"
+            exit 0
+            ;;
+        *) break ;;
+    esac
+done
+case "$REQ_VERSION" in ""|7|8|9) ;; *) echo "error: unknown Rhino version '$REQ_VERSION' (7, 8 or 9)" >&2; exit 1 ;; esac
+
+# Prefix: an explicit one, the requested version's, else the newest installed.
+if [ -n "$ENV_PREFIX" ]; then
+    export WINEPREFIX="$ENV_PREFIX"
+elif [ -n "$REQ_VERSION" ]; then
+    export WINEPREFIX="$(rhino_prefix_for "$REQ_VERSION")"
 else
-    export WINEPREFIX="$HOME/.wine-rhino"
+    newest="$(rhino_newest_version)"
+    if [ -n "$newest" ]; then
+        export WINEPREFIX="$(rhino_prefix_for "$newest")"
+    else
+        export WINEPREFIX="$(rhino_legacy_prefix)"
+    fi
 fi
 
 # Auto-detect Wine binary
-WINE_BIN="${WINE:-${RHINO_WINE:-}}"
+WINE_BIN="${WINE:-$(rhino_config_get RHINO_WINE)}"
 if [ -z "$WINE_BIN" ]; then
     if [ -n "${WINE_BUILD:-}" ] && [ -x "$WINE_BUILD/wine" ]; then
         WINE_BIN="$WINE_BUILD/wine"
@@ -85,7 +110,7 @@ if [ -z "$WINE_BIN" ]; then
 fi
 
 # Auto-detect wineserver binary
-WINESERVER_BIN="${RHINO_WINESERVER:-}"
+WINESERVER_BIN="${RHINO_WINESERVER:-$(rhino_config_get RHINO_WINESERVER)}"
 if [ -z "$WINESERVER_BIN" ] || [ ! -x "$WINESERVER_BIN" ]; then
     if [ -x "$(dirname "$WINE_BIN")/wineserver" ]; then
         WINESERVER_BIN="$(dirname "$WINE_BIN")/wineserver"
@@ -100,55 +125,49 @@ if [ -z "$WINESERVER_BIN" ] || [ ! -x "$WINESERVER_BIN" ]; then
     fi
 fi
 
-RHINO_NAME="$(find_rhino_dir "$WINEPREFIX" || echo "Rhino 9")"
+RHINO_NAME="$(find_rhino_dir "$WINEPREFIX" "${REQ_VERSION:-$RHINO_VERSIONS}" || echo "Rhino ${REQ_VERSION:-9}")"
 RHINO_DIR="$WINEPREFIX/drive_c/Program Files/$RHINO_NAME/System"
+RHINO_MAJOR="$(rhino_version_of_dir "$RHINO_NAME")"
 
 # End every process in the prefix. wineserver -k finds the server through a file
 # lock, which reports no owner across PID namespaces (Rhino started from another
 # Flatpak instance), so ask the server itself to end its processes first.
 stop_prefix() {
-    local socket
-    socket="/tmp/.wine-$(id -u)/server-$(stat -c '%d-%i' "$WINEPREFIX" 2>/dev/null | awk -F- '{printf "%x-%x", $1, $2}')/socket"
+    local prefix="${1:-$WINEPREFIX}" socket
+    socket="/tmp/.wine-$(id -u)/server-$(stat -c '%d-%i' "$prefix" 2>/dev/null | awk -F- '{printf "%x-%x", $1, $2}')/socket"
     if [ -x "$WINE_BIN" ] && [ -S "$socket" ]; then
-        WINEDEBUG=-all "$WINE_BIN" wineboot -k >/dev/null 2>&1 || true
+        WINEPREFIX="$prefix" WINEDEBUG=-all "$WINE_BIN" wineboot -k >/dev/null 2>&1 || true
     fi
-    WINEPREFIX="$WINEPREFIX" "$WINESERVER_BIN" -k 2>/dev/null || true
-    WINEPREFIX="$WINEPREFIX" "$WINESERVER_BIN" -w 2>/dev/null || true
+    WINEPREFIX="$prefix" "$WINESERVER_BIN" -k 2>/dev/null || true
+    WINEPREFIX="$prefix" "$WINESERVER_BIN" -w 2>/dev/null || true
 }
 
-case "${1:-}" in
-    -h|--help)
-        echo "Usage: rhino-9 [OPTIONS] [file.3dm ...]"
-        echo ""
-        echo "Options:"
-        echo "  -h, --help       Show this help message"
-        echo "  --fresh          Restart wineserver before launch (fixes Cloud Zoo port 1717)"
-        echo "  --stop           Stop all processes in the Rhino Wine prefix cleanly"
-        echo ""
-        echo "Environment:"
-        echo "  RHINO_PREFIX     Target Wine prefix (default: ~/.wine-rhino or saved config)"
-        echo "  WINE             Path to Wine binary"
-        exit 0
-        ;;
-    --fresh)
-        echo "Restarting wineserver for clean http.sys state..."
-        if [ -x "$WINESERVER_BIN" ] || command -v "$WINESERVER_BIN" >/dev/null 2>&1; then
-            stop_prefix
-        fi
-        sleep 1
-        shift
-        ;;
-    --stop)
-        echo "Stopping Rhino Wine prefix ($WINEPREFIX)..."
-        if [ ! -x "$WINESERVER_BIN" ] && ! command -v "$WINESERVER_BIN" >/dev/null 2>&1; then
-            echo "error: wineserver binary not found: $WINESERVER_BIN" >&2
-            exit 1
-        fi
+if [ "$STOP" -eq 1 ]; then
+    if [ ! -x "$WINESERVER_BIN" ] && ! command -v "$WINESERVER_BIN" >/dev/null 2>&1; then
+        echo "error: wineserver binary not found: $WINESERVER_BIN" >&2
+        exit 1
+    fi
+    if [ -n "$ENV_PREFIX" ] || [ -n "$REQ_VERSION" ]; then
+        prefixes="$WINEPREFIX"
+    else
+        # "Rhino is stuck": every installed version, plus the legacy prefix.
+        prefixes="$( { rhino_legacy_prefix; for v in $RHINO_VERSIONS; do rhino_prefix_for "$v"; done; } | sort -u)"
+    fi
+    while IFS= read -r prefix; do
+        [ -d "$prefix/drive_c" ] || continue
+        echo "Stopping Rhino Wine prefix ($prefix)..."
+        stop_prefix "$prefix"
+    done <<< "$prefixes"
+    echo "Rhino Wine prefix stopped."
+    exit 0
+fi
+if [ "$FRESH" -eq 1 ]; then
+    echo "Restarting wineserver for clean http.sys state..."
+    if [ -x "$WINESERVER_BIN" ] || command -v "$WINESERVER_BIN" >/dev/null 2>&1; then
         stop_prefix
-        echo "Rhino Wine prefix stopped."
-        exit 0
-        ;;
-esac
+    fi
+    sleep 1
+fi
 
 if [ ! -x "$WINE_BIN" ] || [ ! -d "$RHINO_DIR" ]; then
     # The Flatpak's Rhino menu entry stays after Rhino is uninstalled: open the
@@ -180,9 +199,11 @@ for arg in "$@"; do
     fi
 done
 
-# WebView2 mode: real Edge WebView2 enabled for panels and Cloud Zoo
+# WebView2 mode: real Edge WebView2 enabled for panels and Cloud Zoo (Rhino 8 and 9)
 ms="$WINEPREFIX/drive_c/Program Files (x86)/Microsoft"
-if [ "${RHINO_WEBVIEW2:-1}" = "1" ]; then
+if [ "$RHINO_MAJOR" = 7 ]; then
+    :  # Rhino 7 has no embedded browser
+elif [ "${RHINO_WEBVIEW2:-1}" = "1" ]; then
     [ -d "$ms/EdgeWebView.disabled" ] && mv "$ms/EdgeWebView.disabled" "$ms/EdgeWebView"
     [ -d "$ms/EdgeCore.disabled" ] && mv "$ms/EdgeCore.disabled" "$ms/EdgeCore"
     unset WEBVIEW2_BROWSER_EXECUTABLE_FOLDER
@@ -281,6 +302,19 @@ unset LD_PRELOAD
 # - vcomp140=builtin: Wine builtin vcomp with 64-bit dynamic loop patch bounds threads properly.
 # - d3dcompiler_47=native,builtin: Required for complex HLSL shader compiling.
 export WINEDLLOVERRIDES="vcomp140=builtin;d3dcompiler_47=native,builtin;${WINEDLLOVERRIDES:-}"
+
+# Rhino 7 runs on the .NET Framework 4.8 installed into its prefix (not Wine
+# Mono) and draws its viewports with OpenGL 4.1.
+if [ "$RHINO_MAJOR" = 7 ]; then
+    export WINEDLLOVERRIDES="mscoree=native;$WINEDLLOVERRIDES"
+    if [ "${RHINO_NO_VBLANK:-1}" = "1" ]; then
+        export vblank_mode=0 __GL_SYNC_TO_VBLANK=0   # no swap stalls while drawing
+    fi
+    export __GL_YIELD="NOTHING" __GL_THREADED_OPTIMIZATIONS=1 mesa_glthread=true
+    if [ -n "${RHINO_GL_OVERRIDE:-}" ]; then
+        export MESA_GL_VERSION_OVERRIDE="$RHINO_GL_OVERRIDE" MESA_GLSL_VERSION_OVERRIDE="${RHINO_GLSL_OVERRIDE:-410}"
+    fi
+fi
 
 cd "$RHINO_DIR"
 exec "$WINE_BIN" "C:\\Program Files\\$RHINO_NAME\\System\\Rhino.exe" "${args[@]}"

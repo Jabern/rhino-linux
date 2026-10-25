@@ -10,7 +10,8 @@
 # Options:
 #   -y, --yes               Non-interactive mode (auto-accept defaults)
 #   --deps                  Check and install distro dependencies
-#   --prefix <PATH>         Wine prefix directory (default: ~/.wine-rhino)
+#   --prefix <PATH>         Wine prefix directory (default: one per Rhino version)
+#   --version <7|8|9>       Rhino major version (default: from the installer's name)
 #   --wine <PATH>           Path to custom patched Wine binary
 #   --dxvk-dir <PATH>       Path to custom DXVK 64-bit DLL directory
 #   --build-wine            Build Wine from source with the patch stack
@@ -51,12 +52,14 @@ WINE_INSTALL_DIR="${XDG_DATA_HOME:-$HOME/.local/share}/wine-rhino"
 WINE_RELEASE_URL="https://github.com/Jabern/rhino-linux/releases/download/v1.1.2/wine-rhino-11.18-x86_64.tar.xz"
 WINE_RELEASE_SHA256="15a5d88413504103c297e2bfeb97f642a474a7b61a918cd0635103c43bfd6cf3"
 
-# Default Prefix
+# Rhino versions and their prefixes (rhino_prefix_for, find_rhino_dir, ...)
+# shellcheck source=tools/rhino-versions.sh
+. "$REPO_DIR/tools/rhino-versions.sh"
+
+# Prefix: given with --prefix or RHINO_PREFIX, else chosen per Rhino version
+# once the version is known (after the options are parsed).
 TARGET_PREFIX="${RHINO_PREFIX:-${WINEPREFIX:-}}"
-if [ -z "$TARGET_PREFIX" ]; then
-    # Inside the Flatpak the prefix lives in the app's private data directory.
-    if [ -n "${FLATPAK_ID:-}" ]; then TARGET_PREFIX="$XDG_DATA_HOME/prefix"; else TARGET_PREFIX="$HOME/.wine-rhino"; fi
-fi
+RHINO_VERSION="${RHINO_VERSION:-}"
 
 # Detect Linux Distribution
 detect_distro() {
@@ -129,6 +132,8 @@ Options:
   --no-download           Do not download pre-built Wine (use existing or build)
   --wine-src <DIR>        Use an existing Wine source directory
   --installer <PATH>      Path to Rhino installer .exe
+  --version <7|8|9>       Rhino major version (default: from the installer's name);
+                          each version gets its own prefix
   --run                   Launch Rhino after setup
   -h, --help              Show this help
 EOF
@@ -178,6 +183,10 @@ while [[ $# -gt 0 ]]; do
             RHINO_INSTALLER="$2"
             shift 2
             ;;
+        --version)
+            RHINO_VERSION="$2"
+            shift 2
+            ;;
         --run)
             RUN_RHINO=1
             shift
@@ -193,6 +202,22 @@ while [[ $# -gt 0 ]]; do
             ;;
     esac
 done
+
+# Rhino version: given, else from the installer's file name; it picks the prefix.
+if [ -z "$RHINO_VERSION" ] && [ -n "$RHINO_INSTALLER" ]; then
+    RHINO_VERSION="$(rhino_version_from_installer "$RHINO_INSTALLER")"
+fi
+case "$RHINO_VERSION" in
+    ""|7|8|9) ;;
+    *) echo -e "${RED}Error: unknown Rhino version '$RHINO_VERSION' (7, 8 or 9)${NC}" >&2; exit 1 ;;
+esac
+if [ -z "$TARGET_PREFIX" ]; then
+    if [ -n "$RHINO_VERSION" ]; then
+        TARGET_PREFIX="$(rhino_prefix_for "$RHINO_VERSION")"
+    else
+        TARGET_PREFIX="$(rhino_legacy_prefix)"
+    fi
+fi
 
 detect_distro
 print_banner
@@ -532,6 +557,9 @@ export RHINO_PREFIX="$TARGET_PREFIX"
 
 # Run deployment script
 deploy_cmd=("$REPO_DIR/tools/deploy-rhino.sh" --prefix "$TARGET_PREFIX" --wine "$WINE_BIN")
+if [ -n "$RHINO_VERSION" ]; then
+    deploy_cmd+=(--version "$RHINO_VERSION")
+fi
 if [ -n "$CUSTOM_DXVK_DIR" ]; then
     deploy_cmd+=(--dxvk-dir "$CUSTOM_DXVK_DIR")
 fi
@@ -541,18 +569,7 @@ fi
 # Application Installation (Optional)
 # ------------------------------------------------------------------------------
 echo -e "\n${BOLD}${BLUE}[Step 4/4] Checking Application Status...${NC}"
-# Rhino's folder under Program Files: the newest release first, then the WIP build.
-find_rhino_dir() {
-    local name
-    for name in "Rhino 9" "Rhino 9 WIP" "Rhino 8"; do
-        if [ -f "$1/drive_c/Program Files/$name/System/Rhino.exe" ]; then
-            printf '%s\n' "$name"
-            return 0
-        fi
-    done
-    return 1
-}
-rhino_present() { find_rhino_dir "$TARGET_PREFIX" >/dev/null; }
+rhino_present() { find_rhino_dir "$TARGET_PREFIX" "${RHINO_VERSION:-$RHINO_VERSIONS}" >/dev/null; }
 
 if [ -n "$RHINO_INSTALLER" ]; then
     if [ -f "$RHINO_INSTALLER" ]; then
@@ -561,7 +578,14 @@ if [ -n "$RHINO_INSTALLER" ]; then
         if [ "$NON_INTERACTIVE" -eq 1 ]; then
             installer_flags+=(/passive /norestart)
         fi
-        "$WINE_BIN" "$RHINO_INSTALLER" "${installer_flags[@]}" || [ $? -eq 3010 ]
+        installer_env=()
+        if [ "$RHINO_VERSION" = 7 ]; then
+            # Rhino 7's MSI runs .NET custom actions in a 32-bit helper that does
+            # not see the registry's mscoree=native and fails with 0x643; the
+            # environment reaches every process the installer starts.
+            installer_env=(WINEDLLOVERRIDES="mscoree=native;winemenubuilder.exe=d")
+        fi
+        env "${installer_env[@]}" "$WINE_BIN" "$RHINO_INSTALLER" "${installer_flags[@]}" || [ $? -eq 3010 ]
         # Wait for any lingering msiexec tasks to complete
         while "$WINESERVER_BIN" -k 0 2>/dev/null && pgrep -f -u "$UID" "msiexec" >/dev/null 2>&1; do
             sleep 2
@@ -590,16 +614,21 @@ echo -e "${BOLD}${GREEN}  Setup Complete!${NC}"
 echo -e "${BOLD}${GREEN}==========================================================================${NC}"
 echo -e " Prefix  : ${BOLD}$TARGET_PREFIX${NC}"
 echo -e " Wine    : ${BOLD}$WINE_BIN${NC}"
-echo -e " Launcher: ${BOLD}rhino-9${NC} or ${BOLD}./rhino-9${NC}"
+if [ -n "$RHINO_VERSION" ]; then
+    echo -e " Rhino   : ${BOLD}Rhino $RHINO_VERSION${NC}"
+    echo -e " Launcher: ${BOLD}rhino-9 --version $RHINO_VERSION${NC}"
+else
+    echo -e " Launcher: ${BOLD}rhino-9${NC} or ${BOLD}./rhino-9${NC}"
+fi
 echo "=========================================================================="
 
 if [ "$RUN_RHINO" -eq 1 ]; then
     echo -e "\n${BOLD}${CYAN}Launching Rhinoceros...${NC}"
-    exec "$REPO_DIR/tools/rhino-9"
+    exec "$REPO_DIR/tools/rhino-9" ${RHINO_VERSION:+--version "$RHINO_VERSION"}
 elif rhino_present && [ "$NON_INTERACTIVE" -eq 0 ]; then
     echo ""
     read -rp "Would you like to launch Rhino now? [Y/n] " run_ans
     if [[ "${run_ans:-y}" =~ ^[Yy] ]]; then
-        exec "$REPO_DIR/tools/rhino-9"
+        exec "$REPO_DIR/tools/rhino-9" ${RHINO_VERSION:+--version "$RHINO_VERSION"}
     fi
 fi

@@ -38,6 +38,9 @@ MILESTONES = [
     (re.compile(r"\[2/6\]"), 0.40, "Setting up fast 3D graphics"),
     (re.compile(r"\[[34]/6\]"), 0.50, "Installing fonts and settings"),
     (re.compile(r"\[[56]/6\]"), 0.58, "Adding Rhino to your applications"),
+    (re.compile(r"Installing \.NET Framework 4\.8"), 0.30, "Installing .NET Framework 4.8 for Rhino 7 — this takes 15 to 40 minutes"),
+    (re.compile(r"Installing core fonts"), 0.45, "Installing fonts for Rhino 7"),
+    (re.compile(r"Visual C\+\+ runtime"), 0.48, "Installing the Visual C++ runtime for Rhino 7"),
     (re.compile(r"Launching Rhino Installer"), 0.62, "Installing Rhino — the Rhino installer shows its own progress"),
     (re.compile(r"\[Step 4/4\]"), 0.97, "Checking the installation"),
 ]
@@ -56,28 +59,58 @@ def read_config():
     return cfg
 
 
-def prefix_path():
-    default = os.path.join(DATA_HOME, "prefix") if IN_FLATPAK else os.path.join(HOME, ".wine-rhino")
-    return read_config().get("RHINO_PREFIX", default)
-
-
 def wine_path():
     return read_config().get("RHINO_WINE", os.path.join(DATA_HOME, "wine-rhino/bin/wine"))
 
 
-RHINO_DIRS = ("Rhino 9", "Rhino 9 WIP", "Rhino 8")  # newest release first
+# Rhino major versions, newest first, and their folders under Program Files.
+# Each version has its own Wine prefix; tools/rhino-versions.sh has the same rules.
+RHINO_VERSIONS = ("9", "8", "7")
+RHINO_DIRS = {"9": ("Rhino 9", "Rhino 9 WIP"), "8": ("Rhino 8",), "7": ("Rhino 7",)}
 
 
-def rhino_name():
-    """Rhino's folder under Program Files, or None when Rhino is not installed."""
-    for name in RHINO_DIRS:
-        if os.path.isfile(os.path.join(prefix_path(), "drive_c/Program Files", name, "System/Rhino.exe")):
+def legacy_prefix():
+    """The single prefix of releases before 1.2 (or a custom one saved then)."""
+    default = os.path.join(DATA_HOME, "prefix") if IN_FLATPAK else os.path.join(HOME, ".wine-rhino")
+    return read_config().get("RHINO_PREFIX", default)
+
+
+def find_rhino_dir(prefix, version):
+    for name in RHINO_DIRS[version]:
+        if os.path.isfile(os.path.join(prefix, "drive_c/Program Files", name, "System/Rhino.exe")):
             return name
     return None
 
 
+def prefix_for(version):
+    saved = read_config().get(f"RHINO_PREFIX_{version}")
+    if saved:
+        return saved
+    if find_rhino_dir(legacy_prefix(), version):
+        return legacy_prefix()
+    if IN_FLATPAK:
+        return os.path.join(DATA_HOME, f"prefix-rhino{version}")
+    return os.path.join(HOME, f".wine-rhino{version}")
+
+
+def installed_versions():
+    """Installed major versions, newest first."""
+    return [v for v in RHINO_VERSIONS if find_rhino_dir(prefix_for(v), v)]
+
+
+def rhino_name(version):
+    """Rhino's folder under Program Files for this version, e.g. "Rhino 9 WIP"."""
+    return find_rhino_dir(prefix_for(version), version)
+
+
 def rhino_installed():
-    return rhino_name() is not None
+    return bool(installed_versions())
+
+
+def version_from_installer(path):
+    """rhino_en-us_8.36….exe -> "8"; None when the name does not say."""
+    m = re.match(r"rhino[_-]([a-z]{2}-[a-z]{2}[_-])?(\d+)\.", os.path.basename(path or "").lower())
+    return m.group(2) if m and m.group(2) in RHINO_VERSIONS else None
 
 
 def launcher():
@@ -202,6 +235,8 @@ class Window(Adw.ApplicationWindow):
         super().__init__(application=app, title="Rhino on Linux", default_width=640, default_height=720)
         self.expert = self.load_expert()
         self.installer = find_installer()
+        self.install_version = version_from_installer(self.installer) or "8"
+        self.tool_version = None
         self.log_lines = []
         self.proc = None
         self.exit_status = 0
@@ -220,6 +255,11 @@ class Window(Adw.ApplicationWindow):
         self.add_action(action)
         for name, cb in (("about", self.on_about), ("report", self.on_report)):
             a = Gio.SimpleAction.new(name, None)
+            a.connect("activate", cb)
+            self.add_action(a)
+        for name, cb in (("repair-version", lambda _a, v: self.repair([v.get_string()])),
+                         ("uninstall-version", lambda _a, v: self.on_uninstall(version=v.get_string()))):
+            a = Gio.SimpleAction.new(name, GLib.VariantType.new("s"))
             a.connect("activate", cb)
             self.add_action(a)
 
@@ -304,7 +344,8 @@ class Window(Adw.ApplicationWindow):
     def installer_page(self):
         box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=24)
         group = Adw.PreferencesGroup(title="The Rhino installer",
-                                     description="Download Rhino from McNeel with your account, then choose the file here.")
+                                     description="Download Rhino 7, 8 or 9 from McNeel with your account, then choose the file here. "
+                                                 "Each version gets its own Windows environment, so several can be installed side by side.")
         get = Adw.ActionRow(title="Download Rhino", subtitle="Opens the official download page", activatable=True)
         get.add_suffix(Gtk.Image(icon_name="web-browser-symbolic"))
         get.connect("activated", lambda *_: Gtk.UriLauncher(uri=DOWNLOAD_URL).launch(self, None, None, None))
@@ -313,19 +354,49 @@ class Window(Adw.ApplicationWindow):
         self.file_row.add_suffix(Gtk.Image(icon_name="document-open-symbolic"))
         self.file_row.connect("activated", self.on_choose_file)
         group.add(self.file_row)
+        # Shown when the file name does not tell which version it installs.
+        self.version_row = Adw.ComboRow(title="Rhino version", subtitle="The file name does not say which version this is",
+                                        model=Gtk.StringList.new([f"Rhino {v}" for v in RHINO_VERSIONS]))
+        self.version_row.connect("notify::selected", self.on_version_selected)
+        group.add(self.version_row)
         box.append(group)
+        self.version_note = Gtk.Label(wrap=True, justify=Gtk.Justification.CENTER, css_classes=["dim-label"])
+        box.append(self.version_note)
         self.install_btn = self.pill("Install Rhino")
         self.install_btn.connect("clicked", lambda *_: self.start_install())
         box.append(self.install_btn)
         self.update_file_row()
         return self.page("Installer", box, "installer")
 
+    def on_version_selected(self, row, _pspec):
+        self.install_version = RHINO_VERSIONS[row.get_selected()]
+        self.update_version_note()
+
+    def update_version_note(self):
+        v = self.install_version
+        notes = []
+        if v in installed_versions():
+            notes.append(f"{rhino_name(v)} is already installed: this updates it, keeping your settings and sign-in.")
+        if v == "7":
+            notes.append("Rhino 7 needs Microsoft's .NET Framework 4.8, which this app installs first. "
+                         "That makes the first installation take 30 to 60 minutes.")
+        self.version_note.set_label("\n\n".join(notes))
+        self.version_note.set_visible(bool(notes))
+        self.install_btn.set_label(f"Install Rhino {v}" if self.installer else "Install Rhino")
+
     def update_file_row(self):
+        detected = version_from_installer(self.installer)
         if self.installer:
-            self.file_row.set_subtitle(os.path.basename(self.installer))
+            what = f" — Rhino {detected}" if detected else ""
+            self.file_row.set_subtitle(os.path.basename(self.installer) + what)
         else:
             self.file_row.set_subtitle("Choose the downloaded rhino_….exe")
+        if detected:
+            self.install_version = detected
+        self.version_row.set_visible(bool(self.installer) and not detected)
+        self.version_row.set_selected(RHINO_VERSIONS.index(self.install_version))
         self.install_btn.set_sensitive(bool(self.installer))
+        self.update_version_note()
 
     def on_choose_file(self, *_):
         dialog = Gtk.FileDialog(title="Choose the Rhino installer")
@@ -422,17 +493,19 @@ class Window(Adw.ApplicationWindow):
         on_done(ok, detail)
 
     def start_install(self):
-        argv = [os.path.join(REPO_DIR, "install.sh"), "-y", "--installer", self.installer]
-        self.run_script("Installing", argv, self.install_done)
+        argv = [os.path.join(REPO_DIR, "install.sh"), "-y", "--installer", self.installer,
+                "--version", self.install_version]
+        self.run_script(f"Installing Rhino {self.install_version}", argv, self.install_done)
 
     def install_done(self, ok, detail):
-        if ok and rhino_installed():
+        v = self.install_version
+        if ok and v in installed_versions():
             box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=24)
-            box.append(Adw.StatusPage(icon_name="object-select-symbolic", title="Rhino is ready",
+            box.append(Adw.StatusPage(icon_name="object-select-symbolic", title=f"{rhino_name(v)} is ready",
                                       description="You'll also find Rhino in your applications menu. "
                                                   "The first start asks you to sign in with your Rhino account."))
-            open_btn = self.pill("Open Rhino")
-            open_btn.connect("clicked", self.on_open_rhino)
+            open_btn = self.pill(f"Open {rhino_name(v)}")
+            open_btn.connect("clicked", lambda *_: self.on_open_rhino(v))
             box.append(open_btn)
             self.nav.replace([self.home_page(), self.page("Done", box, "done")])
         else:
@@ -455,10 +528,16 @@ class Window(Adw.ApplicationWindow):
     # home screen for an existing installation
     def home_page(self):
         box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=24)
-        box.append(app_header(rhino_name() or "Rhino", "Installed and ready."))
-        open_btn = self.pill("Open Rhino")
-        open_btn.connect("clicked", self.on_open_rhino)
-        box.append(open_btn)
+        versions = installed_versions()
+        if len(versions) == 1:
+            v = versions[0]
+            box.append(app_header(rhino_name(v), "Installed and ready."))
+            open_btn = self.pill("Open Rhino")
+            open_btn.connect("clicked", lambda *_: self.on_open_rhino(v))
+            box.append(open_btn)
+        else:
+            box.append(app_header("Rhino on Linux", f"{len(versions)} versions of Rhino are installed."))
+        box.append(self.versions_group(versions))
 
         plugins = Adw.PreferencesGroup(title="Plug-ins",
                                        description="You can also drop a plug-in file on this window, or double-click it in your file manager.")
@@ -489,6 +568,44 @@ class Window(Adw.ApplicationWindow):
             box.append(self.expert_group())
         return self.page("Rhino on Linux", box, "home")
 
+    def versions_group(self, versions):
+        """One row per installed Rhino, plus a row to add another version."""
+        group = Adw.PreferencesGroup(title="Installed" if len(versions) > 1 else "")
+        if len(versions) > 1:
+            for v in versions:
+                row = Adw.ActionRow(title=rhino_name(v), subtitle=prefix_for(v) if self.expert else "Ready")
+                open_btn = Gtk.Button(label="Open", valign=Gtk.Align.CENTER)
+                open_btn.add_css_class("suggested-action")
+                open_btn.connect("clicked", lambda _b, v=v: self.on_open_rhino(v))
+                row.add_suffix(open_btn)
+                row.add_suffix(self.version_menu(v))
+                group.add(row)
+        missing = [v for v in RHINO_VERSIONS if v not in versions]
+        if missing:
+            add = Adw.ActionRow(title="Install another Rhino version…",
+                                subtitle="Rhino " + ", ".join(missing) + " can be installed next to "
+                                         + ("it" if len(versions) == 1 else "them"),
+                                activatable=True)
+            add.add_prefix(Gtk.Image(icon_name="list-add-symbolic"))
+            add.connect("activated", lambda *_: self.on_add_version(missing[0]))
+            group.add(add)
+        return group
+
+    def version_menu(self, version):
+        """Repair or uninstall one version."""
+        menu = Gio.Menu()
+        menu.append("Repair", f"win.repair-version('{version}')")
+        menu.append("Uninstall…", f"win.uninstall-version('{version}')")
+        button = Gtk.MenuButton(icon_name="view-more-symbolic", menu_model=menu, valign=Gtk.Align.CENTER,
+                                tooltip_text=f"Rhino {version}")
+        button.add_css_class("flat")
+        return button
+
+    def on_add_version(self, suggested):
+        self.installer = None
+        self.install_version = suggested
+        self.nav.push(self.installer_page())
+
     def ntsync_group(self):
         group = Adw.PreferencesGroup(
             title="Make Rhino faster",
@@ -509,14 +626,24 @@ class Window(Adw.ApplicationWindow):
         return group
 
     def expert_group(self):
-        group = Adw.PreferencesGroup(title="Expert", description="Direct access to the Wine environment.")
+        group = Adw.PreferencesGroup(title="Expert", description="Direct access to the Wine environments.")
         wine = wine_path()
         version = run_quiet(wine, "--version").strip() or "not found"
         group.add(Adw.ActionRow(title="Wine runtime", subtitle=f"{version} — {os.path.dirname(os.path.dirname(wine))}"))
-        prefix_row = Adw.ActionRow(title="Prefix", subtitle=prefix_path(), activatable=True)
-        prefix_row.add_suffix(Gtk.Image(icon_name="folder-open-symbolic"))
-        prefix_row.connect("activated", lambda *_: self.open_path(prefix_path()))
-        group.add(prefix_row)
+        versions = installed_versions() or ["8"]
+        if self.tool_version not in versions:
+            self.tool_version = versions[0]
+        for v in versions:
+            prefix = prefix_for(v)
+            prefix_row = Adw.ActionRow(title=f"Prefix of {rhino_name(v) or 'Rhino ' + v}", subtitle=prefix, activatable=True)
+            prefix_row.add_suffix(Gtk.Image(icon_name="folder-open-symbolic"))
+            prefix_row.connect("activated", lambda _r, p=prefix: self.open_path(p))
+            group.add(prefix_row)
+        if len(versions) > 1:
+            chooser = Adw.ComboRow(title="Tools below act on", model=Gtk.StringList.new([rhino_name(v) for v in versions]),
+                                   selected=versions.index(self.tool_version))
+            chooser.connect("notify::selected", lambda row, _p: setattr(self, "tool_version", versions[row.get_selected()]))
+            group.add(chooser)
         tools = [("Wine configuration", lambda *_: self.wine_tool("winecfg")),
                  ("Registry editor", lambda *_: self.wine_tool("regedit")),
                  ("Edit DXVK settings", lambda *_: self.open_path(self.dxvk_conf()))]
@@ -530,12 +657,14 @@ class Window(Adw.ApplicationWindow):
             group.add(row)
         return group
 
-    # actions
-    def on_open_rhino(self, *_):
+    def on_open_rhino(self, version=None, *_):
+        versions = installed_versions()
+        if version not in RHINO_VERSIONS:
+            version = versions[0] if versions else None
         try:
-            subprocess.Popen([launcher()], start_new_session=True,
+            subprocess.Popen([launcher()] + (["--version", version] if version else []), start_new_session=True,
                              stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-            self.toast("Opening Rhino…")
+            self.toast(f"Opening {rhino_name(version) or 'Rhino'}…")
         except OSError as e:
             self.show_failure("Rhino could not be started", str(e))
 
@@ -557,7 +686,7 @@ class Window(Adw.ApplicationWindow):
                 pass
         dialog.open(self, None, done)
 
-    def install_plugin(self, path):
+    def install_plugin(self, path, version=None):
         if self.proc is not None:
             self.toast("Please wait until this step finishes")
             return
@@ -565,16 +694,33 @@ class Window(Adw.ApplicationWindow):
             self.show_failure("This is not a Rhino plug-in",
                               "Supported files: " + ", ".join("." + s for s in PLUGIN_SUFFIXES))
             return
-        if not rhino_installed():
+        versions = installed_versions()
+        if not versions:
             self.show_failure("Install Rhino first", "Plug-ins are added to an existing Rhino installation.")
             return
+        if version is None and len(versions) > 1:
+            dialog = Adw.AlertDialog(heading="Which Rhino?",
+                                     body=f"Add {os.path.basename(path)} to which version of Rhino?")
+            dialog.add_response("cancel", "Cancel")
+            for v in versions:
+                dialog.add_response(v, rhino_name(v))
+            dialog.set_response_appearance(versions[0], Adw.ResponseAppearance.SUGGESTED)
+            dialog.set_close_response("cancel")
+
+            def chosen(dlg, res):
+                answer = dlg.choose_finish(res)
+                if answer in versions:
+                    self.install_plugin(path, answer)
+            dialog.choose(self, None, chosen)
+            return
+        version = version or versions[0]
         name = os.path.basename(path)
-        argv = [os.path.join(REPO_DIR, "tools/install-plugin.sh"), path]
-        self.run_script("Installing " + name, argv, lambda ok, d: self.plugin_done(ok, d, path))
+        argv = [os.path.join(REPO_DIR, "tools/install-plugin.sh"), "--version", version, path]
+        self.run_script("Installing " + name, argv, lambda ok, d: self.plugin_done(ok, d, path, version))
         if name.lower().endswith((".exe", ".msi")):
             self.step_label.set_label("Follow the steps in the installer window")
 
-    def plugin_done(self, ok, detail, path):
+    def plugin_done(self, ok, detail, path, version=None):
         if ok:
             self.nav.replace([self.home_page()])
             self.toast(os.path.basename(path) + " installed. Restart Rhino to use it.")
@@ -591,7 +737,7 @@ class Window(Adw.ApplicationWindow):
             def chosen(dlg, res):
                 if dlg.choose_finish(res) == "close":
                     self.on_stop()
-                    self.install_plugin(path)
+                    self.install_plugin(path, version)
             dialog.choose(self, None, chosen)
         else:
             self.show_failure("The plug-in was not installed", detail)
@@ -601,8 +747,15 @@ class Window(Adw.ApplicationWindow):
                         lambda ok, d: self.after_maintenance(ok, d, "Rhino on Linux is up to date"))
 
     def on_repair(self, *_):
-        argv = [os.path.join(REPO_DIR, "tools/deploy-rhino.sh"), "--prefix", prefix_path(), "--wine", wine_path()]
-        self.run_script("Repairing", argv, lambda ok, d: self.after_maintenance(ok, d, "Repair finished"))
+        self.repair(installed_versions())
+
+    def repair(self, versions):
+        """deploy-rhino.sh for each version in turn."""
+        deploy = os.path.join(REPO_DIR, "tools/deploy-rhino.sh")
+        steps = [f'"{deploy}" --prefix "{prefix_for(v)}" --wine "{wine_path()}" --version {v}' for v in versions]
+        argv = ["bash", "-c", " && ".join(steps) or "true"]
+        names = " and ".join(rhino_name(v) for v in versions) or "Rhino"
+        self.run_script("Repairing " + names, argv, lambda ok, d: self.after_maintenance(ok, d, "Repair finished"))
 
     def on_rebuild(self, *_):
         self.run_script("Building Wine", [os.path.join(REPO_DIR, "install.sh"), "-y", "--build-wine"],
@@ -622,13 +775,18 @@ class Window(Adw.ApplicationWindow):
         except (OSError, subprocess.SubprocessError):
             self.toast("Rhino is not running")
 
-    def uninstall_targets(self):
-        """Only paths this project created: a Wine prefix, our runtime, our files."""
+    def uninstall_targets(self, version=None):
+        """Only paths this project created: Wine prefixes, our runtime, our files.
+        With a version, only that version's prefix."""
         data = os.environ.get("XDG_DATA_HOME", os.path.join(HOME, ".local/share"))
-        targets = []
-        prefix = prefix_path()
-        if os.path.isdir(os.path.join(prefix, "drive_c")):
-            targets.append(prefix)
+        prefixes = {prefix_for(v) for v in ([version] if version else RHINO_VERSIONS)}
+        if not version:
+            prefixes.add(legacy_prefix())
+        elif any(prefix_for(v) == prefix_for(version) for v in RHINO_VERSIONS if v != version and v in installed_versions()):
+            prefixes = set()  # an old shared prefix also holds another version: keep it
+        targets = sorted(p for p in prefixes if os.path.isdir(os.path.join(p, "drive_c")))
+        if version:
+            return self.safe_targets(targets)
         runtime = os.path.dirname(os.path.dirname(wine_path()))
         if os.path.exists(os.path.join(runtime, ".rhino-linux-runtime")) or os.path.basename(runtime) == "wine-rhino":
             targets.append(runtime)
@@ -639,11 +797,16 @@ class Window(Adw.ApplicationWindow):
             # Nothing outside ~/.var/app: HOME is the real home folder here.
             targets += [os.path.join(cache, "wine"), os.path.join(cache, "dxvk")]
         else:
-            targets += [os.path.join(HOME, ".local/bin/rhino-9"),
-                        os.path.join(data, "applications/rhino-9.desktop"),
-                        os.path.join(data, "applications/io.github.jabern.RhinoOnLinux.desktop"),
-                        os.path.join(data, "mime/packages/io.github.jabern.RhinoOnLinux.xml"),
+            apps = os.path.join(data, "applications")
+            targets += [os.path.join(HOME, ".local/bin", n) for n in ("rhino-9", "rhino-8", "rhino-7")]
+            targets += [os.path.join(apps, "rhino-9.desktop"), os.path.join(apps, "io.github.jabern.RhinoOnLinux.desktop")]
+            targets += [os.path.join(apps, f"rhino-{v}-version.desktop") for v in RHINO_VERSIONS]
+            targets += [os.path.join(data, "mime/packages/io.github.jabern.RhinoOnLinux.xml"),
                         os.path.join(data, "icons/hicolor/256x256/apps/rhino9.png")]
+        return self.safe_targets(targets)
+
+    @staticmethod
+    def safe_targets(targets):
         safe = []
         for t in targets:
             real = os.path.realpath(t)
@@ -651,10 +814,38 @@ class Window(Adw.ApplicationWindow):
                 safe.append(t)
         return safe
 
-    def on_uninstall(self, *_):
-        targets = self.uninstall_targets()
-        dialog = Adw.AlertDialog(heading="Uninstall Rhino?",
-                                 body="This removes Rhino, its settings and the Windows environment it runs in:\n\n"
+    def on_uninstall(self, *_, version=None):
+        versions = installed_versions()
+        if version is None and len(versions) > 1:
+            dialog = Adw.AlertDialog(heading="Uninstall which Rhino?",
+                                     body="Remove one version, or every version together with this app's files.")
+            dialog.add_response("cancel", "Cancel")
+            for v in versions:
+                dialog.add_response(v, rhino_name(v))
+            dialog.add_response("all", "Everything")
+            dialog.set_response_appearance("all", Adw.ResponseAppearance.DESTRUCTIVE)
+            dialog.set_close_response("cancel")
+
+            def picked(dlg, res):
+                answer = dlg.choose_finish(res)
+                if answer == "all":
+                    self.confirm_uninstall(None)
+                elif answer in versions:
+                    self.confirm_uninstall(answer)
+            dialog.choose(self, None, picked)
+            return
+        self.confirm_uninstall(version)
+
+    def confirm_uninstall(self, version):
+        targets = self.uninstall_targets(version)
+        if version and not targets:
+            self.show_failure(f"{rhino_name(version)} shares its environment with another version",
+                              "It was installed with an older release of this app, in the same Windows environment as "
+                              "another Rhino. Use Rhino's own uninstaller (Windows Settings) or uninstall everything.")
+            return
+        what = rhino_name(version) if version else "Rhino"
+        dialog = Adw.AlertDialog(heading=f"Uninstall {what}?",
+                                 body=f"This removes {what}, its settings and the Windows environment it runs in:\n\n"
                                       + "\n".join(targets) + "\n\nYour own models in Documents are not touched.")
         dialog.add_response("cancel", "Cancel")
         dialog.add_response("remove", "Uninstall")
@@ -667,10 +858,9 @@ class Window(Adw.ApplicationWindow):
             self.on_stop()
             self.remove_targets(targets)
             self.show_start()
-            self.toast("Rhino was uninstalled")
+            self.toast(f"{what} was uninstalled")
         dialog.choose(self, None, chosen)
 
-    @staticmethod
     def remove_targets(targets):
         for t in targets:
             if os.path.isdir(t) and not os.path.islink(t):
@@ -691,17 +881,23 @@ class Window(Adw.ApplicationWindow):
     def open_path(self, path):
         Gtk.FileLauncher(file=Gio.File.new_for_path(path)).launch(self, None, None, None)
 
+    def tool_prefix(self):
+        versions = installed_versions()
+        version = self.tool_version if self.tool_version in versions else (versions[0] if versions else "8")
+        return prefix_for(version)
+
     def wine_tool(self, tool):
-        env = dict(os.environ, WINEPREFIX=prefix_path())
+        env = dict(os.environ, WINEPREFIX=self.tool_prefix())
         subprocess.Popen([wine_path(), tool], env=env, start_new_session=True,
                          stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
     def on_terminal(self, *_):
-        env = dict(os.environ, WINEPREFIX=prefix_path(),
+        prefix = self.tool_prefix()
+        env = dict(os.environ, WINEPREFIX=prefix,
                    PATH=os.path.dirname(wine_path()) + os.pathsep + os.environ.get("PATH", ""))
         for term in (os.environ.get("TERMINAL"), "kgx", "gnome-terminal", "konsole", "xfce4-terminal", "xterm"):
             if term and shutil.which(term):
-                subprocess.Popen([term], cwd=prefix_path(), env=env, start_new_session=True)
+                subprocess.Popen([term], cwd=prefix, env=env, start_new_session=True)
                 return
         self.toast("No terminal application found")
 
@@ -712,8 +908,9 @@ class Window(Adw.ApplicationWindow):
                   "session: " + os.environ.get("XDG_SESSION_TYPE", "?") + " / " + os.environ.get("XDG_CURRENT_DESKTOP", "?")]
         lines += ["", "== Graphics"] + [l for l in run_quiet("vulkaninfo", "--summary").splitlines()
                                          if re.search(r"deviceName|driverName|driverInfo|apiVersion", l)]
-        lines += ["", "== Wine", run_quiet(wine_path(), "--version").strip(), "prefix: " + prefix_path(),
-                  "rhino installed: " + str(rhino_installed()), "ntsync: " + ntsync_state()]
+        lines += ["", "== Wine", run_quiet(wine_path(), "--version").strip(), "ntsync: " + ntsync_state()]
+        lines += [f"Rhino {v}: " + (f"{rhino_name(v)} in {prefix_for(v)}" if v in installed_versions() else "not installed")
+                  for v in RHINO_VERSIONS]
         if self.log_lines:
             lines += ["", "== Last setup output"] + self.log_lines[-200:]
         path = os.path.join(HOME, "rhino-on-linux-report.txt")

@@ -35,6 +35,29 @@ rhino-9
 rhino-9 model.3dm
 ```
 
+### Rhino 7, 8 and 9 side by side
+
+Install as many versions as you like; run `./install.sh --installer` once per
+installer. The version is read from the installer's name
+(`rhino_en-us_8.36….exe` is Rhino 8), or pass `--version 7`, `8` or `9`.
+
+Each version gets its own Windows environment (`~/.wine-rhino7`,
+`~/.wine-rhino8`, `~/.wine-rhino9`), sharing one Wine runtime, so they never
+interfere and each can be repaired or removed on its own. A prefix from an
+earlier release is kept as the home of the version it already holds.
+
+```bash
+rhino-9                  # the newest installed Rhino
+rhino-9 --version 8      # Rhino 8; rhino-8 and rhino-7 do the same
+rhino-9 --stop           # close every Rhino that is running
+```
+
+Rhino 7 runs on Microsoft's .NET Framework 4.8 instead of the .NET that Rhino 8
+and 9 ship with. The installer sets it up first with
+[winetricks](https://github.com/Winetricks/winetricks), which makes Rhino 7's
+first installation take 30 to 60 minutes. That part comes from
+[Rhino7-Linux](https://github.com/JonasPedrotti/Rhino7-Linux).
+
 ## Prefer not to use the terminal?
 
 **Rhino on Linux** is a small app that installs Rhino for you and looks after it
@@ -50,7 +73,8 @@ terminal.
 
 Once Rhino is installed, the app is where you go to:
 
-- open Rhino
+- open Rhino, or one of several versions installed side by side
+- install another version (Rhino 7, 8 or 9)
 - install plug-ins (see below)
 - check for updates
 - repair the setup if something breaks, without losing your files or sign-in

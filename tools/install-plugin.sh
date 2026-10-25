@@ -2,7 +2,8 @@
 # install-plugin.sh — Install a Rhino or Grasshopper plug-in into the Rhino prefix.
 #
 # Usage:
-#   install-plugin.sh <file>
+#   install-plugin.sh [--version 7|8|9] <file>
+#   (default: the newest installed Rhino)
 #
 # Supported files:
 #   .rhi            Rhino Installer Engine package (installed silently by McNeel's rhiexec)
@@ -14,11 +15,18 @@
 # Exit codes: 0 installed, 1 failed, 2 unsupported file, 3 Rhino is running.
 set -euo pipefail
 
-CONFIG_FILE="${CONFIG_FILE:-${XDG_CONFIG_HOME:-$HOME/.config}/rhino-linux/config}"
 DATA_HOME="${XDG_DATA_HOME:-$HOME/.local/share}"
+SCRIPT_DIR="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
+# shellcheck source=rhino-versions.sh
+. "$SCRIPT_DIR/rhino-versions.sh"
 
+RHINO_VERSION="${RHINO_VERSION:-}"
+if [ "${1:-}" = "--version" ]; then
+    RHINO_VERSION="${2:-}"
+    shift 2
+fi
 if [ "$#" -ne 1 ] || [ "$1" = "-h" ] || [ "$1" = "--help" ]; then
-    sed -n '2,14p' "$0" | sed 's/^# \{0,1\}//'
+    sed -n '2,15p' "$0" | sed 's/^# \{0,1\}//'
     exit 0
 fi
 FILE="$(realpath "$1")"
@@ -27,31 +35,17 @@ if [ ! -f "$FILE" ]; then
     exit 1
 fi
 
-RHINO_PREFIX=""
-RHINO_WINE=""
-if [ -f "$CONFIG_FILE" ]; then
-    # shellcheck disable=SC1090
-    . "$CONFIG_FILE"
+[ -n "$RHINO_VERSION" ] || RHINO_VERSION="$(rhino_newest_version)"
+if [ -z "$RHINO_VERSION" ]; then
+    echo "Error: Rhino is not installed yet."
+    exit 1
 fi
-if [ -z "$RHINO_PREFIX" ]; then
-    if [ -n "${FLATPAK_ID:-}" ]; then RHINO_PREFIX="$DATA_HOME/prefix"; else RHINO_PREFIX="$HOME/.wine-rhino"; fi
-fi
-WINE_BIN="${RHINO_WINE:-$DATA_HOME/wine-rhino/bin/wine}"
-export WINEPREFIX="$RHINO_PREFIX" WINEDEBUG="${WINEDEBUG:--all}"
+WINE_BIN="$(rhino_config_get RHINO_WINE)"
+WINE_BIN="${WINE_BIN:-$DATA_HOME/wine-rhino/bin/wine}"
+export WINEPREFIX="$(rhino_prefix_for "$RHINO_VERSION")" WINEDEBUG="${WINEDEBUG:--all}"
 unset WINEDLLOVERRIDES
 
-# Rhino's folder under Program Files: the newest release first, then the WIP build.
-find_rhino_dir() {
-    local name
-    for name in "Rhino 9" "Rhino 9 WIP" "Rhino 8"; do
-        if [ -f "$1/drive_c/Program Files/$name/System/Rhino.exe" ]; then
-            printf '%s\n' "$name"
-            return 0
-        fi
-    done
-    return 1
-}
-if [ ! -x "$WINE_BIN" ] || ! RHINO_NAME="$(find_rhino_dir "$WINEPREFIX")"; then
+if [ ! -x "$WINE_BIN" ] || ! RHINO_NAME="$(find_rhino_dir "$WINEPREFIX" "$RHINO_VERSION")"; then
     echo "Error: Rhino is not installed yet (prefix: $WINEPREFIX)."
     exit 1
 fi

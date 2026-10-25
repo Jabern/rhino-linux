@@ -1,0 +1,27 @@
+Windows Registry Editor Version 5.00
+
+; Font substitutes for Rhino 7 under Wine.
+;
+; Rhino 7, Grasshopper and the Eto based dialogs ask for Windows UI fonts by
+; name. When a name cannot be resolved, the dialog either draws nothing or the
+; whole panel fails to lay out. These entries point the missing names at fonts
+; that are metric compatible and shipped by Fedora (Carlito for Calibri,
+; Caladea for Cambria, Liberation for the rest), so no Microsoft font is
+; required for the UI itself. Arial is installed separately as a real font
+; because Rhino uses it as the default annotation font.
+
+[HKEY_LOCAL_MACHINE\Software\Microsoft\Windows NT\CurrentVersion\FontSubstitutes]
+"Segoe UI"="Liberation Sans"
+"Segoe UI Light"="Liberation Sans"
+"Segoe UI Semibold"="Liberation Sans"
+"Segoe UI Symbol"="Liberation Sans"
+"Segoe UI Emoji"="Liberation Sans"
+"Segoe Print"="Liberation Sans"
+"Segoe Script"="Liberation Sans"
+"Calibri"="Carlito"
+"Cambria"="Caladea"
+"Cambria Math"="Caladea"
+"Candara"="Liberation Sans"
+"Corbel"="Liberation Sans"
+"Consolas"="Liberation Mono"
+"Franklin Gothic Medium"="Liberation Sans"

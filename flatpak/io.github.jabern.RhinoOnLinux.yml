@@ -31,6 +31,8 @@ modules:
       - cp -a install.sh tools /app/share/rhino-on-linux/
       - install -Dm755 flatpak/rhino-on-linux.sh /app/bin/rhino-on-linux
       - ln -s ../share/rhino-on-linux/tools/rhino-9 /app/bin/rhino-9
+      - ln -s ../share/rhino-on-linux/tools/rhino-9 /app/bin/rhino-8   # rhino-8 / rhino-7: that version
+      - ln -s ../share/rhino-on-linux/tools/rhino-9 /app/bin/rhino-7
       - install -Dm644 tools/rhino9-256.png /app/share/icons/hicolor/256x256/apps/io.github.jabern.RhinoOnLinux.png
       - install -Dm644 flatpak/io.github.jabern.RhinoOnLinux.desktop -t /app/share/applications
       - install -Dm644 flatpak/io.github.jabern.RhinoOnLinux.Rhino.desktop -t /app/share/applications
