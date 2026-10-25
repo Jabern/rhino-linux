@@ -29,6 +29,7 @@ This directory contains 20 modular topic patches for Wine (19 core patches for X
 | **19** | `19-wine-multimonitor-child-maximize.patch` | `win32u` | Excludes child and MDI windows from monitor-offset calculations when maximized across secondary displays. |
 | **20** | `20-wine-xrandr-primary-anchor.patch` | `winex11.drv` | Anchors primary monitor at root (0,0) in XRandR to prevent coordinate shifts and mouse input desync when Wayland compositors dynamically rotate the primary output. |
 | **21** | `21-gdiplus-flatten-s-curve-beziers.patch` | `gdiplus` | Fixes Bezier flattening of S-shaped curves (control points on opposite sides of the chord), which were reduced to a straight line; restores curved Grasshopper wires. |
+| **22** | `22-mshtml-show-html-dialog.patch` | `mshtml` / `ieframe` | Implements `ShowHTMLDialog`/`ShowHTMLDialogEx` (HTML dialogs with `dialogArguments`, `returnValue` and `window.close()`) for RhinoScript's `Rhino.HtmlBox`; fixes a missing AddRef in ieframe's `IEnumConnections::Next`. |
 
 ---
 

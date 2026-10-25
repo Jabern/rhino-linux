@@ -33,6 +33,7 @@ Below is the technical breakdown of all 20 patches.
 | 19 | [`19-wine-multimonitor-child-maximize.patch`](../patches/19-wine-multimonitor-child-maximize.patch) | `win32u` | Prevent MDI child viewports from shifting off-screen on multi-monitors |
 | 20 | [`20-wine-xrandr-primary-anchor.patch`](../patches/20-wine-xrandr-primary-anchor.patch) | `winex11.drv` | Anchor primary display at `(0, 0)` under XRandR for Wayland bridges |
 | 21 | [`21-gdiplus-flatten-s-curve-beziers.patch`](../patches/21-gdiplus-flatten-s-curve-beziers.patch) | `gdiplus` | Correct flattening of S-shaped Bezier curves (curved Grasshopper wires) |
+| 22 | [`22-mshtml-show-html-dialog.patch`](../patches/22-mshtml-show-html-dialog.patch) | `mshtml` / `ieframe` | HTML dialogs (`ShowHTMLDialogEx`) for RhinoScript's `Rhino.HtmlBox` |
 
 ---
 
@@ -206,3 +207,11 @@ Below is the technical breakdown of all 20 patches.
 - **Reported by**: [eqeka](https://github.com/eqeka), who found that Grasshopper wires were drawn straight.
 - **Problem**: Grasshopper draws every wire as a single cubic Bezier (`GraphicsPath.AddBezier`) stroked with a wide pen, which GDI+ flattens into line segments first. Wine's `flatten_bezier` judged flatness only by the distance of the curve's middle point from the chord. For a point-symmetric S-curve, which is exactly what Grasshopper's wires are, that middle point lies on the chord, so the whole curve was accepted as flat and drawn as one straight line. Unpatched upstream Wine (11.18, 11.19 and master) behaves the same way.
 - **Solution**: When the two control points lie on opposite sides of the chord, the segment is only accepted once both control points are also within tolerance, so S-curves are subdivided until each half is C-shaped. C-shaped curves (arcs, ellipses, rounded rectangles) keep the original criterion and flatten exactly as before.
+
+### Patch 22: HTML Dialogs for RhinoScript's HtmlBox
+- **File**: [`patches/22-mshtml-show-html-dialog.patch`](../patches/22-mshtml-show-html-dialog.patch)
+- **Subsystem**: `dlls/mshtml/htmldlg.c` (new), `dlls/mshtml/htmlwindow.c`, `dlls/mshtml/oleobj.c`, `dlls/ieframe/events.c`
+- **Problem**: `Rhino.HtmlBox` loads `mshtml.dll` and calls `ShowHTMLDialogEx`, which Wine doesn't export (`ShowHTMLDialog` was a stub returning `E_NOTIMPL`). RhinoScript then returns `Null` without showing anything. Installing Internet Explorer with winetricks doesn't help 64-bit Rhino.
+- **Solution**: `ShowHTMLDialogEx` hosts Wine's WebBrowser control in a dialog frame sized from the options string (`dialogWidth`, `dialogHeight`, `dialogLeft`, `dialogTop`, `center`, `resizable`, `scroll`), with a modal loop or modeless mode. The dialog's top-level window exposes `dialogArguments` and `returnValue`, readable from inline scripts, and `window.close()` closes the dialog. `ShowHTMLDialog` now forwards to it.
+  ieframe's `IEnumConnections::Next` returned sinks without AddRef, so mshtml's `window.close()` path released every `DWebBrowserEvents2` sink once too often; it now AddRefs as COM requires.
+- **Needs**: the 64-bit Wine Gecko in the prefix, which `deploy-rhino.sh` now installs (wineboot only installs the 32-bit one).
