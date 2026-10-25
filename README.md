@@ -66,15 +66,17 @@ from McNeel, and shows the installation as it goes. You never have to open a
 terminal.
 
 <p align="center">
-  <img src="docs/images/app-welcome.png" width="270" alt="Welcome page of the Rhino on Linux app with a Get Started button">
-  <img src="docs/images/app-check.png" width="270" alt="Check page: 3D graphics, free space, tools and ntsync all marked as fine">
-  <img src="docs/images/app-home.png" width="270" alt="Home page once Rhino is installed: Open Rhino, install a plug-in, and maintenance actions">
+  <img src="docs/images/app-welcome.png" width="200" alt="Welcome page of the Rhino on Linux app with a Get Started button">
+  <img src="docs/images/app-check.png" width="200" alt="Check page: 3D graphics, free space, tools and ntsync all marked as fine">
+  <img src="docs/images/app-installer.png" width="200" alt="Installer page: the Rhino 8 installer found in Downloads, with an Install Rhino 8 button">
+  <img src="docs/images/app-home.png" width="200" alt="Home page once Rhino 8 is installed: Open Rhino, install another Rhino version, install a plug-in, and maintenance actions">
 </p>
 
 Once Rhino is installed, the app is where you go to:
 
 - open Rhino, or one of several versions installed side by side
 - install another version (Rhino 7, 8 or 9)
+- choose the graphics card Rhino uses, on computers with more than one
 - install plug-ins (see below)
 - check for updates
 - repair the setup if something breaks, without losing your files or sign-in
@@ -176,6 +178,18 @@ or with `RhinoCycles_SelectDevice`.
   driver extension.
 - OptiX is not enabled yet: the Raytraced viewport stays at "Uploading" with it.
 - To skip this step, run the setup with `RHINO_NO_CUDA=1`.
+
+### Computers with several graphics cards
+
+With more than one graphics card, for example two NVIDIA cards or a laptop with
+built-in graphics, Rhino can hang at its start screen. Choose the card your
+monitor is connected to in the app's **Graphics card** section, or give part of
+its name when starting Rhino:
+
+```bash
+RHINO_GPU=4080 rhino-9
+flatpak run --env=RHINO_GPU=4080 --command=rhino-9 io.github.jabern.RhinoOnLinux
+```
 
 ## Dependencies
 
