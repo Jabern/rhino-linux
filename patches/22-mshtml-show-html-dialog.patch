@@ -24,10 +24,10 @@ index 6cce210..58bb082 100644
  	htmlelemcol.c \
 diff --git a/dlls/mshtml/htmldlg.c b/dlls/mshtml/htmldlg.c
 new file mode 100644
-index 0000000..6642948
+index 0000000..05c2683
 --- /dev/null
 +++ b/dlls/mshtml/htmldlg.c
-@@ -0,0 +1,1083 @@
+@@ -0,0 +1,1327 @@
 +/*
 + * HTML dialogs (ShowHTMLDialogEx)
 + *
@@ -66,6 +66,27 @@ index 0000000..6642948
 +
 +static const WCHAR dialog_classW[] = L"Internet Explorer_TridentDlgFrame";
 +
++/* Options from ShowHTMLDialogEx's options string. */
++typedef struct {
++    int width;
++    int height;
++    int left;
++    int top;
++    BOOL has_width;
++    BOOL has_height;
++    BOOL has_left;
++    BOOL has_top;
++    BOOL center;
++    BOOL resizable;
++    BOOL scroll;
++    BOOL unadorned;
++} dialog_options_t;
++
++#define DIALOG_SHOW_TIMER 1
++#define DIALOG_SHOW_TIMEOUT 3000  /* show the dialog even if the page never finishes loading */
++#define DIALOG_MIN_HEIGHT 100     /* documented minimum dialogHeight */
++#define EM_PIXELS 16              /* em unit of dialog sizes */
++
 +/* The dialog window and the WebBrowser control hosted in it. */
 +typedef struct {
 +    IOleClientSite IOleClientSite_iface;
@@ -80,6 +101,10 @@ index 0000000..6642948
 +    BOOL modal;
 +    BOOL scroll;
 +    BOOL closed;
++    BOOL noui;
++    BOOL shown;
++    BOOL sized;
++    dialog_options_t options;
 +    struct html_dialog *dialog;
 +
 +    IOleObject *ole_obj;
@@ -87,6 +112,9 @@ index 0000000..6642948
 +    IConnectionPoint *events_cp;
 +    DWORD events_cookie;
 +} dialog_host_t;
++
++static void show_dialog(dialog_host_t *host);
++static void size_from_document(dialog_host_t *host);
 +
 +void html_dialog_release(struct html_dialog *dialog)
 +{
@@ -619,6 +647,21 @@ index 0000000..6642948
 +           && *V_BSTR(params->rgvarg) && This->hwnd)
 +            SetWindowTextW(This->hwnd, V_BSTR(params->rgvarg));
 +        break;
++    case DISPID_DOCUMENTCOMPLETE:
++        /* the top-level document, not a frame */
++        if(!This->sized && params->cArgs == 2 && V_VT(params->rgvarg + 1) == VT_DISPATCH && This->web_browser) {
++            IUnknown *unk1 = NULL, *unk2 = NULL;
++            IDispatch_QueryInterface(V_DISPATCH(params->rgvarg + 1), &IID_IUnknown, (void**)&unk1);
++            IWebBrowser2_QueryInterface(This->web_browser, &IID_IUnknown, (void**)&unk2);
++            if(unk1 && unk1 == unk2) {
++                This->sized = TRUE;
++                size_from_document(This);
++                show_dialog(This);
++            }
++            if(unk1) IUnknown_Release(unk1);
++            if(unk2) IUnknown_Release(unk2);
++        }
++        break;
 +    case DISPID_WINDOWCLOSING:
 +        /* window.close() from the page: close the dialog instead of the browser. */
 +        if(params->cArgs == 2 && V_VT(params->rgvarg) == (VT_BYREF|VT_BOOL)) {
@@ -701,6 +744,10 @@ index 0000000..6642948
 +            IOleInPlaceSite_OnPosRectChange(&host->IOleInPlaceSite_iface, &rect);
 +        }
 +        return 0;
++    case WM_TIMER:
++        if(wparam == DIALOG_SHOW_TIMER && host)
++            show_dialog(host);
++        return 0;
 +    case WM_CLOSE:
 +        /* Re-enable the owner first, so Windows activates it rather than another app. */
 +        if(host && host->modal && host->owner)
@@ -747,19 +794,8 @@ index 0000000..6642948
 +    return TRUE;
 +}
 +
-+typedef struct {
-+    int width;
-+    int height;
-+    int left;
-+    int top;
-+    BOOL has_left;
-+    BOOL has_top;
-+    BOOL center;
-+    BOOL resizable;
-+    BOOL scroll;
-+} dialog_options_t;
-+
-+/* Lengths are "300px", "20em", "10cm", or plain numbers (pixels). */
++/* Lengths are "300px", "20em", "10cm"... Like IE 5 and later, a number without
++ * a unit is in em. */
 +static BOOL parse_length(const WCHAR *value, int *ret)
 +{
 +    WCHAR *end;
@@ -770,16 +806,22 @@ index 0000000..6642948
 +    while(*end == ' ')
 +        end++;
 +
-+    if(!wcsnicmp(end, L"em", 2))
-+        val *= 16;
++    if(!wcsnicmp(end, L"px", 2))
++        ;
 +    else if(!wcsnicmp(end, L"pt", 2))
 +        val = val * 96 / 72;
++    else if(!wcsnicmp(end, L"pc", 2))
++        val = val * 16;
 +    else if(!wcsnicmp(end, L"cm", 2))
 +        val = val * 96 / 2.54;
 +    else if(!wcsnicmp(end, L"mm", 2))
 +        val = val * 96 / 25.4;
 +    else if(!wcsnicmp(end, L"in", 2))
 +        val *= 96;
++    else if(!wcsnicmp(end, L"ex", 2))
++        val *= EM_PIXELS / 2;
++    else /* "em" or no unit */
++        val *= EM_PIXELS;
 +
 +    *ret = (int)(val + 0.5);
 +    return TRUE;
@@ -805,7 +847,9 @@ index 0000000..6642948
 +
 +    ret->width = 600;
 +    ret->height = 400;
++    ret->has_width = ret->has_height = FALSE;
 +    ret->has_left = ret->has_top = FALSE;
++    ret->unadorned = FALSE;
 +    ret->center = TRUE;
 +    ret->resizable = FALSE;
 +    ret->scroll = TRUE;
@@ -830,9 +874,9 @@ index 0000000..6642948
 +        *value_end = 0;
 +
 +        if(!wcsicmp(name, L"dialogWidth"))
-+            parse_length(value, &ret->width);
++            ret->has_width = parse_length(value, &ret->width);
 +        else if(!wcsicmp(name, L"dialogHeight"))
-+            parse_length(value, &ret->height);
++            ret->has_height = parse_length(value, &ret->height);
 +        else if(!wcsicmp(name, L"dialogLeft"))
 +            ret->has_left = parse_length(value, &ret->left);
 +        else if(!wcsicmp(name, L"dialogTop"))
@@ -843,6 +887,8 @@ index 0000000..6642948
 +            ret->resizable = parse_bool(value);
 +        else if(!wcsicmp(name, L"scroll"))
 +            ret->scroll = parse_bool(value);
++        else if(!wcsicmp(name, L"unadorned"))
++            ret->unadorned = parse_bool(value);
 +        else
 +            TRACE("ignoring option %s=%s\n", debugstr_w(name), debugstr_w(value));
 +    }
@@ -850,26 +896,38 @@ index 0000000..6642948
 +    free(buf);
 +}
 +
-+static HWND create_dialog_window(dialog_host_t *host, const dialog_options_t *options)
++static DWORD dialog_style(const dialog_options_t *options, DWORD *ex_style)
 +{
-+    DWORD style = WS_POPUP | WS_CAPTION | WS_SYSMENU | WS_CLIPCHILDREN;
-+    DWORD ex_style = WS_EX_DLGMODALFRAME | WS_EX_WINDOWEDGE;
-+    RECT rect = {0, 0, options->width, options->height}, work;
-+    HMONITOR monitor;
-+    MONITORINFO mi = {sizeof(mi)};
-+    int width, height, x, y;
++    DWORD style = WS_POPUP | WS_CLIPCHILDREN;
 +
++    *ex_style = 0;
++    if(!options->unadorned) {
++        style |= WS_CAPTION | WS_SYSMENU;
++        *ex_style = WS_EX_DLGMODALFRAME | WS_EX_WINDOWEDGE;
++    }
 +    if(options->resizable)
-+        style |= WS_THICKFRAME | WS_MAXIMIZEBOX;
++        style |= options->unadorned ? WS_THICKFRAME : WS_THICKFRAME | WS_MAXIMIZEBOX;
++    return style;
++}
 +
-+    /* dialogWidth/dialogHeight give the size of the page area. */
++/* Window rect for a page area of width x height, placed as the options ask. */
++static RECT dialog_window_rect(const dialog_host_t *host, int width, int height)
++{
++    const dialog_options_t *options = &host->options;
++    RECT rect = {0, 0, width, max(height, DIALOG_MIN_HEIGHT)}, work;
++    MONITORINFO mi = {sizeof(mi)};
++    DWORD style, ex_style;
++    int x, y;
++
++    style = dialog_style(options, &ex_style);
 +    AdjustWindowRectEx(&rect, style, FALSE, ex_style);
 +    width = rect.right - rect.left;
 +    height = rect.bottom - rect.top;
 +
-+    monitor = MonitorFromWindow(host->owner, MONITOR_DEFAULTTOPRIMARY);
-+    GetMonitorInfoW(monitor, &mi);
++    GetMonitorInfoW(MonitorFromWindow(host->owner, MONITOR_DEFAULTTOPRIMARY), &mi);
 +    work = mi.rcWork;
++    width = min(width, work.right - work.left);
++    height = min(height, work.bottom - work.top);
 +
 +    if(host->owner && !options->has_left && !options->has_top) {
 +        RECT owner_rect;
@@ -891,8 +949,74 @@ index 0000000..6642948
 +    if(x < work.left) x = work.left;
 +    if(y < work.top) y = work.top;
 +
-+    return CreateWindowExW(ex_style, dialog_classW, L"", style, x, y, width, height,
-+                           host->owner, NULL, hInst, host);
++    SetRect(&rect, x, y, x + width, y + height);
++    return rect;
++}
++
++static HWND create_dialog_window(dialog_host_t *host)
++{
++    RECT rect = dialog_window_rect(host, host->options.width, host->options.height);
++    DWORD style, ex_style;
++
++    style = dialog_style(&host->options, &ex_style);
++    return CreateWindowExW(ex_style, dialog_classW, L"", style, rect.left, rect.top,
++                           rect.right - rect.left, rect.bottom - rect.top, host->owner, NULL, hInst, host);
++}
++
++static void show_dialog(dialog_host_t *host)
++{
++    if(host->shown || !host->hwnd)
++        return;
++    host->shown = TRUE;
++    KillTimer(host->hwnd, DIALOG_SHOW_TIMER);
++    if(host->noui)
++        return;
++    ShowWindow(host->hwnd, SW_SHOW);
++    SetForegroundWindow(host->hwnd);
++}
++
++/* Without dialogWidth/dialogHeight, IE sizes a dialog from its page's root
++ * element, e.g. <HTML style="width: 22em; height: 12em">. */
++static void size_from_document(dialog_host_t *host)
++{
++    int width = host->options.width, height = host->options.height;
++    IHTMLDocument3 *doc3 = NULL;
++    IHTMLElement *elem = NULL;
++    IHTMLStyle *style = NULL;
++    IDispatch *disp = NULL;
++    BOOL found = FALSE;
++    VARIANT v;
++    RECT rect;
++
++    if(host->options.has_width && host->options.has_height)
++        return;
++    if(FAILED(IWebBrowser2_get_Document(host->web_browser, &disp)) || !disp)
++        return;
++    if(SUCCEEDED(IDispatch_QueryInterface(disp, &IID_IHTMLDocument3, (void**)&doc3))
++       && SUCCEEDED(IHTMLDocument3_get_documentElement(doc3, &elem)) && elem
++       && SUCCEEDED(IHTMLElement_get_style(elem, &style))) {
++        if(!host->options.has_width && SUCCEEDED(IHTMLStyle_get_width(style, &v))) {
++            if(V_VT(&v) == VT_BSTR && V_BSTR(&v) && parse_length(V_BSTR(&v), &width))
++                found = TRUE;
++            VariantClear(&v);
++        }
++        if(!host->options.has_height && SUCCEEDED(IHTMLStyle_get_height(style, &v))) {
++            if(V_VT(&v) == VT_BSTR && V_BSTR(&v) && parse_length(V_BSTR(&v), &height))
++                found = TRUE;
++            VariantClear(&v);
++        }
++    }
++    if(style) IHTMLStyle_Release(style);
++    if(elem) IHTMLElement_Release(elem);
++    if(doc3) IHTMLDocument3_Release(doc3);
++    IDispatch_Release(disp);
++
++    if(!found)
++        return;
++    TRACE("page size %dx%d\n", width, height);
++    rect = dialog_window_rect(host, width, height);
++    SetWindowPos(host->hwnd, NULL, rect.left, rect.top, rect.right - rect.left, rect.bottom - rect.top,
++                 SWP_NOZORDER | SWP_NOACTIVATE);
 +}
 +
 +static HRESULT create_browser(dialog_host_t *host)
@@ -1052,9 +1176,11 @@ index 0000000..6642948
 +    host->dialog = dialog;
 +    host->modal = !(dwDialogFlags & HTMLDLG_MODELESS);
 +    host->scroll = options.scroll;
++    host->options = options;
++    host->noui = !!(dwDialogFlags & HTMLDLG_NOUI);
 +    host->owner = hwndParent ? GetAncestor(hwndParent, GA_ROOT) : NULL;
 +
-+    if(!create_dialog_window(host, &options)) {
++    if(!create_dialog_window(host)) {
 +        ERR("Could not create dialog window\n");
 +        host_release(host);
 +        return E_FAIL;
@@ -1085,10 +1211,11 @@ index 0000000..6642948
 +        return hres;
 +    }
 +
-+    if(!(dwDialogFlags & HTMLDLG_NOUI)) {
-+        ShowWindow(host->hwnd, SW_SHOW);
-+        SetForegroundWindow(host->hwnd);
-+    }
++    /* Without a size, wait for the page to give one before showing the dialog. */
++    if(options.has_width && options.has_height)
++        show_dialog(host);
++    else if(!host->shown)
++        SetTimer(host->hwnd, DIALOG_SHOW_TIMER, DIALOG_SHOW_TIMEOUT, NULL);
 +
 +    if(!host->modal) {
 +        host_release(host);
@@ -1111,8 +1238,125 @@ index 0000000..6642948
 +    host_release(host);
 +    return hres;
 +}
++
++static const WCHAR *dialog_props[] = {
++    L"dialogArguments", L"returnValue", L"dialogWidth", L"dialogHeight", L"dialogLeft", L"dialogTop"
++};
++
++/* Names a dialog's window adds: returns the canonical name, or NULL. */
++const WCHAR *html_dialog_prop_name(const WCHAR *name, DWORD grfdex)
++{
++    unsigned i;
++
++    for(i = 0; i < ARRAYSIZE(dialog_props); i++) {
++        if(!((grfdex & fdexNameCaseInsensitive) ? wcsicmp(name, dialog_props[i]) : wcscmp(name, dialog_props[i])))
++            return dialog_props[i];
++    }
++    return NULL;
++}
++
++/* window.dialogWidth etc.: "352px" strings for the page area and window position. */
++static HRESULT get_dialog_geometry(struct html_dialog *dialog, const WCHAR *name, VARIANT *res)
++{
++    WCHAR buf[32];
++    RECT rect;
++    int val;
++
++    V_VT(res) = VT_EMPTY;
++    if(!dialog->hwnd)
++        return S_OK;
++
++    if(!wcscmp(name, L"dialogWidth") || !wcscmp(name, L"dialogHeight")) {
++        GetClientRect(dialog->hwnd, &rect);
++        val = name[6] == 'W' ? rect.right - rect.left : rect.bottom - rect.top;
++    }else {
++        GetWindowRect(dialog->hwnd, &rect);
++        val = name[6] == 'L' ? rect.left : rect.top;
++    }
++
++    swprintf(buf, ARRAYSIZE(buf), L"%dpx", val);
++    V_VT(res) = VT_BSTR;
++    return (V_BSTR(res) = SysAllocString(buf)) ? S_OK : E_OUTOFMEMORY;
++}
++
++static HRESULT put_dialog_geometry(struct html_dialog *dialog, const WCHAR *name, VARIANT *value)
++{
++    DWORD style, ex_style;
++    RECT rect, client;
++    VARIANT str;
++    HRESULT hres;
++    int val;
++
++    if(!dialog->hwnd)
++        return S_OK;
++
++    V_VT(&str) = VT_EMPTY;
++    hres = VariantChangeType(&str, value, 0, VT_BSTR);
++    if(FAILED(hres))
++        return hres;
++    if(!parse_length(V_BSTR(&str), &val)) {
++        VariantClear(&str);
++        return S_OK;
++    }
++    VariantClear(&str);
++
++    GetWindowRect(dialog->hwnd, &rect);
++    if(!wcscmp(name, L"dialogLeft") || !wcscmp(name, L"dialogTop")) {
++        if(name[6] == 'L') OffsetRect(&rect, val - rect.left, 0);
++        else OffsetRect(&rect, 0, val - rect.top);
++        SetWindowPos(dialog->hwnd, NULL, rect.left, rect.top, 0, 0, SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE);
++        return S_OK;
++    }
++
++    GetClientRect(dialog->hwnd, &client);
++    if(name[6] == 'W') client.right = val;
++    else client.bottom = max(val, DIALOG_MIN_HEIGHT);
++    style = GetWindowLongW(dialog->hwnd, GWL_STYLE);
++    ex_style = GetWindowLongW(dialog->hwnd, GWL_EXSTYLE);
++    AdjustWindowRectEx(&client, style, FALSE, ex_style);
++    SetWindowPos(dialog->hwnd, NULL, 0, 0, client.right - client.left, client.bottom - client.top,
++                 SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE);
++    return S_OK;
++}
++
++HRESULT html_dialog_invoke(struct html_dialog *dialog, const WCHAR *name, WORD flags, DISPPARAMS *params, VARIANT *res)
++{
++    BOOL geometry = wcscmp(name, L"returnValue") && wcscmp(name, L"dialogArguments");
++    VARIANT *val = wcscmp(name, L"returnValue") ? &dialog->args : &dialog->ret;
++    HRESULT hres;
++
++    switch(flags) {
++    case DISPATCH_PROPERTYGET|DISPATCH_METHOD:
++    case DISPATCH_PROPERTYGET:
++        if(!res)
++            return S_OK;
++        if(geometry)
++            return get_dialog_geometry(dialog, name, res);
++        V_VT(res) = VT_EMPTY;
++        return VariantCopy(res, val);
++    case DISPATCH_PROPERTYPUT:
++    case DISPATCH_PROPERTYPUTREF: {
++        VARIANT tmp;
++
++        if(!params->cArgs)
++            return DISP_E_BADPARAMCOUNT;
++        if(geometry)
++            return put_dialog_geometry(dialog, name, params->rgvarg);
++        V_VT(&tmp) = VT_EMPTY;
++        hres = VariantCopyInd(&tmp, params->rgvarg);
++        if(FAILED(hres))
++            return hres;
++        VariantClear(val);
++        *val = tmp;
++        return S_OK;
++    }
++    default:
++        FIXME("Not supported flags: %x\n", flags);
++        return E_NOTIMPL;
++    }
++}
 diff --git a/dlls/mshtml/htmlwindow.c b/dlls/mshtml/htmlwindow.c
-index 0fb6e18..b935a36 100644
+index 0fb6e18..0ff588b 100644
 --- a/dlls/mshtml/htmlwindow.c
 +++ b/dlls/mshtml/htmlwindow.c
 @@ -793,6 +793,11 @@ static HRESULT WINAPI HTMLWindow2_close(IHTMLWindow2 *iface)
@@ -1143,19 +1387,15 @@ index 0fb6e18..b935a36 100644
  static HRESULT HTMLWindow_lookup_dispid(DispatchEx *dispex, const WCHAR *name, DWORD grfdex, DISPID *dispid)
  {
      HTMLInnerWindow *This = impl_from_DispatchEx(dispex);
-@@ -3876,6 +3890,23 @@ static HRESULT HTMLWindow_find_dispid(DispatchEx *dispex, const WCHAR *name, DWO
+@@ -3876,6 +3890,19 @@ static HRESULT HTMLWindow_find_dispid(DispatchEx *dispex, const WCHAR *name, DWO
          }
      }
  
 +    if(get_window_dialog(This)) {
-+        static const WCHAR *dialog_props[] = {L"dialogArguments", L"returnValue"};
-+        unsigned i;
++        const WCHAR *dialog_prop = html_dialog_prop_name(name, grfdex);
 +
-+        for(i = 0; i < ARRAYSIZE(dialog_props); i++) {
-+            if((grfdex & fdexNameCaseInsensitive) ? wcsicmp(name, dialog_props[i]) : wcscmp(name, dialog_props[i]))
-+                continue;
-+
-+            prop = alloc_global_prop(This, GLOBAL_DIALOGVAR, dialog_props[i]);
++        if(dialog_prop) {
++            prop = alloc_global_prop(This, GLOBAL_DIALOGVAR, dialog_prop);
 +            if(!prop)
 +                return E_OUTOFMEMORY;
 +
@@ -1167,43 +1407,16 @@ index 0fb6e18..b935a36 100644
      hres = get_frame_by_name(This->base.outer_window, name, FALSE, &frame);
      if(SUCCEEDED(hres) && frame) {
          prop = alloc_global_prop(This, GLOBAL_FRAMEVAR, name);
-@@ -3998,6 +4029,40 @@ HRESULT HTMLWindow_invoke(DispatchEx *dispex, DISPID id, LCID lcid, WORD flags,
+@@ -3998,6 +4025,13 @@ HRESULT HTMLWindow_invoke(DispatchEx *dispex, DISPID id, LCID lcid, WORD flags,
          }
      case GLOBAL_DISPEXVAR:
          return IWineJSDispatchHost_InvokeEx(&This->event_target.dispex.IWineJSDispatchHost_iface, prop->id, 0, flags, params, res, ei, caller);
 +    case GLOBAL_DIALOGVAR: {
 +        struct html_dialog *dialog = get_window_dialog(This);
-+        VARIANT *val;
 +
 +        if(!dialog)
 +            return DISP_E_MEMBERNOTFOUND;
-+        val = wcscmp(prop->name, L"returnValue") ? &dialog->args : &dialog->ret;
-+
-+        switch(flags) {
-+        case DISPATCH_PROPERTYGET|DISPATCH_METHOD:
-+        case DISPATCH_PROPERTYGET:
-+            if(!res)
-+                return S_OK;
-+            V_VT(res) = VT_EMPTY;
-+            return VariantCopy(res, val);
-+        case DISPATCH_PROPERTYPUT:
-+        case DISPATCH_PROPERTYPUTREF: {
-+            VARIANT tmp;
-+
-+            if(!params->cArgs)
-+                return DISP_E_BADPARAMCOUNT;
-+            V_VT(&tmp) = VT_EMPTY;
-+            hres = VariantCopyInd(&tmp, params->rgvarg);
-+            if(FAILED(hres))
-+                return hres;
-+            VariantClear(val);
-+            *val = tmp;
-+            return S_OK;
-+        }
-+        default:
-+            FIXME("Not supported flags: %x\n", flags);
-+            return E_NOTIMPL;
-+        }
++        return html_dialog_invoke(dialog, prop->name, flags, params, res);
 +    }
      default:
          ERR("invalid type %d\n", prop->type);
@@ -1236,7 +1449,7 @@ index 8fd737a..0c65528 100644
  @ stub ShowModelessHTMLDialog
  
 diff --git a/dlls/mshtml/mshtml_private.h b/dlls/mshtml/mshtml_private.h
-index e5236ed..7dfcc8b 100644
+index e5236ed..238682b 100644
 --- a/dlls/mshtml/mshtml_private.h
 +++ b/dlls/mshtml/mshtml_private.h
 @@ -711,7 +711,8 @@ typedef enum {
@@ -1257,7 +1470,7 @@ index e5236ed..7dfcc8b 100644
      ITravelLog *travel_log;
      IUnknown *browser_service;
      IOleAdviseHolder *advise_holder;
-@@ -1549,9 +1551,21 @@ typedef struct {
+@@ -1549,9 +1551,23 @@ typedef struct {
      void *blocking_xhr;
      unsigned tasks_locked;
      BOOL timer_blocked;
@@ -1275,6 +1488,8 @@ index e5236ed..7dfcc8b 100644
 +};
 +
 +void html_dialog_release(struct html_dialog*);
++const WCHAR *html_dialog_prop_name(const WCHAR*,DWORD);
++HRESULT html_dialog_invoke(struct html_dialog*,const WCHAR*,WORD,DISPPARAMS*,VARIANT*);
 +struct html_dialog *get_window_dialog(HTMLInnerWindow*);
  HWND get_thread_hwnd(void);
  void unblock_tasks_and_timers(thread_data_t*);
