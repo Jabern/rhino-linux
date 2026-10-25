@@ -1,0 +1,61 @@
+diff --git a/dlls/winex11.drv/event.c b/dlls/winex11.drv/event.c
+index 7867a62..d5128ef 100644
+--- a/dlls/winex11.drv/event.c
++++ b/dlls/winex11.drv/event.c
+@@ -879,6 +879,10 @@ static BOOL X11DRV_Expose( HWND hwnd, XEvent *xev )
+     release_win_data( data );
+ 
+     NtUserExposeWindowSurface( hwnd, flags, &rect );
++    /* The X server fills exposed areas with black, e.g. when a minimized window is
++     * restored. Put the last frame of each offscreen GL/Vulkan surface back right
++     * away, as Windows' compositor would, instead of waiting for new frames. */
++    if (event->window != root_window) present_client_surfaces( hwnd );
+     return TRUE;
+ }
+ 
+diff --git a/dlls/winex11.drv/init.c b/dlls/winex11.drv/init.c
+index 919bf31..107be69 100644
+--- a/dlls/winex11.drv/init.c
++++ b/dlls/winex11.drv/init.c
+@@ -552,11 +552,25 @@ static void X11DRV_client_surface_present( struct client_surface *client, HDC hd
+     window = X11DRV_get_whole_window( toplevel );
+     if (!window) return;
+ 
+-    /* if window is exclusive fullscreen, ignore the window region clipping rules */
+-    if (hwnd == toplevel && NtUserGetPresentRect( toplevel, &rect, -1 /* raw dpi */ )) region = 0;
+-    else region = get_dc_monitor_region( hwnd, hdc );
++    if (NtUserGetWindowLongW( toplevel, GWL_STYLE ) & WS_MINIMIZE)
++    {
++        /* Mapped again but not restored yet (e.g. un-minimizing): the X window already has
++         * its old geometry while the Win32 rects are still the iconic ones. Show the last
++         * frame where it was, until the application restores the window and repaints. */
++        if (!surface->has_frame || IsRectEmpty( &surface->last_dst )) return;
++        rect_dst = surface->last_dst;
++        SetRect( &rect_src, 0, 0, surface->changes.width, surface->changes.height );
++        region = 0;
++    }
++    else
++    {
++        /* if window is exclusive fullscreen, ignore the window region clipping rules */
++        if (hwnd == toplevel && NtUserGetPresentRect( toplevel, &rect, -1 /* raw dpi */ )) region = 0;
++        else region = get_dc_monitor_region( hwnd, hdc );
+ 
+-    rect_src = surface->client.raw ? surface->client.monitor_rect : surface->client.virtual_rect;
++        rect_src = surface->client.raw ? surface->client.monitor_rect : surface->client.virtual_rect;
++        surface->last_dst = rect_dst;
++    }
+ 
+     TRACE( "hwnd %p %s to toplevel %p %s region %p\n", hwnd, wine_dbgstr_rect(&rect_src),
+            toplevel, wine_dbgstr_rect(&rect_dst), region );
+diff --git a/dlls/winex11.drv/x11drv.h b/dlls/winex11.drv/x11drv.h
+index b1a9fc7..5793485 100644
+--- a/dlls/winex11.drv/x11drv.h
++++ b/dlls/winex11.drv/x11drv.h
+@@ -376,6 +376,7 @@ struct x11drv_client_surface
+     HDC hdc_dst;
+     XID damage;
+     BOOL has_frame; /* a frame was presented, so the window holds something to show */
++    RECT last_dst;  /* where the last frame was shown while the toplevel wasn't minimized */
+ };
+ 
+ extern struct x11drv_client_surface *impl_from_client_surface( struct client_surface *client );
