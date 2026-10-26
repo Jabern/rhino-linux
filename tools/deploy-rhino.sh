@@ -435,6 +435,11 @@ Windows Registry Editor Version 5.00
 "d3d10core"="builtin"
 "dcomp"="builtin"
 
+; WebView2 (the Script Editor) on Vulkan: its frames reach the screen evenly,
+; while swaps on the GL renderer stall for a refresh now and then
+[HKEY_CURRENT_USER\Software\Wine\AppDefaults\msedgewebview2.exe\Direct3D]
+"renderer"="vulkan"
+
 ; Force X11/XWayland driver for mature 32bpp alpha blending and XDamage presentation
 [HKEY_CURRENT_USER\Software\Wine\Drivers]
 "Graphics"="x11"

@@ -381,5 +381,13 @@ if use_broker; then
     fi
 fi
 
+# WebView2 (the Script Editor) on wined3d's Vulkan renderer, as deploy-rhino.sh
+# sets up: its frames reach the screen evenly, while GL swaps stall now and then.
+# Prefixes made before that get the setting once here.
+if ! grep -qF 'msedgewebview2.exe\\Direct3D]' "$WINEPREFIX/user.reg" 2>/dev/null; then
+    WINEDEBUG=-all "$WINE_BIN" reg add 'HKCU\Software\Wine\AppDefaults\msedgewebview2.exe\Direct3D' \
+        /v renderer /d vulkan /f >/dev/null 2>&1 || true
+fi
+
 cd "$RHINO_DIR"
 exec "$WINE_BIN" "C:\\Program Files\\$RHINO_NAME\\System\\Rhino.exe" "${args[@]}"
