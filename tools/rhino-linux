@@ -169,7 +169,14 @@ stop_prefix() {
     if [ -x "$WINE_BIN" ] && [ -S "$socket" ]; then
         WINEPREFIX="$prefix" WINEDEBUG=-all "$WINE_BIN" wineboot -k >/dev/null 2>&1 || true
     fi
-    WINEPREFIX="$prefix" "$WINESERVER_BIN" -k 2>/dev/null || true
+    local out
+    out="$(WINEPREFIX="$prefix" "$WINESERVER_BIN" -k 2>&1)" || true
+    if [[ "$out" == *"another PID namespace"* ]]; then
+        # Started by a launcher without a broker, in another Flatpak instance:
+        # its wineserver can't be reached from here, waiting for it would hang.
+        echo "warning: Rhino runs in another instance that can't be stopped from here; close it from its window" >&2
+        return 1
+    fi
     WINEPREFIX="$prefix" "$WINESERVER_BIN" -w 2>/dev/null || true
 }
 
@@ -191,7 +198,7 @@ if [ "$STOP" -eq 1 ]; then
             rc=0; RHINO_PREFIX="$prefix" forward_to_broker "$prefix" --stop >/dev/null || rc=$?
             [ "$rc" -eq 3 ] || continue
         fi
-        stop_prefix "$prefix"
+        stop_prefix "$prefix" || true
     done <<< "$prefixes"
     echo "Rhino Wine prefix stopped."
     exit 0
@@ -199,7 +206,7 @@ fi
 if [ "$FRESH" -eq 1 ]; then
     echo "Restarting wineserver for clean http.sys state..."
     if [ -x "$WINESERVER_BIN" ] || command -v "$WINESERVER_BIN" >/dev/null 2>&1; then
-        stop_prefix
+        stop_prefix || true
     fi
     sleep 1
 fi
