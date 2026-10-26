@@ -308,6 +308,12 @@ fi
 # for Cloud Zoo authentication and licensing URLs.
 unset LD_PRELOAD
 
+# Linux Python settings reach Rhino's Windows Python through Wine and break it:
+# the Flatpak runtime sets PYTHONUSERBASE=/var/data/python, which Python reads
+# even in isolated mode (-I), and pip then fails with "path '/var/data/python'
+# cannot be absolute", so the Script Editor cannot initialize Python 3.
+unset PYTHONUSERBASE PYTHONPATH PYTHONHOME PYTHONSTARTUP
+
 
 # DLL overrides:
 # - vcomp140=builtin: Wine builtin vcomp with 64-bit dynamic loop patch bounds threads properly.
