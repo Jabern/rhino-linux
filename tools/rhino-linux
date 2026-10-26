@@ -49,6 +49,7 @@ case "$(basename "$0")" in
     rhino-8) NAME_VERSION=8 ;;
     rhino-9) NAME_VERSION=9 ;;
 esac
+SELF="$0" ORIG_ARGS=("$@")
 STOP=0 FRESH=0
 while [ $# -gt 0 ]; do
     case "$1" in
@@ -136,13 +137,32 @@ if [ -z "$WINESERVER_BIN" ] || [ ! -x "$WINESERVER_BIN" ]; then
     fi
 fi
 
+# Every `flatpak run` is a sandbox with its own process ids, while all of them
+# share the wineserver socket in /tmp. A wineserver can only manage processes
+# with ids it knows, so Wine refuses processes of another instance; run in the
+# instance that runs the prefix's wineserver instead, through its broker.
+BROKER="$SCRIPT_DIR/rhino-broker.py"
+use_broker() {
+    [ -n "${FLATPAK_ID:-}" ] && [ -z "${RHINO_BROKER_CHILD:-}" ] && [ -f "$BROKER" ] &&
+        command -v python3 >/dev/null 2>&1
+}
+# forward_to_broker PREFIX ARG...: run this launcher there; status 3: no broker
+forward_to_broker() {
+    local prefix="$1"; shift
+    python3 "$BROKER" run "$prefix" -- "$SELF" "$@"
+}
+if [ "$STOP" -eq 0 ] && use_broker && [ -d "$WINEPREFIX" ]; then
+    rc=0; forward_to_broker "$WINEPREFIX" "${ORIG_ARGS[@]}" || rc=$?
+    [ "$rc" -eq 3 ] || exit "$rc"
+fi
+
 RHINO_NAME="$(find_rhino_dir "$WINEPREFIX" "${REQ_VERSION:-$RHINO_VERSIONS}" || echo "Rhino ${REQ_VERSION:-9}")"
 RHINO_DIR="$WINEPREFIX/drive_c/Program Files/$RHINO_NAME/System"
 RHINO_MAJOR="$(rhino_version_of_dir "$RHINO_NAME")"
 
-# End every process in the prefix. wineserver -k finds the server through a file
-# lock, which reports no owner across PID namespaces (Rhino started from another
-# Flatpak instance), so ask the server itself to end its processes first.
+# End every process in the prefix, which runs in this Flatpak instance (others
+# are stopped through their broker): ask Wine to end its processes, then the
+# wineserver.
 stop_prefix() {
     local prefix="${1:-$WINEPREFIX}" socket
     socket="/tmp/.wine-$(id -u)/server-$(stat -c '%d-%i' "$prefix" 2>/dev/null | awk -F- '{printf "%x-%x", $1, $2}')/socket"
@@ -167,6 +187,10 @@ if [ "$STOP" -eq 1 ]; then
     while IFS= read -r prefix; do
         [ -d "$prefix/drive_c" ] || continue
         echo "Stopping Rhino Wine prefix ($prefix)..."
+        if use_broker; then
+            rc=0; RHINO_PREFIX="$prefix" forward_to_broker "$prefix" --stop >/dev/null || rc=$?
+            [ "$rc" -eq 3 ] || continue
+        fi
         stop_prefix "$prefix"
     done <<< "$prefixes"
     echo "Rhino Wine prefix stopped."
@@ -344,6 +368,16 @@ if [ "$RHINO_MAJOR" = 7 ]; then
     export __GL_YIELD="NOTHING" __GL_THREADED_OPTIMIZATIONS=1 mesa_glthread=true
     if [ -n "${RHINO_GL_OVERRIDE:-}" ]; then
         export MESA_GL_VERSION_OVERRIDE="$RHINO_GL_OVERRIDE" MESA_GLSL_VERSION_OVERRIDE="${RHINO_GLSL_OVERRIDE:-410}"
+    fi
+fi
+
+# This instance runs the prefix's wineserver: take the broker, so that later
+# launches run here. If another instance just took it, run there instead.
+if use_broker; then
+    rc=0; python3 "$BROKER" claim "$WINEPREFIX" || rc=$?
+    if [ "$rc" -eq 4 ]; then
+        rc=0; forward_to_broker "$WINEPREFIX" "${ORIG_ARGS[@]}" || rc=$?
+        exit "$rc"
     fi
 fi
 
