@@ -1,0 +1,145 @@
+diff --git a/dlls/win32u/vulkan.c b/dlls/win32u/vulkan.c
+index 97497c8..0e03ec3 100644
+--- a/dlls/win32u/vulkan.c
++++ b/dlls/win32u/vulkan.c
+@@ -2051,6 +2051,8 @@ static VkResult win32u_vkQueuePresentKHR( VkQueue client_queue, const VkPresentI
+         struct swapchain *swapchain = swapchain_from_handle( client_swapchains[i] );
+         struct surface *surface = swapchain->surface;
+         client_surface_update( surface->client );
++        /* before presenting: the driver may hear about the frame before this call returns */
++        InterlockedExchange( &surface->client->presented, TRUE );
+     }
+ 
+     res = device->p_vkQueuePresentKHR( queue->host.queue, present_info );
+diff --git a/dlls/winex11.drv/init.c b/dlls/winex11.drv/init.c
+index bcf0e17..9810767 100644
+--- a/dlls/winex11.drv/init.c
++++ b/dlls/winex11.drv/init.c
+@@ -201,6 +201,9 @@ static HFONT X11DRV_SelectFont( PHYSDEV dev, HFONT hfont, UINT *aa_flags )
+     return dev->funcs->pSelectFont( dev, hfont, aa_flags );
+ }
+ 
++static __thread BOOL presenting_damage; /* copying because a frame has landed */
++static __thread Drawable damaged_drawable; /* the client window it has landed in */
++
+ #ifdef SONAME_LIBXDAMAGE
+ static typeof(XDamageQueryExtension) *pXDamageQueryExtension;
+ static typeof(XDamageQueryVersion) *pXDamageQueryVersion;
+@@ -208,7 +211,6 @@ static typeof(XDamageCreate) *pXDamageCreate;
+ static typeof(XDamageDestroy) *pXDamageDestroy;
+ static typeof(XDamageSubtract) *pXDamageSubtract;
+ static pthread_once_t damage_once = PTHREAD_ONCE_INIT;
+-static __thread BOOL presenting_damage; /* copying because a frame has landed */
+ static XContext damage_context;
+ static BOOL damage_available;
+ 
+@@ -233,8 +235,10 @@ static BOOL client_surface_damage_notify( HWND unused, XEvent *event )
+     release_win_data( data );
+     TRACE( "damage %lx drawable %lx hwnd %p\n", damage->damage, damage->drawable, hwnd );
+     presenting_damage = TRUE;
++    damaged_drawable = damage->drawable;
+     present_client_surfaces( hwnd );
+     presenting_damage = FALSE;
++    damaged_drawable = 0;
+     return TRUE;
+ }
+ 
+@@ -455,7 +459,11 @@ static void client_surface_update_geometry( HWND hwnd, struct x11drv_client_surf
+     XConfigureWindow( gdi_display, surface->window, mask, &changes );
+     /* resizing discards the window's contents: there's no frame to show again
+      * until the application presents one at the new size */
+-    if (mask & (CWWidth | CWHeight)) surface->has_frame = FALSE;
++    if (mask & (CWWidth | CWHeight))
++    {
++        surface->has_frame = FALSE;
++        InterlockedExchange( &surface->client.presented, FALSE );
++    }
+ }
+ 
+ static int accept_x11_error( Display *display, XErrorEvent *event, void *arg )
+@@ -578,7 +586,11 @@ static void x11drv_client_surface_update( struct client_surface *client )
+     HWND hwnd = client->hwnd;
+ 
+     /* a surface kept for reuse loses its contents: wait for a new frame before showing it */
+-    if (client->unused) surface->has_frame = FALSE;
++    if (client->unused)
++    {
++        surface->has_frame = FALSE;
++        InterlockedExchange( &client->presented, FALSE );
++    }
+ 
+     client_surface_update_geometry( hwnd, surface );
+     client_surface_update_offscreen( hwnd, surface );
+@@ -594,8 +606,14 @@ static void X11DRV_client_surface_present( struct client_surface *client, HDC hd
+ 
+     if (!hdc) return;
+     /* right after vkQueuePresentKHR the frame usually hasn't reached the offscreen window yet;
+-     * for a new surface that would show black, so let the damage event copy its first frame */
+-    if (!surface->has_frame && surface->damage && !presenting_damage) return;
++     * for a new surface that would show black, so let the damage event copy its first frame.
++     * Only a frame landing in this surface's window counts: resizing or redirecting a window
++     * damages it too, and another surface of the window, like the one of a swap chain the
++     * application has replaced, would then show black over the last frame. */
++    if (!surface->has_frame && surface->damage &&
++        !(presenting_damage && damaged_drawable == surface->window &&
++          InterlockedCompareExchange( &surface->client.presented, 0, 0 )))
++        return;
+     window = X11DRV_get_whole_window( toplevel );
+     if (!window) return;
+ 
+diff --git a/dlls/winex11.drv/opengl.c b/dlls/winex11.drv/opengl.c
+index 8b9f6b0..c748f22 100644
+--- a/dlls/winex11.drv/opengl.c
++++ b/dlls/winex11.drv/opengl.c
+@@ -1196,6 +1196,9 @@ static void x11drv_surface_flush( struct opengl_drawable *base, UINT flags )
+     if (flags & GL_FLUSH_INTERVAL) set_swap_interval( gl, base->interval );
+     if (!(flags & GL_FLUSH_PRESENT)) return;
+ 
++    /* before presenting: the damage event of the frame may be handled before this returns */
++    InterlockedExchange( &base->client->presented, TRUE );
++
+     if (InterlockedCompareExchange( &base->client->offscreen, 0, 0 ))
+     {
+         if (!(flags & GL_FLUSH_FINISHED)) funcs->p_glFinish();
+@@ -1446,6 +1449,9 @@ static BOOL x11drv_surface_swap( struct opengl_drawable *base )
+ 
+     TRACE( "drawable %s\n", debugstr_opengl_drawable( base ) );
+ 
++    /* before presenting: the damage event of the frame may be handled before this returns */
++    InterlockedExchange( &base->client->presented, TRUE );
++
+     if (!(offscreen = InterlockedCompareExchange( &base->client->offscreen, 0, 0 )) ||
+         !ctx || !pglXSwapBuffersMscOML) pglXSwapBuffers( gdi_display, gl->drawable );
+     else
+@@ -1473,6 +1479,9 @@ static void x11drv_egl_surface_flush( struct opengl_drawable *base, UINT flags )
+     if (flags & GL_FLUSH_INTERVAL) funcs->p_eglSwapInterval( egl->display, abs( base->interval ) );
+     if (!(flags & GL_FLUSH_PRESENT)) return;
+ 
++    /* before presenting: the damage event of the frame may be handled before this returns */
++    InterlockedExchange( &base->client->presented, TRUE );
++
+     if (InterlockedCompareExchange( &base->client->offscreen, 0, 0 ))
+     {
+         if (!(flags & GL_FLUSH_FINISHED)) funcs->p_glFinish();
+@@ -1488,6 +1497,9 @@ static BOOL x11drv_egl_surface_swap( struct opengl_drawable *base )
+ 
+     TRACE( "%s\n", debugstr_opengl_drawable( base ) );
+ 
++    /* before presenting: the damage event of the frame may be handled before this returns */
++    InterlockedExchange( &base->client->presented, TRUE );
++
+     funcs->p_eglSwapBuffers( egl->display, gl->base.surface );
+ 
+     if (InterlockedCompareExchange( &base->client->offscreen, 0, 0 ))
+diff --git a/include/wine/gdi_driver.h b/include/wine/gdi_driver.h
+index 6a1a432..84b5c3e 100644
+--- a/include/wine/gdi_driver.h
++++ b/include/wine/gdi_driver.h
+@@ -276,6 +276,7 @@ struct client_surface
+     RECT                               monitor_rect;   /* raw physical size and position in the toplevel ancestor, relative to its visible rect */
+     BOOL                               raw;            /* use the raw physical position and size for the host client surface */
+     BOOL                               unused;         /* kept for reuse, no GL/VK drawable is using it */
++    LONG                               presented;      /* a frame was presented since the surface was last resized or reused */
+ };
+ 
+ W32KAPI void *client_surface_create( const struct client_surface_funcs *funcs, HWND hwnd, int format, BOOL raw );

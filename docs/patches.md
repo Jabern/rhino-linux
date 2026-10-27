@@ -1,10 +1,10 @@
 # Wine Patches Reference
 
-This repository maintains 32 targeted patches against Wine (tested against Wine 11.20) to run McNeel Rhinoceros 8 and Rhino 9 WIP smoothly on Linux.
+This repository maintains 33 targeted patches against Wine (tested against Wine 11.20) to run McNeel Rhinoceros 8 and Rhino 9 WIP smoothly on Linux.
 
 Stock Wine encounters several critical blockers when running Rhino: multi-threaded OpenMP crashes, blank Cloud Zoo login windows (due to incomplete DirectComposition visual tree hosting), black borders around toolbars and menus, startup template screen dismissal, viewport rendering glitches upon maximizing, and multi-monitor coordinate bugs.
 
-Below is the technical breakdown of all 32 patches.
+Below is the technical breakdown of all 33 patches.
 
 ---
 
@@ -257,3 +257,9 @@ Below is the technical breakdown of all 32 patches.
 - **Subsystem**: `server/request.c`, `dlls/ntdll/unix/server.c`
 - **Problem**: the wineserver signals and suspends its processes by their Unix ids. A process in a sibling PID namespace, like one in another Flatpak instance of the app, reports ids that mean nothing or another process there: Wine processes outlived their server and threads could be suspended by mistake.
 - **Solution**: the server refuses such connections, the client stops with an explanation, and `wineserver -k` says why it can't signal a server it can't see.
+
+### Patch 33: Menus and Popups Show Their First Frame
+- **File**: [`33-x11-frame-landed-per-surface.patch`](../patches/33-x11-frame-landed-per-surface.patch)
+- **Subsystem**: `dlls/winex11.drv/init.c`, `dlls/winex11.drv/opengl.c`, `dlls/win32u/vulkan.c`, `include/wine/gdi_driver.h`
+- **Problem**: WPF menus and popups, like the Options menu of Rhino 9's sign-in window, came up black, and only the items under the pointer appeared. They create a swap chain at a small size and another at their final one. Wine took any damage event of the window as a frame landing in all its surfaces, and resizing the old surface's X window along with the window damaged it too: its empty content was shown over the new frame.
+- **Solution**: the client surface notes when the application presents, before the driver can hear about the frame, and forgets it when resized or reused; a damage event counts as a landed frame only for the surface whose window it is for, once the application has presented to it.

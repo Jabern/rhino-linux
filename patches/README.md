@@ -1,6 +1,6 @@
 # Wine Patches for Rhinoceros on Linux
 
-This directory contains 32 modular topic patches for Wine 11.20 (31 core patches for X11 / XWayland and 1 optional patch for pure Wayland) to run **McNeel Rhinoceros** on Linux with native performance, hardware-accelerated Direct3D 11 viewports, and Cloud Zoo licensing support.
+This directory contains 33 modular topic patches for Wine 11.20 (32 core patches for X11 / XWayland and 1 optional patch for pure Wayland) to run **McNeel Rhinoceros** on Linux with native performance, hardware-accelerated Direct3D 11 viewports, and Cloud Zoo licensing support.
 
 ---
 
@@ -40,6 +40,7 @@ This directory contains 32 modular topic patches for Wine 11.20 (31 core patches
 | **30** | `30-cross-process-child-windows.patch` | `win32u` / `winex11.drv` / `server` | Child windows of other processes (WebView2 in Rhino) placed, clipped, updated and shown again as on Windows; the parent doesn't draw over what they draw with a pixel format; window tree in shared memory. |
 | **31** | `31-x11-pointer-warps-while-dragging.patch` | `winex11.drv` | Carries on from pointer warps that Xwayland refuses while dragging, so rotating and panning viewports don't spin. |
 | **32** | `32-server-refuse-sibling-pid-namespaces.patch` | `server` / `ntdll` | Refuses sharing a wineserver with processes of a sibling PID namespace (another Flatpak instance), whose ids it can't signal. |
+| **33** | `33-x11-frame-landed-per-surface.patch` | `winex11.drv` / `win32u` | A damage event counts as a frame only for the surface it is for, once the application presented to it: WPF menus and popups no longer come up black. |
 
 ---
 
