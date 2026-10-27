@@ -292,6 +292,29 @@ REG
     echo "      [PASS] Rhino 7 settings applied (mscoree native, Windows 10, font substitutes)"
 fi
 
+# Rhino 8 and 9 need MFC too (RhinoCore.dll imports mfc140u.dll), which Wine
+# doesn't provide. Their installers bring the Visual C++ runtime, but skip it
+# when the prefix reports one as new as theirs, and since 11.20 Wine reports
+# 14.51 for its own msvcp140 and friends: Rhino 8 then fails to start with
+# "Module not found". Running this again after the installer, or from Repair,
+# also mends prefixes set up that way.
+if [ "$RHINO_VERSION" != 7 ]; then
+    MFC_PATH="$TARGET_PREFIX/drive_c/windows/system32/mfc140u.dll"
+    if [ ! -f "$MFC_PATH" ]; then
+        echo "[1/6] Installing the Visual C++ runtime with MFC (RhinoCore.dll needs mfc140u.dll)..."
+        if WINETRICKS="$(get_winetricks)"; then
+            run_winetricks vcrun2022 15 || echo "      [WARN] vcrun2022 did not finish cleanly" >&2
+            "$WINESERVER_BIN" -k 2>/dev/null || true
+            timeout 30 "$WINESERVER_BIN" -w 2>/dev/null || true
+        fi
+        if [ -f "$MFC_PATH" ]; then
+            echo "      [PASS] MFC (mfc140u.dll) installed"
+        else
+            echo "      [WARN] mfc140u.dll is missing; Rhino will not start until the Visual C++ runtime is installed" >&2
+        fi
+    fi
+fi
+
 # 2. Deploy DXVK DLLs to system32
 echo "[2/6] Deploying DXVK 64-bit runtime libraries..."
 SYSTEM32_DIR="$TARGET_PREFIX/drive_c/windows/system32"
