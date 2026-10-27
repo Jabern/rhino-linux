@@ -1,10 +1,10 @@
 # Wine Patches Reference
 
-This repository maintains 20 targeted patches against Wine (tested against Wine 11.18+) to run McNeel Rhinoceros 8 and Rhino 9 WIP smoothly on Linux.
+This repository maintains 32 targeted patches against Wine (tested against Wine 11.20) to run McNeel Rhinoceros 8 and Rhino 9 WIP smoothly on Linux.
 
 Stock Wine encounters several critical blockers when running Rhino: multi-threaded OpenMP crashes, blank Cloud Zoo login windows (due to incomplete DirectComposition visual tree hosting), black borders around toolbars and menus, startup template screen dismissal, viewport rendering glitches upon maximizing, and multi-monitor coordinate bugs.
 
-Below is the technical breakdown of all 20 patches.
+Below is the technical breakdown of all 32 patches.
 
 ---
 
@@ -233,3 +233,27 @@ Below is the technical breakdown of all 20 patches.
 - **File**: [`28-x11-wm-class-from-env.patch`](../patches/28-x11-wm-class-from-env.patch)
 - **Problem**: Wine names every window's X11 class after the program, and Rhino 7, 8 and 9 are all `Rhino.exe`. Taskbars match windows to menu entries by that class, so Cinnamon and KDE grouped the three versions under one button and one icon.
 - **Solution**: when `WINE_WM_CLASS` is set, Wine uses it as the window class instead. `rhino-linux` sets `rhino7`, `rhino8` or `rhino9`, and each version's menu entry has the matching `StartupWMClass` and the icon of its own `Rhino.exe`, as on Windows. Without the variable nothing changes.
+
+### Patch 29: DirectComposition Composed on the GPU
+- **File**: [`29-dcomp-dxgi-gpu-composition.patch`](../patches/29-dcomp-dxgi-gpu-composition.patch)
+- **Subsystem**: `dlls/dcomp`, `dlls/dxgi` (`composition.c`, new), `dlls/wined3d`, `include/dcomp.idl`
+- **Problem**: Edge WebView2 (Chromium 116), which draws Rhino 8's Script Editor and Rhino 9's panels, only uses DirectComposition when `IDCompositionDevice3` exists, and otherwise falls back to slow software compositing. Patches 06 and 07 copied every frame from the GPU into a DIB and drew it with GDI, through hidden windows and subclassing.
+- **Solution**: replaces what 06 and 07 did. `CreateSwapChainForComposition` creates a windowless swap chain of D3D11 textures; dcomp implements devices up to `IDCompositionDevice3`, visuals, surfaces and virtual surfaces, transforms, clips, effect groups and animations, with pending state frozen by `Commit`. The compositor draws each target's committed visual tree into a swap chain of the target window with D3D11, one textured quad per visual, and composes again on each present. Frames survive `ResizeBuffers` until the next present.
+
+### Patch 30: Child Windows of Other Processes
+- **File**: [`30-cross-process-child-windows.patch`](../patches/30-cross-process-child-windows.patch)
+- **Subsystem**: `dlls/win32u`, `dlls/winex11.drv`, `server/window.c`, `server/protocol.def`
+- **Problem**: WebView2 places its windows, from Edge's own processes, inside Rhino's windows. Wine didn't tell those windows when an ancestor in Rhino moved, resized or was shown, didn't clip them to their ancestors, and let Rhino's window draw over them: Script Editor panels turned grey when switching tabs and black while resizing. Rhino also asked the wineserver 41000 times a second for parents and siblings of those windows.
+- **Solution**: child X windows are placed from the server's visible rects and clipped to their ancestors; windows of other processes below a window that moves or is shown get `WM_WINE_UPDATEWINDOWSTATE` and show their last frame again where they now are, and so does the toplevel when they move; what the descendants of a transparent window (a WPF `HwndHost`) draw with a pixel format is left out of the parent's visible region and window surface, so the parent's Vulkan swap chain is clipped around it; client windows keep their last frame when they change between direct and redirected; and the window tree is published in shared memory, as on Windows.
+
+### Patch 31: Rotating and Panning When Pointer Warps Are Refused
+- **File**: [`31-x11-pointer-warps-while-dragging.patch`](../patches/31-x11-pointer-warps-while-dragging.patch)
+- **Subsystem**: `dlls/winex11.drv/mouse.c`
+- **Problem**: Rhino warps the cursor to the other side of a viewport when it leaves it while rotating or panning. Xwayland refuses such warps, so every following event looked like a jump across the viewport and the view spun wildly.
+- **Solution**: when the first position after a warp during a drag shows it was refused, positions are reported moved by what the warp would have moved them, until the buttons are released, as `SetCursorPos` always moves the cursor on Windows.
+
+### Patch 32: One wineserver per PID Namespace
+- **File**: [`32-server-refuse-sibling-pid-namespaces.patch`](../patches/32-server-refuse-sibling-pid-namespaces.patch)
+- **Subsystem**: `server/request.c`, `dlls/ntdll/unix/server.c`
+- **Problem**: the wineserver signals and suspends its processes by their Unix ids. A process in a sibling PID namespace, like one in another Flatpak instance of the app, reports ids that mean nothing or another process there: Wine processes outlived their server and threads could be suspended by mistake.
+- **Solution**: the server refuses such connections, the client stops with an explanation, and `wineserver -k` says why it can't signal a server it can't see.

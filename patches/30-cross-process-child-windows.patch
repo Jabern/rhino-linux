@@ -1,0 +1,1197 @@
+diff --git a/dlls/win32u/dce.c b/dlls/win32u/dce.c
+index 67d3dc8..abef61c 100644
+--- a/dlls/win32u/dce.c
++++ b/dlls/win32u/dce.c
+@@ -1256,6 +1256,15 @@ static INT release_dc( HWND hwnd, HDC hdc, BOOL end_paint )
+     return ret;
+ }
+ 
++static BOOL has_other_process_ancestor( HWND hwnd )
++{
++    HWND desktop = get_desktop_window();
++
++    while ((hwnd = NtUserGetAncestor( hwnd, GA_PARENT )) && hwnd != desktop)
++        if (!is_current_process_window( hwnd )) return TRUE;
++    return FALSE;
++}
++
+ /***********************************************************************
+  *           NtUserGetDCEx (win32u.@)
+  */
+@@ -1390,8 +1399,9 @@ HDC WINAPI NtUserGetDCEx( HWND hwnd, HRGN clip_rgn, DWORD flags )
+     dce->hwnd = hwnd;
+     dce->flags = (dce->flags & ~user_flags) | (flags & user_flags);
+ 
+-    /* cross-process invalidation is not supported yet, so always update the vis rgn */
+-    if (!is_current_process_window( hwnd )) update_vis_rgn = TRUE;
++    /* cross-process invalidation is not supported yet, so always update the vis rgn,
++     * also when another process owns an ancestor, which may have moved or been resized */
++    if (!is_current_process_window( hwnd ) || has_other_process_ancestor( hwnd )) update_vis_rgn = TRUE;
+ 
+     if (set_dce_flags( dce->hdc, DCHF_VALIDATEVISRGN )) update_vis_rgn = TRUE;  /* DC was dirty */
+ 
+diff --git a/dlls/win32u/window.c b/dlls/win32u/window.c
+index 4b18e15..f1fde7d 100644
+--- a/dlls/win32u/window.c
++++ b/dlls/win32u/window.c
+@@ -173,6 +173,44 @@ static NTSTATUS get_shared_window( HANDLE handle, struct object_lock *lock, cons
+     return STATUS_SUCCESS;
+ }
+ 
++/* where a window is in the tree, as the server publishes it */
++struct window_tree
++{
++    HWND full;          /* full handle of the window */
++    HWND parent, owner, next, prev, first_child, last_child;
++};
++
++static BOOL get_shared_window_tree( HWND hwnd, struct window_tree *tree )
++{
++    struct object_lock lock = OBJECT_LOCK_INIT;
++    const window_shm_t *window_shm = NULL;
++    struct user_entry entry;
++    NTSTATUS status;
++    HANDLE full;
++
++    if (!get_user_entry( hwnd, NTUSER_OBJ_WINDOW, &entry, &full ))
++    {
++        RtlSetLastWin32Error( ERROR_INVALID_WINDOW_HANDLE );
++        return FALSE;
++    }
++    while ((status = get_shared_window( hwnd, &lock, &window_shm )) == STATUS_PENDING)
++    {
++        tree->parent      = wine_server_ptr_handle( window_shm->parent );
++        tree->owner       = wine_server_ptr_handle( window_shm->owner );
++        tree->next        = wine_server_ptr_handle( window_shm->next_sibling );
++        tree->prev        = wine_server_ptr_handle( window_shm->prev_sibling );
++        tree->first_child = wine_server_ptr_handle( window_shm->first_child );
++        tree->last_child  = wine_server_ptr_handle( window_shm->last_child );
++    }
++    if (status)
++    {
++        RtlSetLastWin32Error( ERROR_INVALID_WINDOW_HANDLE );
++        return FALSE;
++    }
++    tree->full = full;
++    return TRUE;
++}
++
+ struct obj_locator get_window_class_locator( HWND hwnd )
+ {
+     struct object_lock lock = OBJECT_LOCK_INIT;
+@@ -708,18 +746,12 @@ HWND get_parent( HWND hwnd )
+     if (win == WND_OTHER_PROCESS)
+     {
+         DWORD style = get_window_long( hwnd, GWL_STYLE );
+-        if (style & (WS_POPUP | WS_CHILD))
++        struct window_tree tree;
++
++        if ((style & (WS_POPUP | WS_CHILD)) && get_shared_window_tree( hwnd, &tree ))
+         {
+-            SERVER_START_REQ( get_window_tree )
+-            {
+-                req->handle = wine_server_user_handle( hwnd );
+-                if (!wine_server_call_err( req ))
+-                {
+-                    if (style & WS_POPUP) retval = wine_server_ptr_handle( reply->owner );
+-                    else if (style & WS_CHILD) retval = wine_server_ptr_handle( reply->parent );
+-                }
+-            }
+-            SERVER_END_REQ;
++            if (style & WS_POPUP) retval = tree.owner;
++            else if (style & WS_CHILD) retval = tree.parent;
+         }
+     }
+     else
+@@ -731,6 +763,8 @@ HWND get_parent( HWND hwnd )
+     return retval;
+ }
+ 
++static void update_other_process_descendants( HWND hwnd );
++
+ /*****************************************************************
+  *           NtUserSetParent (win32u.@)
+  */
+@@ -817,6 +851,7 @@ HWND WINAPI NtUserSetParent( HWND hwnd, HWND parent )
+     {
+         if (new_toplevel) update_window_state( new_toplevel );
+         if (old_toplevel) update_window_state( old_toplevel );
++        update_other_process_descendants( full_handle );
+     }
+ 
+     winpos.hwnd = hwnd;
+@@ -880,35 +915,32 @@ HWND get_window_relative( HWND hwnd, UINT rel )
+         /* else fall through to server call */
+     }
+ 
+-    SERVER_START_REQ( get_window_tree )
+     {
+-        req->handle = wine_server_user_handle( hwnd );
+-        if (!wine_server_call_err( req ))
++        struct window_tree tree, parent;
++
++        if (!get_shared_window_tree( hwnd, &tree )) return 0;
++        switch (rel)
+         {
+-            switch(rel)
+-            {
+-            case GW_HWNDFIRST:
+-                retval = wine_server_ptr_handle( reply->first_sibling );
+-                break;
+-            case GW_HWNDLAST:
+-                retval = wine_server_ptr_handle( reply->last_sibling );
+-                break;
+-            case GW_HWNDNEXT:
+-                retval = wine_server_ptr_handle( reply->next_sibling );
+-                break;
+-            case GW_HWNDPREV:
+-                retval = wine_server_ptr_handle( reply->prev_sibling );
+-                break;
+-            case GW_OWNER:
+-                retval = wine_server_ptr_handle( reply->owner );
+-                break;
+-            case GW_CHILD:
+-                retval = wine_server_ptr_handle( reply->first_child );
+-                break;
+-            }
++        case GW_HWNDFIRST:
++            if (tree.parent && get_shared_window_tree( tree.parent, &parent )) retval = parent.first_child;
++            break;
++        case GW_HWNDLAST:
++            if (tree.parent && get_shared_window_tree( tree.parent, &parent )) retval = parent.last_child;
++            break;
++        case GW_HWNDNEXT:
++            retval = tree.next;
++            break;
++        case GW_HWNDPREV:
++            retval = tree.prev;
++            break;
++        case GW_OWNER:
++            if (tree.parent) retval = tree.owner;
++            break;
++        case GW_CHILD:
++            retval = tree.first_child;
++            break;
+         }
+     }
+-    SERVER_END_REQ;
+     return retval;
+ }
+ 
+@@ -1012,7 +1044,7 @@ HWND *list_window_children( HWND hwnd )
+  */
+ HWND WINAPI NtUserGetAncestor( HWND hwnd, UINT type )
+ {
+-    HWND *list, ret = 0;
++    HWND ret = 0;
+     WND *win;
+ 
+     switch(type)
+@@ -1029,29 +1061,30 @@ HWND WINAPI NtUserGetAncestor( HWND hwnd, UINT type )
+             ret = win->parent;
+             release_win_ptr( win );
+         }
+-        else /* need to query the server */
++        else
+         {
+-            SERVER_START_REQ( get_window_tree )
+-            {
+-                req->handle = wine_server_user_handle( hwnd );
+-                if (!wine_server_call_err( req )) ret = wine_server_ptr_handle( reply->parent );
+-            }
+-            SERVER_END_REQ;
++            struct window_tree tree;
++            if (get_shared_window_tree( hwnd, &tree )) ret = tree.parent;
+         }
+         break;
+ 
+     case GA_ROOT:
+-        if (!(list = list_window_parents( hwnd ))) return 0;
++    {
++        /* the last window before the desktop, walking up the parents */
++        struct window_tree tree, parent;
+ 
+-        if (!list[0] || !list[1]) ret = get_full_window_handle( hwnd );  /* top-level window */
+-        else
++        if (!get_shared_window_tree( hwnd, &tree )) return 0;
++        if (!tree.parent) return 0;  /* the desktop, or the message window, has no root */
++        ret = tree.full;
++        while (tree.parent)
+         {
+-            int count = 2;
+-            while (list[count]) count++;
+-            ret = list[count - 2];  /* get the one before the desktop */
++            if (!get_shared_window_tree( tree.parent, &parent )) return 0;
++            if (!parent.parent) break;  /* tree.parent is the desktop */
++            ret = parent.full;
++            tree = parent;
+         }
+-        free( list );
+         break;
++    }
+ 
+     case GA_ROOTOWNER:
+         if (is_desktop_window( hwnd )) return 0;
+@@ -2124,13 +2157,49 @@ static NTSTATUS get_window_region( HWND hwnd, BOOL surface, HRGN *region, RECT *
+     return status;
+ }
+ 
++/***********************************************************************
++ *           get_ancestors_clip
++ *
++ * Child windows with a surface of their own are composed into their ancestors,
++ * clipped to the client area of each, which may belong to other processes.
++ * Return that clip relative to the visible rect, or 0 if nothing is clipped.
++ */
++static HRGN get_ancestors_clip( HWND hwnd )
++{
++    struct ratio dpi = get_dpi_for_window( hwnd );
++    HWND parent = hwnd, desktop = get_desktop_window();
++    struct window_rects rects;
++    POINT offset = {0, 0};
++    RECT visible, clip, client;
++
++    if (!get_window_rects( hwnd, COORDS_PARENT, &rects, dpi )) return 0;
++    clip = visible = rects.visible;
++
++    /* clip is in the client coordinates of parent, offset is the origin of that client area */
++    while ((parent = NtUserGetAncestor( parent, GA_PARENT )) && parent != desktop)
++    {
++        if (!get_window_rects( parent, COORDS_PARENT, &rects, dpi )) return 0;
++        SetRect( &client, 0, 0, rects.client.right - rects.client.left, rects.client.bottom - rects.client.top );
++        if (!intersect_rect( &clip, &clip, &client )) SetRectEmpty( &clip );
++        OffsetRect( &clip, rects.client.left, rects.client.top );
++        offset.x += rects.client.left;
++        offset.y += rects.client.top;
++    }
++
++    OffsetRect( &clip, -offset.x - visible.left, -offset.y - visible.top );
++    if (!clip.left && !clip.top && clip.right == visible.right - visible.left &&
++        clip.bottom == visible.bottom - visible.top)
++        return 0;
++    return NtGdiCreateRectRgn( clip.left, clip.top, clip.right, clip.bottom );
++}
++
+ /***********************************************************************
+  *           update_surface_region
+  */
+ static void update_surface_region( HWND hwnd )
+ {
+     WND *win = get_win_ptr( hwnd );
+-    HRGN region, shape = 0;
++    HRGN region, shape = 0, clip = 0;
+     RECT visible;
+ 
+     if (!win || win == WND_DESKTOP || win == WND_OTHER_PROCESS) return;
+@@ -2144,6 +2213,15 @@ static void update_surface_region( HWND hwnd )
+         if (win->dwExStyle & WS_EX_LAYOUTRTL) NtUserMirrorRgn( hwnd, shape );
+         NtGdiDeleteObjectApp( region );
+     }
++    if (win->parent && win->parent != get_desktop_window() && (clip = get_ancestors_clip( hwnd )))
++    {
++        if (!shape) shape = clip;
++        else
++        {
++            NtGdiCombineRgn( shape, shape, clip, RGN_AND );
++            NtGdiDeleteObjectApp( clip );
++        }
++    }
+     window_surface_set_shape( win->surface, shape );
+ 
+     if (get_window_region( hwnd, TRUE, &region, &visible )) goto done;
+@@ -2269,7 +2347,9 @@ static struct window_surface *get_window_surface( HWND hwnd, UINT swp_flags, BOO
+     else monitor_rects = map_window_rects_virt_to_raw( *rects, get_thread_dpi() );
+ 
+     if (!user_driver->pWindowPosChanging( hwnd, swp_flags, shaped, &monitor_rects )) needs_surface = FALSE;
+-    else if (is_child && !(ex_style & WS_EX_LAYERED)) needs_surface = FALSE;
++    /* layered children are drawn with a surface of their own, unless they have no
++     * redirection bitmap, and show only what UpdateLayeredWindow or DirectComposition give */
++    else if (is_child && (!(ex_style & WS_EX_LAYERED) || (ex_style & WS_EX_NOREDIRECTIONBITMAP))) needs_surface = FALSE;
+     else if (swp_flags & SWP_HIDEWINDOW) needs_surface = FALSE;
+     else if (swp_flags & SWP_SHOWWINDOW) needs_surface = TRUE;
+     else needs_surface = !!(style & WS_VISIBLE);
+@@ -2427,6 +2507,12 @@ static BOOL apply_window_pos( HWND hwnd, HWND insert_after, UINT swp_flags, stru
+     if (ret)
+     {
+         update_surface_region( surface_win );
++        /* the surface of a toplevel doesn't draw where a child draws with a pixel format, which
++         * may have moved; when the toplevel belongs to another process, have it update its region */
++        if (surface_win && !is_current_process_window( surface_win ) &&
++            ((swp_flags & SWP_AGG_NOPOSCHANGE) != SWP_AGG_NOPOSCHANGE ||
++             (swp_flags & (SWP_HIDEWINDOW | SWP_SHOWWINDOW))))
++            NtUserPostMessage( surface_win, WM_WINE_UPDATEWINDOWSTATE, 0, 0 );
+         if (((swp_flags & SWP_AGG_NOPOSCHANGE) != SWP_AGG_NOPOSCHANGE) ||
+             (swp_flags & (SWP_HIDEWINDOW | SWP_SHOWWINDOW | SWP_STATECHANGED | SWP_FRAMECHANGED)))
+             invalidate_dce( win, &old_rects.window );
+@@ -2459,6 +2545,14 @@ static BOOL apply_window_pos( HWND hwnd, HWND insert_after, UINT swp_flags, stru
+ 
+     release_win_ptr( win );
+ 
++    /* the toplevel surface doesn't draw where a child with a surface of its own is, which
++     * changes when that child does; the toplevel may belong to another thread or process */
++    if (ret && is_child && ((new_surface && new_surface != &dummy_surface) ||
++                            (old_surface && old_surface != &dummy_surface)) &&
++        (old_surface != new_surface || (swp_flags & SWP_AGG_NOPOSCHANGE) != SWP_AGG_NOPOSCHANGE ||
++         (swp_flags & (SWP_HIDEWINDOW | SWP_SHOWWINDOW))))
++        update_window_state( toplevel );
++
+     if (ret)
+     {
+         TRACE( "win %p surface %p -> %p\n", hwnd, old_surface, new_surface );
+@@ -2525,6 +2619,17 @@ static BOOL apply_window_pos( HWND hwnd, HWND insert_after, UINT swp_flags, stru
+         user_driver->pWindowPosChanged( hwnd, insert_after, owner_hint, swp_flags, &monitor_rects,
+                                         get_driver_window_surface( new_surface, raw_dpi ) );
+         update_client_surfaces( toplevel );
++
++        /* the client area of a child moved in its parent, or the client area changed
++         * size or moved relative to the visible rect, or the window was shown */
++        if ((swp_flags & SWP_SHOWWINDOW) ||
++            (is_child && (new_rects->client.left != old_rects.client.left ||
++                          new_rects->client.top != old_rects.client.top)) ||
++            new_rects->client.right - new_rects->client.left != old_rects.client.right - old_rects.client.left ||
++            new_rects->client.bottom - new_rects->client.top != old_rects.client.bottom - old_rects.client.top ||
++            new_rects->client.left - new_rects->visible.left != old_rects.client.left - old_rects.visible.left ||
++            new_rects->client.top - new_rects->visible.top != old_rects.client.top - old_rects.visible.top)
++            update_other_process_descendants( hwnd );
+     }
+ 
+     return ret;
+@@ -4970,6 +5075,37 @@ UINT WINAPI NtUserArrangeIconicWindows( HWND parent )
+  *
+  * Trigger an update of the window's driver state and surface.
+  */
++/***********************************************************************
++ *           update_other_process_descendants
++ *
++ * Windows in other processes below hwnd, like those of a browser engine hosted
++ * in an application window, don't learn that hwnd was shown, moved, resized or
++ * reparented, though where and whether their surfaces show depends on it. Have
++ * their threads update them, as when their own state changes.
++ */
++static void update_other_process_descendants( HWND hwnd )
++{
++    ULONG count = 128;
++    NTSTATUS status;
++    HWND *list;
++    UINT i;
++
++    for (;;)
++    {
++        if (!(list = malloc( count * sizeof(*list) ))) return;
++        if (!(status = NtUserBuildHwndList( 0, hwnd, TRUE, TRUE, 0, count, list, &count ))) break;
++        free( list );
++        if (status != STATUS_BUFFER_TOO_SMALL) return;
++    }
++    for (i = 0; list[i] != HWND_BOTTOM; i++)
++    {
++        if (is_current_process_window( list[i] )) continue;
++        TRACE( "hwnd %p, updating %p\n", hwnd, list[i] );
++        NtUserPostMessage( list[i], WM_WINE_UPDATEWINDOWSTATE, 0, 0 );
++    }
++    free( list );
++}
++
+ void update_window_state( HWND hwnd )
+ {
+     static const UINT swp_flags = SWP_NOSIZE | SWP_NOMOVE | SWP_NOCLIENTSIZE | SWP_NOCLIENTMOVE |
+@@ -4991,7 +5127,23 @@ void update_window_state( HWND hwnd )
+ 
+     surface = get_window_surface( hwnd, swp_flags, FALSE, &new_rects, &surface_rect );
+     apply_window_pos( hwnd, 0, swp_flags, surface, &new_rects, valid_rects );
++    if (surface && surface != &dummy_surface && NtUserGetAncestor( hwnd, GA_PARENT ) != get_desktop_window())
++    {
++        /* a child with a surface of its own may have been placed again in its toplevel,
++         * where the toplevel could have drawn over it meanwhile; show all of it again */
++        window_surface_lock( surface );
++        surface->bounds = surface->rect;
++        window_surface_unlock( surface );
++        window_surface_flush( surface );
++    }
+     if (surface) window_surface_release( surface );
++    /* show the last frame of its GL and Vulkan surfaces where the window now is,
++     * as the Windows compositor keeps showing it until the next one */
++    present_client_surfaces( hwnd );
++    /* the toplevel may have drawn over the surfaces of children in other processes before
++     * its region left them out; have them show their last frame again too */
++    if (NtUserGetAncestor( hwnd, GA_PARENT ) == get_desktop_window())
++        update_other_process_descendants( hwnd );
+ 
+     set_thread_dpi_awareness_context( context );
+ }
+diff --git a/dlls/winex11.drv/bitblt.c b/dlls/winex11.drv/bitblt.c
+index ebd33db..2303f74 100644
+--- a/dlls/winex11.drv/bitblt.c
++++ b/dlls/winex11.drv/bitblt.c
+@@ -2005,6 +2005,16 @@ BOOL X11DRV_CreateWindowSurface( HWND hwnd, BOOL layered, const RECT *surface_re
+     }
+     if (previous) window_surface_release( previous );
+ 
++    if (layered && !data->whole_window && NtUserGetAncestor( hwnd, GA_PARENT ) != NtUserGetDesktopWindow())
++    {
++        /* a layered child without a redirection bitmap, now given content */
++        create_whole_window( data );
++        if (!data->whole_window)
++        {
++            *surface = NULL;
++            goto done;
++        }
++    }
+     if (layered)
+     {
+         data->layered = TRUE;
+diff --git a/dlls/winex11.drv/init.c b/dlls/winex11.drv/init.c
+index 107be69..bcf0e17 100644
+--- a/dlls/winex11.drv/init.c
++++ b/dlls/winex11.drv/init.c
+@@ -323,16 +323,9 @@ static BOOL needs_client_window_clipping( HWND hwnd )
+ 
+ BOOL needs_offscreen_rendering( HWND hwnd, BOOL raw )
+ {
+-    static const WCHAR dcomp_target_propW[] =
+-        {'_','_','w','i','n','e','_','d','c','o','m','p','_','t','a','r','g','e','t',0};
+-
+     if (NtUserGetWindowLongW( hwnd, GWL_EXSTYLE ) & WS_EX_LAYERED) return TRUE;
+     if (!raw && NtUserGetDpiForWindow( hwnd ) != NtUserGetWinMonitorDpi( hwnd, MDT_RAW_DPI )) return TRUE; /* needs DPI scaling */
+-    if (NtUserGetAncestor( hwnd, GA_PARENT ) != NtUserGetDesktopWindow())
+-    {
+-        if (NtUserGetProp( hwnd, dcomp_target_propW )) return FALSE;
+-        return TRUE; /* child window, needs compositing */
+-    }
++    if (NtUserGetAncestor( hwnd, GA_PARENT ) != NtUserGetDesktopWindow()) return TRUE; /* child window, needs compositing */
+     if (NtUserGetWindowRelative( hwnd, GW_CHILD )) return needs_client_window_clipping( hwnd ); /* window has children, needs compositing */
+     return FALSE;
+ }
+@@ -460,12 +453,22 @@ static void client_surface_update_geometry( HWND hwnd, struct x11drv_client_surf
+     TRACE( "client window %p/%lx, requesting position %d,%d size %d,%d mask %#x\n", hwnd,
+            surface->window, changes.x, changes.y, changes.width, changes.height, mask );
+     XConfigureWindow( gdi_display, surface->window, mask, &changes );
++    /* resizing discards the window's contents: there's no frame to show again
++     * until the application presents one at the new size */
++    if (mask & (CWWidth | CWHeight)) surface->has_frame = FALSE;
++}
++
++static int accept_x11_error( Display *display, XErrorEvent *event, void *arg )
++{
++    return 1;
+ }
+ 
+ static void client_surface_update_offscreen( HWND hwnd, struct x11drv_client_surface *surface )
+ {
+     BOOL offscreen = needs_offscreen_rendering( hwnd, surface->client.raw );
+     struct x11drv_win_data *data;
++    Window whole_window;
++    Pixmap last_frame = 0;
+ 
+     if (InterlockedExchange( &surface->client.offscreen, offscreen ) == offscreen)
+     {
+@@ -483,11 +486,28 @@ static void client_surface_update_offscreen( HWND hwnd, struct x11drv_client_sur
+         TRACE( "%s offscreen %u\n", debugstr_client_surface( &surface->client ), offscreen );
+     }
+ 
++    /* redirecting the client window exposes the window below it, and unredirecting it the
++     * client window itself; show the last frame there until the next one, not black */
++    if ((whole_window = X11DRV_get_whole_window( hwnd )) == root_window) whole_window = 0;
++    if (whole_window) XSetWindowBackgroundPixmap( gdi_display, whole_window, None );
++
+     if (!offscreen)
+     {
+         client_surface_set_damage( surface, FALSE );
+ #ifdef SONAME_LIBXCOMPOSITE
+-        if (usexcomposite) pXCompositeUnredirectWindow( gdi_display, surface->window, CompositeRedirectManual );
++        if (usexcomposite)
++        {
++            /* the redirected window holds the last frame, which unredirecting it loses:
++             * keep it to show until the next frame */
++            if (surface->has_frame)
++            {
++                X11DRV_expect_error( gdi_display, accept_x11_error, NULL );
++                last_frame = pXCompositeNameWindowPixmap( gdi_display, surface->window );
++                XSync( gdi_display, False );
++                if (X11DRV_check_error()) last_frame = 0;
++            }
++            pXCompositeUnredirectWindow( gdi_display, surface->window, CompositeRedirectManual );
++        }
+ #endif
+         if (surface->hdc_dst)
+         {
+@@ -519,10 +539,37 @@ static void client_surface_update_offscreen( HWND hwnd, struct x11drv_client_sur
+ 
+     if ((data = get_win_data( hwnd )))
+     {
++        POINT origin = {data->rects.client.left - data->rects.visible.left,
++                        data->rects.client.top - data->rects.visible.top};
++
+         if (offscreen) detach_client_window( data, surface->window );
+         else attach_client_window( data, surface->window );
+         release_win_data( data );
++
++        /* The client window got a new pixmap when redirected and moved out, which the X
++         * server reports as damaged, so it would be shown before the next frame lands in
++         * it. Start it with the frame shown now, still in whole_window where it was. */
++        if (offscreen && whole_window && surface->has_frame)
++        {
++            GC gc = XCreateGC( gdi_display, whole_window, 0, NULL );
++
++            XCopyArea( gdi_display, whole_window, surface->window, gc, origin.x, origin.y,
++                       surface->changes.width, surface->changes.height, 0, 0 );
++            XFreeGC( gdi_display, gc );
++        }
+     }
++
++    if (last_frame)
++    {
++        GC gc = XCreateGC( gdi_display, surface->window, 0, NULL );
++
++        XCopyArea( gdi_display, last_frame, surface->window, gc, 0, 0,
++                   surface->changes.width, surface->changes.height, 0, 0 );
++        XFreeGC( gdi_display, gc );
++        XFreePixmap( gdi_display, last_frame );
++    }
++
++    if (whole_window) XSetWindowBackground( gdi_display, whole_window, 0 );
+ }
+ 
+ static void x11drv_client_surface_update( struct client_surface *client )
+diff --git a/dlls/winex11.drv/window.c b/dlls/winex11.drv/window.c
+index 38e3587..65b5d77 100644
+--- a/dlls/winex11.drv/window.c
++++ b/dlls/winex11.drv/window.c
+@@ -1444,6 +1444,7 @@ static void window_set_net_wm_state( struct x11drv_win_data *data, UINT new_stat
+ }
+ 
+ static Window get_x11_parent_window( HWND hwnd, POINT *origin );
++static POINT get_x11_child_position( HWND hwnd );
+ 
+ static void window_set_config( struct x11drv_win_data *data, RECT rect, BOOL above )
+ {
+@@ -1495,14 +1496,7 @@ static void window_set_config( struct x11drv_win_data *data, RECT rect, BOOL abo
+         if (parent && parent != NtUserGetDesktopWindow())
+         {
+             /* X child windows are positioned relative to the nearest ancestor X window */
+-            RECT child_rect;
+-            POINT origin;
+-
+-            get_x11_parent_window( data->hwnd, &origin );
+-            NtUserGetWindowRect( data->hwnd, &child_rect, NtUserGetDpiForWindow( data->hwnd ) );
+-            pt = virtual_screen_to_root( child_rect.left, child_rect.top );
+-            pt.x -= origin.x;
+-            pt.y -= origin.y;
++            data->child_pos = pt = get_x11_child_position( data->hwnd );
+             XRaiseWindow( data->display, data->whole_window );
+         }
+         changes.x = pt.x;
+@@ -2377,6 +2371,19 @@ static void client_window_events_disable( struct x11drv_win_data *data, Window c
+ /**********************************************************************
+  *		detach_client_window
+  */
++/* Move a client window in or out of whole_window. Moving it exposes whole_window
++ * or the client window, which the X server would clear to the background color;
++ * keep the last frame instead, until the next one, like Windows does when the
++ * way a window is composed changes. */
++static void reparent_client_window( struct x11drv_win_data *data, Window client_window, Window parent, int x, int y )
++{
++    BOOL keep = data->whole_window != root_window;
++
++    if (keep) XSetWindowBackgroundPixmap( gdi_display, data->whole_window, None );
++    XReparentWindow( gdi_display, client_window, parent, x, y );
++    if (keep) XSetWindowBackground( gdi_display, data->whole_window, 0 );
++}
++
+ void detach_client_window( struct x11drv_win_data *data, Window client_window )
+ {
+     if (data->client_window != client_window || !client_window) return;
+@@ -2386,7 +2393,7 @@ void detach_client_window( struct x11drv_win_data *data, Window client_window )
+     if (data->whole_window)
+     {
+         client_window_events_disable( data, client_window );
+-        XReparentWindow( gdi_display, client_window, get_dummy_parent(), 0, 0 );
++        reparent_client_window( data, client_window, get_dummy_parent(), 0, 0 );
+     }
+ 
+     data->client_window = 0;
+@@ -2407,8 +2414,8 @@ void attach_client_window( struct x11drv_win_data *data, Window client_window )
+     if (data->whole_window)
+     {
+         client_window_events_enable( data, client_window );
+-        XReparentWindow( gdi_display, client_window, data->whole_window, data->rects.client.left - data->rects.visible.left,
+-                         data->rects.client.top - data->rects.visible.top );
++        reparent_client_window( data, client_window, data->whole_window, data->rects.client.left - data->rects.visible.left,
++                                data->rects.client.top - data->rects.visible.top );
+     }
+ 
+     data->client_window = client_window;
+@@ -2487,6 +2494,28 @@ Window create_client_window( HWND hwnd, RECT client_rect, const XVisualInfo *vis
+ }
+ 
+ 
++/* screen rectangles of a window, which may belong to another process */
++static BOOL get_screen_rects( HWND hwnd, UINT dpi, RECT *window, RECT *client, RECT *visible )
++{
++    BOOL ret;
++
++    SERVER_START_REQ( get_window_rectangles )
++    {
++        req->handle = wine_server_user_handle( hwnd );
++        req->relative = COORDS_SCREEN;
++        req->dpi.num = dpi;
++        req->dpi.den = 1;
++        if ((ret = !wine_server_call( req )))
++        {
++            if (window) *window = wine_server_get_rect( reply->window );
++            if (client) *client = wine_server_get_rect( reply->client );
++            if (visible) *visible = wine_server_get_rect( reply->visible );
++        }
++    }
++    SERVER_END_REQ;
++    return ret;
++}
++
+ /**********************************************************************
+  *		create_whole_window
+  *
+@@ -2501,8 +2530,11 @@ static Window get_x11_parent_window( HWND hwnd, POINT *origin )
+         Window window = X11DRV_get_whole_window( parent );
+         if (window)
+         {
++            /* the X window covers the visible rect, not the window rect */
+             RECT rect;
+-            NtUserGetWindowRect( parent, &rect, NtUserGetDpiForWindow( parent ));
++
++            if (!get_screen_rects( parent, NtUserGetDpiForWindow( parent ), NULL, NULL, &rect ))
++                NtUserGetWindowRect( parent, &rect, NtUserGetDpiForWindow( parent ));
+             *origin = virtual_screen_to_root( rect.left, rect.top );
+             return window;
+         }
+@@ -2512,7 +2544,103 @@ static Window get_x11_parent_window( HWND hwnd, POINT *origin )
+     return get_dummy_parent();
+ }
+ 
+-static void create_whole_window( struct x11drv_win_data *data )
++/* position of a child window's X window in its X parent, the nearest ancestor with an X window */
++static POINT get_x11_child_position( HWND hwnd )
++{
++    RECT rect;
++    POINT origin, pos;
++
++    get_x11_parent_window( hwnd, &origin );
++    NtUserGetWindowRect( hwnd, &rect, NtUserGetDpiForWindow( hwnd ));
++    pos = virtual_screen_to_root( rect.left, rect.top );
++    pos.x -= origin.x;
++    pos.y -= origin.y;
++    return pos;
++}
++
++/* place a child window's X window in its X parent, which may have moved since */
++static void sync_x11_child_position( struct x11drv_win_data *data )
++{
++    POINT pos = get_x11_child_position( data->hwnd );
++
++    if (pos.x == data->child_pos.x && pos.y == data->child_pos.y) return;
++    TRACE( "win %p/%lx moving to %d,%d\n", data->hwnd, data->whole_window, (int)pos.x, (int)pos.y );
++    XMoveWindow( data->display, data->whole_window, pos.x, pos.y );
++    data->child_pos = pos;
++}
++
++/* Clip a child window's X window, and the X windows inside it, to the client areas of
++ * its ancestors, as on Windows. ShapeBounding belongs to the window surface, so this
++ * uses ShapeClip, which also clips subwindows such as the GL and Vulkan client windows. */
++static void sync_x11_child_clip( struct x11drv_win_data *data )
++{
++#ifdef HAVE_LIBXSHAPE
++    UINT dpi = NtUserGetDpiForWindow( data->hwnd );
++    HWND parent, desktop = NtUserGetDesktopWindow();
++    RECT window, clip, client;
++    XRectangle rect;
++
++    if (!data->whole_window) return;
++    if (!get_screen_rects( data->hwnd, dpi, &window, NULL, NULL )) return;
++
++    clip = window;
++    for (parent = NtUserGetAncestor( data->hwnd, GA_PARENT ); parent && parent != desktop;
++         parent = NtUserGetAncestor( parent, GA_PARENT ))
++    {
++        if (!get_screen_rects( parent, dpi, NULL, &client, NULL )) return;
++        if (!intersect_rect( &clip, &clip, &client )) break;
++    }
++
++    if (EqualRect( &clip, &window ))
++    {
++        XShapeCombineMask( data->display, data->whole_window, ShapeClip, 0, 0, None, ShapeSet );
++        return;
++    }
++    if (IsRectEmpty( &clip )) memset( &rect, 0, sizeof(rect) );
++    else
++    {
++        rect.x = clip.left - window.left;
++        rect.y = clip.top - window.top;
++        rect.width = clip.right - clip.left;
++        rect.height = clip.bottom - clip.top;
++    }
++    TRACE( "win %p/%lx clip %s in window %s\n", data->hwnd, data->whole_window,
++           wine_dbgstr_rect( &clip ), wine_dbgstr_rect( &window ));
++    XShapeCombineRectangles( data->display, data->whole_window, ShapeClip, 0, 0, &rect, 1, ShapeSet, YXBanded );
++#endif
++}
++
++/* X child windows don't follow when a window between them and their X parent moves,
++ * or when their X parent's visible rect moves within its window, and their clipping
++ * changes when an ancestor is resized; have the threads owning the X windows below
++ * hwnd update them. win32u does that for windows of other processes. */
++static void sync_x11_child_positions( HWND hwnd )
++{
++    HWND *list;
++    ULONG count = 128;
++    NTSTATUS status;
++    UINT i;
++
++    for (;;)
++    {
++        if (!(list = malloc( count * sizeof(*list) ))) return;
++        if (!(status = NtUserBuildHwndList( 0, hwnd, TRUE, TRUE, 0, count, list, &count ))) break;
++        free( list );
++        if (status != STATUS_BUFFER_TOO_SMALL) return;
++    }
++    for (i = 0; list[i] != HWND_BOTTOM; i++)
++    {
++        DWORD pid;
++
++        NtUserGetWindowThread( list[i], &pid );
++        if (pid != GetCurrentProcessId() || !X11DRV_get_whole_window( list[i] )) continue;
++        TRACE( "hwnd %p, updating child %p\n", hwnd, list[i] );
++        NtUserPostMessage( list[i], WM_WINE_UPDATEWINDOWSTATE, 0, 0 );
++    }
++    free( list );
++}
++
++void create_whole_window( struct x11drv_win_data *data )
+ {
+     int cx, cy, mask;
+     XSetWindowAttributes attr;
+@@ -2559,21 +2687,17 @@ static void create_whole_window( struct x11drv_win_data *data )
+     if (!(cy = data->rects.visible.bottom - data->rects.visible.top)) cy = 1;
+     else if (cy > 65535) cy = 65535;
+ 
+-    if (is_child)
+-    {
+-        RECT child_rect;
+-
+-        NtUserGetWindowRect( data->hwnd, &child_rect, NtUserGetDpiForWindow( data->hwnd ));
+-        pos = virtual_screen_to_root( child_rect.left, child_rect.top );
+-        pos.x -= parent_origin.x;
+-        pos.y -= parent_origin.y;
+-    }
++    if (is_child) data->child_pos = pos = get_x11_child_position( data->hwnd );
+     else pos = virtual_screen_to_root( data->rects.visible.left, data->rects.visible.top );
+     data->whole_window = XCreateWindow( data->display, parent_window, pos.x, pos.y,
+                                         cx, cy, 0, data->vis.depth, InputOutput,
+                                         data->vis.visual, mask, &attr );
+     if (!data->whole_window) goto done;
+-    if (is_child) XRaiseWindow( data->display, data->whole_window );
++    if (is_child)
++    {
++        XRaiseWindow( data->display, data->whole_window );
++        sync_x11_child_clip( data );
++    }
+     SetRect( &data->current_state.rect, pos.x, pos.y, pos.x + cx, pos.y + cy );
+     data->pending_state.rect = data->current_state.rect;
+     data->desired_state.rect = data->current_state.rect;
+@@ -2996,10 +3120,11 @@ static struct x11drv_win_data *X11DRV_create_win_data( HWND hwnd, const struct w
+                hwnd, data->whole_window, wine_dbgstr_rect( &data->rects.window ),
+                wine_dbgstr_rect( &data->rects.visible ), wine_dbgstr_rect( &data->rects.client ));
+     }
+-    else if (NtUserGetWindowLongW( hwnd, GWL_EXSTYLE ) & WS_EX_LAYERED)
++    else if ((NtUserGetWindowLongW( hwnd, GWL_EXSTYLE ) & (WS_EX_LAYERED | WS_EX_NOREDIRECTIONBITMAP)) == WS_EX_LAYERED)
+     {
+         /* layered child windows get their own X child window so that UpdateLayeredWindow
+-         * content can be composited by the X server */
++         * content can be composited by the X server; without a redirection bitmap, only
++         * once UpdateLayeredWindow is used, see X11DRV_CreateWindowSurface */
+         create_whole_window( data );
+         TRACE( "win %p layered child whole %lx\n", hwnd, data->whole_window );
+     }
+@@ -3403,6 +3528,8 @@ void X11DRV_WindowPosChanged( HWND hwnd, HWND insert_after, HWND owner_hint, UIN
+     UINT ex_style = NtUserGetWindowLongW( hwnd, GWL_EXSTYLE ), new_style = NtUserGetWindowLongW( hwnd, GWL_STYLE );
+     struct window_rects old_rects;
+     BOOL is_managed, was_fullscreen, activate = !(swp_flags & SWP_NOACTIVATE), fullscreen = !!(swp_flags & WINE_SWP_FULLSCREEN);
++    BOOL sync_children;
++    HWND parent;
+ 
+     if ((is_managed = is_window_managed( hwnd, swp_flags, fullscreen ))) make_owner_managed( hwnd );
+ 
+@@ -3411,6 +3538,17 @@ void X11DRV_WindowPosChanged( HWND hwnd, HWND insert_after, HWND owner_hint, UIN
+ 
+     old_rects = data->rects;
+     was_fullscreen = data->is_fullscreen;
++
++    /* X child windows below need placing and clipping again when the client area moves
++     * in its parent, moves relative to the visible rect, which an X window would cover,
++     * or changes size */
++    parent = NtUserGetAncestor( hwnd, GA_PARENT );
++    sync_children = new_rects->client.left - new_rects->visible.left != old_rects.client.left - old_rects.visible.left ||
++                    new_rects->client.top - new_rects->visible.top != old_rects.client.top - old_rects.visible.top ||
++                    new_rects->client.right - new_rects->client.left != old_rects.client.right - old_rects.client.left ||
++                    new_rects->client.bottom - new_rects->client.top != old_rects.client.bottom - old_rects.client.top ||
++                    (parent && parent != NtUserGetDesktopWindow() &&
++                     (new_rects->client.left != old_rects.client.left || new_rects->client.top != old_rects.client.top));
+     if (!(new_style & WS_MINIMIZE) || is_virtual_desktop()) data->rects = *new_rects;
+     data->is_fullscreen = fullscreen;
+     data->is_resizable = !!(swp_flags & WINE_SWP_RESIZABLE);
+@@ -3439,6 +3577,7 @@ void X11DRV_WindowPosChanged( HWND hwnd, HWND insert_after, HWND owner_hint, UIN
+     if (!data->whole_window)
+     {
+         release_win_data( data );
++        if (sync_children) sync_x11_child_positions( hwnd );
+         return;
+     }
+ 
+@@ -3446,6 +3585,11 @@ void X11DRV_WindowPosChanged( HWND hwnd, HWND insert_after, HWND owner_hint, UIN
+     if (!(data->managed && (swp_flags & SWP_STATECHANGED) && (new_style & (WS_MINIMIZE|WS_MAXIMIZE))))
+     {
+         sync_window_position( data, swp_flags, &old_rects );
++        if (parent && parent != NtUserGetDesktopWindow())
++        {
++            sync_x11_child_position( data );
++            sync_x11_child_clip( data );
++        }
+ #ifdef HAVE_LIBXSHAPE
+         if (IsRectEmpty( &old_rects.window ) != IsRectEmpty( &new_rects->window ))
+             sync_empty_window_shape( data, surface );
+@@ -3481,6 +3625,7 @@ void X11DRV_WindowPosChanged( HWND hwnd, HWND insert_after, HWND owner_hint, UIN
+     XFlush( data->display );  /* make sure changes are done before we start painting again */
+     release_win_data( data );
+ 
++    if (sync_children) sync_x11_child_positions( hwnd );
+     if (was_fullscreen) NtUserClipCursor( NULL );
+ }
+ 
+diff --git a/dlls/winex11.drv/x11drv.h b/dlls/winex11.drv/x11drv.h
+index 5793485..8de19df 100644
+--- a/dlls/winex11.drv/x11drv.h
++++ b/dlls/winex11.drv/x11drv.h
+@@ -687,6 +687,7 @@ struct x11drv_win_data
+     Window      client_window;  /* X window for the client area */
+     struct window_rects rects;  /* window rects in monitor DPI, relative to parent client area */
+     struct host_window *parent; /* the host window parent, frame or embedder, NULL if root_window */
++    POINT       child_pos;      /* position of a child window's whole_window in its X parent */
+     XIC         xic;            /* X input context */
+     UINT        managed : 1;    /* is window managed? */
+     UINT        embedded : 1;   /* is window an XEMBED client? */
+@@ -748,6 +749,7 @@ extern void window_set_user_time( struct x11drv_win_data *data, Time time, BOOL
+ extern UINT get_window_net_wm_state( Display *display, Window window );
+ extern void make_window_embedded( struct x11drv_win_data *data );
+ extern Window create_client_window( HWND hwnd, RECT client_rect, const XVisualInfo *visual, Colormap colormap );
++extern void create_whole_window( struct x11drv_win_data *data );
+ extern void detach_client_window( struct x11drv_win_data *data, Window client_window );
+ extern void attach_client_window( struct x11drv_win_data *data, Window client_window );
+ extern void destroy_client_window( HWND hwnd, Window client_window );
+diff --git a/include/wine/server_protocol.h b/include/wine/server_protocol.h
+index 6635ece..397d9f5 100644
+--- a/include/wine/server_protocol.h
++++ b/include/wine/server_protocol.h
+@@ -1079,6 +1079,12 @@ typedef volatile struct
+     struct ratio         raw_dpi;
+     data_size_t          private_size;
+     data_size_t          extra_size;
++    user_handle_t        parent;
++    user_handle_t        owner;
++    user_handle_t        next_sibling;
++    user_handle_t        prev_sibling;
++    user_handle_t        first_child;
++    user_handle_t        last_child;
+     struct window_info   info;
+     char                 extra[];
+ } window_shm_t;
+@@ -7201,6 +7207,6 @@ union generic_reply
+     struct alpc_create_port_reply alpc_create_port_reply;
+ };
+ 
+-#define SERVER_PROTOCOL_VERSION 964
++#define SERVER_PROTOCOL_VERSION 965
+ 
+ #endif /* __WINE_WINE_SERVER_PROTOCOL_H */
+diff --git a/server/protocol.def b/server/protocol.def
+index 2eaaa97..6da4ebe 100644
+--- a/server/protocol.def
++++ b/server/protocol.def
+@@ -1095,6 +1095,12 @@ typedef volatile struct
+     struct ratio         raw_dpi;          /* raw DPI of the window monitor */
+     data_size_t          private_size;     /* length of private extra bytes range */
+     data_size_t          extra_size;       /* size of the extra info */
++    user_handle_t        parent;           /* parent window, 0 for the desktop */
++    user_handle_t        owner;            /* owner window */
++    user_handle_t        next_sibling;     /* next sibling in Z-order, if linked */
++    user_handle_t        prev_sibling;     /* previous sibling in Z-order, if linked */
++    user_handle_t        first_child;      /* first child in Z-order */
++    user_handle_t        last_child;       /* last child in Z-order */
+     struct window_info   info;             /* window info (GWLP_*) */
+     char                 extra[];          /* extra bytes storage */
+ } window_shm_t;
+diff --git a/server/window.c b/server/window.c
+index c08d884..433e719 100644
+--- a/server/window.c
++++ b/server/window.c
+@@ -216,6 +216,12 @@ static inline struct window *get_last_child( struct window *win )
+     return ptr ? LIST_ENTRY( ptr, struct window, entry ) : NULL;
+ }
+ 
++/* check if a child window is drawn with a surface of its own, not into its parent's */
++static inline int is_child_with_surface( const struct window *win )
++{
++    return (win->paint_flags & PAINT_HAS_SURFACE) && win->parent && !is_desktop_window( win->parent );
++}
++
+ /* set the PAINT_PIXEL_FORMAT_CHILD flag on all the parents */
+ /* note: we never reset the flag, it's just a heuristic */
+ static inline void update_pixel_format_flags( struct window *win )
+@@ -323,6 +329,50 @@ static struct ratio get_window_dpi( struct window *win )
+     return dpi;
+ }
+ 
++/* publish where a window is in the tree, as get_window_tree returns it, so that
++ * clients can walk the tree without asking the server */
++static void update_window_tree( struct window *win )
++{
++    user_handle_t parent = 0, owner = 0, next = 0, prev = 0, first = 0, last = 0;
++    struct window *ptr;
++
++    if (!win->shared) return;
++    if (win->parent)
++    {
++        parent = win->parent->handle;
++        owner  = win->owner;
++        if (win->is_linked)
++        {
++            if ((ptr = get_next_window( win ))) next = ptr->handle;
++            if ((ptr = get_prev_window( win ))) prev = ptr->handle;
++        }
++    }
++    if ((ptr = get_first_child( win ))) first = ptr->handle;
++    if ((ptr = get_last_child( win ))) last = ptr->handle;
++
++    SHARED_WRITE_BEGIN( win->shared, window_shm_t )
++    {
++        shared->parent       = parent;
++        shared->owner        = owner;
++        shared->next_sibling = next;
++        shared->prev_sibling = prev;
++        shared->first_child  = first;
++        shared->last_child   = last;
++    }
++    SHARED_WRITE_END;
++}
++
++/* the children of a window changed: update it and all of them */
++static void update_children_tree( struct window *parent )
++{
++    struct window *child;
++
++    if (!parent) return;
++    update_window_tree( parent );
++    LIST_FOR_EACH_ENTRY( child, &parent->children, struct window, entry )
++        update_window_tree( child );
++}
++
+ static int is_window_owned_by( struct window *win, user_handle_t owner )
+ {
+     unsigned int depth = 0;
+@@ -463,7 +513,12 @@ static int link_window( struct window *win, struct window *previous )
+     }
+ 
+     win->is_linked = 1;
+-    if (restack_owned_windows( win )) return 1;
++    if (restack_owned_windows( win ))
++    {
++        update_children_tree( win->parent );
++        return 1;
++    }
++    update_children_tree( win->parent );
+     return old_prev != win->entry.prev;
+ }
+ 
+@@ -510,11 +565,19 @@ static int set_parent_window( struct window *win, struct window *parent )
+ 
+     if (parent)
+     {
++        struct window *old_parent = win->parent ? (struct window *)grab_object( win->parent ) : NULL;
++
+         attach_parent_thread( win, false );
+         if (win->parent) release_object( win->parent );
+         win->parent = (struct window *)grab_object( parent );
+         attach_parent_thread( win, true );
+         link_window( win, WINPTR_TOP );
++        if (old_parent)
++        {
++            /* the window left the children of its previous parent */
++            if (old_parent != parent) update_children_tree( old_parent );
++            release_object( old_parent );
++        }
+ 
+         if (is_desktop_window( parent )) set_window_monitor_dpi( win );
+         else SHARED_WRITE_BEGIN( win->shared, window_shm_t )
+@@ -524,7 +587,7 @@ static int set_parent_window( struct window *win, struct window *parent )
+         }
+         SHARED_WRITE_END;
+ 
+-        if (win->paint_flags & (PAINT_HAS_PIXEL_FORMAT | PAINT_PIXEL_FORMAT_CHILD))
++        if ((win->paint_flags & (PAINT_HAS_PIXEL_FORMAT | PAINT_PIXEL_FORMAT_CHILD)) || is_child_with_surface( win ))
+             update_pixel_format_flags( win );
+     }
+     else  /* move it to parent unlinked list */
+@@ -533,6 +596,8 @@ static int set_parent_window( struct window *win, struct window *parent )
+         list_add_head( &win->parent->unlinked, &win->entry );
+         win->is_linked = 0;
+         win->is_orphan = 1;
++        update_children_tree( win->parent );
++        update_window_tree( win );
+     }
+     return 1;
+ }
+@@ -796,7 +861,11 @@ static struct window *create_window( struct window *parent, struct window *owner
+     attach_parent_thread( win, true );
+ 
+     /* put it on parent unlinked list */
+-    if (parent) list_add_head( &parent->unlinked, &win->entry );
++    if (parent)
++    {
++        list_add_head( &parent->unlinked, &win->entry );
++        update_window_tree( win );
++    }
+     else
+     {
+         list_init( &win->entry );
+@@ -1284,6 +1353,45 @@ static inline void map_win_region_to_screen( struct window *win, struct region *
+ }
+ 
+ 
++/* clip what the descendants of a window draw with a pixel format, or with a surface of their own,
++ * out of the visible region; parent_clip is the client area of the window, in region coordinates */
++static struct region *clip_pixel_format_descendants( struct window *parent, struct region *parent_clip,
++                                                     struct region *region, int offset_x, int offset_y )
++{
++    struct window *ptr;
++    struct region *clip = create_empty_region();
++
++    if (!clip) return NULL;
++    LIST_FOR_EACH_ENTRY( ptr, &parent->children, struct window, entry )
++    {
++        if (!(ptr->style & WS_VISIBLE)) continue;
++        if (is_child_with_surface( ptr )) set_region_rect( clip, &ptr->visible_rect );
++        else if (ptr->paint_flags & (PAINT_HAS_PIXEL_FORMAT | PAINT_PIXEL_FORMAT_CHILD))
++            set_region_rect( clip, &ptr->client_rect );
++        else continue;
++        if (ptr->win_region && !intersect_window_region( clip, ptr )) goto error;
++        offset_region( clip, offset_x, offset_y );
++        if (!intersect_region( clip, clip, parent_clip )) goto error;
++        if (is_region_empty( clip )) continue;
++
++        if (is_child_with_surface( ptr ) || (ptr->paint_flags & PAINT_HAS_PIXEL_FORMAT))
++        {
++            if (!subtract_region( region, region, clip )) goto error;
++        }
++        else if (!clip_pixel_format_descendants( ptr, clip, region, offset_x + ptr->client_rect.left,
++                                                 offset_y + ptr->client_rect.top ))
++            goto error;
++        if (is_region_empty( region )) break;
++    }
++    free_region( clip );
++    return region;
++
++error:
++    free_region( clip );
++    return NULL;
++}
++
++
+ /* clip all children of a given window out of the visible region */
+ static struct region *clip_children( struct window *parent, struct window *last,
+                                      struct region *region, int offset_x, int offset_y )
+@@ -1296,7 +1404,28 @@ static struct region *clip_children( struct window *parent, struct window *last,
+     {
+         if (ptr == last) break;
+         if (!(ptr->style & WS_VISIBLE)) continue;
+-        if (ptr->ex_style & WS_EX_TRANSPARENT) continue;
++        if (ptr->ex_style & WS_EX_TRANSPARENT)
++        {
++            /* what's below a transparent window shows, but not where its descendants draw
++             * with a pixel format, which is composited above, like a browser in a WPF HwndHost */
++            if (is_child_with_surface( ptr )) set_region_rect( tmp, &ptr->visible_rect );
++            else if (ptr->paint_flags & (PAINT_HAS_PIXEL_FORMAT | PAINT_PIXEL_FORMAT_CHILD))
++                set_region_rect( tmp, &ptr->client_rect );
++            else continue;
++            if (ptr->win_region && !intersect_window_region( tmp, ptr ))
++            {
++                free_region( tmp );
++                return NULL;
++            }
++            offset_region( tmp, offset_x, offset_y );
++            if (is_child_with_surface( ptr ) || (ptr->paint_flags & PAINT_HAS_PIXEL_FORMAT))
++                region = subtract_region( region, region, tmp );
++            else
++                region = clip_pixel_format_descendants( ptr, tmp, region, offset_x + ptr->client_rect.left,
++                                                        offset_y + ptr->client_rect.top );
++            if (!region || is_region_empty( region )) break;
++            continue;
++        }
+         set_region_rect( tmp, &ptr->visible_rect );
+         if (ptr->win_region && !intersect_window_region( tmp, ptr ))
+         {
+@@ -1422,7 +1551,7 @@ error:
+ }
+ 
+ 
+-/* clip all children with a custom pixel format out of the visible region */
++/* clip all children with a custom pixel format, or with a surface of their own, out of the visible region */
+ static struct region *clip_pixel_format_children( struct window *parent, struct region *parent_clip,
+                                                   struct region *region, int offset_x, int offset_y )
+ {
+@@ -1434,14 +1563,21 @@ static struct region *clip_pixel_format_children( struct window *parent, struct
+     LIST_FOR_EACH_ENTRY_REV( ptr, &parent->children, struct window, entry )
+     {
+         if (!(ptr->style & WS_VISIBLE)) continue;
+-        if (ptr->ex_style & WS_EX_TRANSPARENT) continue;
+ 
+-        /* add the visible rect */
++        /* add the visible rect, unless the window is transparent and lets what's below show;
++         * what it or its children draw with a pixel format is above the parent's surface either way,
++         * like a WPF HwndHost hosting a browser that draws with DirectComposition */
+         set_region_rect( clip, &ptr->visible_rect );
+         if (ptr->win_region && !intersect_window_region( clip, ptr )) break;
+         offset_region( clip, offset_x, offset_y );
+         if (!intersect_region( clip, clip, parent_clip )) break;
+-        if (!union_region( region, region, clip )) break;
++        if (!(ptr->ex_style & WS_EX_TRANSPARENT) && !union_region( region, region, clip )) break;
++        if (is_child_with_surface( ptr ))
++        {
++            /* the whole window is drawn by its own surface */
++            if (!subtract_region( region, region, clip )) break;
++            continue;
++        }
+         if (!(ptr->paint_flags & (PAINT_HAS_PIXEL_FORMAT | PAINT_PIXEL_FORMAT_CHILD))) continue;
+ 
+         /* subtract the client rect if it uses a custom pixel format */
+@@ -2501,6 +2637,8 @@ DECL_HANDLER(set_window_owner)
+     reply->prev_owner = win->owner;
+     reply->full_owner = win->owner = owner ? owner->handle : 0;
+     if (win->is_linked) restack_owned_windows( win );
++    if (win->parent) update_children_tree( win->parent );
++    else update_window_tree( win );
+ }
+ 
+ 
+@@ -2846,7 +2984,7 @@ DECL_HANDLER(set_window_pos)
+     }
+ 
+     win->paint_flags = (win->paint_flags & ~PAINT_CLIENT_FLAGS) | (req->paint_flags & PAINT_CLIENT_FLAGS);
+-    if (win->paint_flags & PAINT_HAS_PIXEL_FORMAT) update_pixel_format_flags( win );
++    if ((win->paint_flags & PAINT_HAS_PIXEL_FORMAT) || is_child_with_surface( win )) update_pixel_format_flags( win );
+ 
+     old_style = win->style;
+     old_window = win->window_rect;
+@@ -3191,6 +3329,7 @@ void set_window_rect_visible( user_handle_t window, struct rectangle rect )
+         {
+             list_remove( &win->entry );
+             list_add_before( &ptr->entry, &win->entry );
++            update_children_tree( win->parent );
+         }
+         break;
+     }

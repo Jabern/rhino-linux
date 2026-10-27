@@ -1,6 +1,6 @@
 # Wine Patches for Rhinoceros on Linux
 
-This directory contains 20 modular topic patches for Wine (19 core patches for X11 / XWayland and 1 optional patch for pure Wayland) to run **McNeel Rhinoceros** on Linux with native performance, hardware-accelerated Direct3D 11 viewports, and Cloud Zoo licensing support.
+This directory contains 32 modular topic patches for Wine 11.20 (31 core patches for X11 / XWayland and 1 optional patch for pure Wayland) to run **McNeel Rhinoceros** on Linux with native performance, hardware-accelerated Direct3D 11 viewports, and Cloud Zoo licensing support.
 
 ---
 
@@ -36,18 +36,22 @@ This directory contains 20 modular topic patches for Wine (19 core patches for X
 | **26** | `26-x11-restore-frames-on-expose.patch` | `winex11.drv` | Prototype: on `Expose` (e.g. restoring a minimized window), copies every offscreen surface's last frame back at once, at its last on-screen position while the Win32 window is still minimized. |
 | **27** | `27-x11-frame-extents-unscaled-only.patch` | `winex11.drv` | Patch 24 only follows the WM's title bar for unscaled (96 DPI) windows: the extents are physical pixels. |
 | **28** | `28-x11-wm-class-from-env.patch` | `winex11.drv` | The window class (`WM_CLASS`) comes from `WINE_WM_CLASS` when set, so the taskbar keeps Rhino 7, 8 and 9 apart; all are `Rhino.exe`. |
+| **29** | `29-dcomp-dxgi-gpu-composition.patch` | `dcomp` / `dxgi` / `wined3d` | DirectComposition composed on the GPU with D3D11, up to `IDCompositionDevice3`, with windowless composition swap chains; replaces what patches 06 and 07 did, so Edge WebView2 composes on the GPU instead of in software. |
+| **30** | `30-cross-process-child-windows.patch` | `win32u` / `winex11.drv` / `server` | Child windows of other processes (WebView2 in Rhino) placed, clipped, updated and shown again as on Windows; the parent doesn't draw over what they draw with a pixel format; window tree in shared memory. |
+| **31** | `31-x11-pointer-warps-while-dragging.patch` | `winex11.drv` | Carries on from pointer warps that Xwayland refuses while dragging, so rotating and panning viewports don't spin. |
+| **32** | `32-server-refuse-sibling-pid-namespaces.patch` | `server` / `ntdll` | Refuses sharing a wineserver with processes of a sibling PID namespace (another Flatpak instance), whose ids it can't signal. |
 
 ---
 
 ## Applying Patches
 
-To apply to an upstream Wine tree (Wine 11.18):
+To apply to an upstream Wine tree (Wine 11.20):
 
 ```bash
 cd /path/to/wine
 
 # Standard patch series for X11 / XWayland (all except Patch 16):
-for p in /path/to/rhino-linux/patches/{0[1-9],1[0-5],1[7-9],2[0-9]}-*.patch; do
+for p in /path/to/rhino-linux/patches/{0[1-9],1[0-5],1[7-9],[2-9][0-9]}-*.patch; do
     patch -p1 < "$p"
 done
 

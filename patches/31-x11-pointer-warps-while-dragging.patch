@@ -1,0 +1,98 @@
+diff --git a/dlls/winex11.drv/mouse.c b/dlls/winex11.drv/mouse.c
+index 4297a50..f3b5b8a 100644
+--- a/dlls/winex11.drv/mouse.c
++++ b/dlls/winex11.drv/mouse.c
+@@ -564,6 +564,41 @@ static BOOL is_old_motion_event( unsigned long serial )
+ 
+ 
+ /* Map the input event coordinates so they're relative to the desktop. */
++/* Some X servers, like Xwayland, refuse pointer warps: the pointer stays where it
++ * was, though the server may report the new position until the pointer moves.
++ * SetCursorPos always moves the cursor on Windows, and applications that warp it
++ * while dragging, to keep rotating a view say, compute their motion from where they
++ * put it. When the first position after a warp shows it was refused, report pointer
++ * positions moved by what the warp would have moved them, until the buttons are
++ * released. */
++static POINT warp_offset, warp_from, warp_to;
++static BOOL warp_emulated, warp_pending;
++
++static void check_warp( POINT pt )
++{
++    LONGLONG from_x = pt.x - warp_from.x, from_y = pt.y - warp_from.y;
++    LONGLONG to_x = pt.x - warp_to.x, to_y = pt.y - warp_to.y;
++
++    warp_pending = FALSE;
++    if (from_x * from_x + from_y * from_y < to_x * to_x + to_y * to_y)
++    {
++        warp_offset.x = warp_to.x - warp_from.x;
++        warp_offset.y = warp_to.y - warp_from.y;
++        warp_emulated = TRUE;
++        TRACE( "warp from %s to %s refused, pointer at %s\n", wine_dbgstr_point( &warp_from ),
++               wine_dbgstr_point( &warp_to ), wine_dbgstr_point( &pt ));
++    }
++    else warp_emulated = FALSE;
++}
++
++static POINT apply_warp_offset( POINT pt )
++{
++    if (!warp_emulated) return pt;
++    pt.x += warp_offset.x;
++    pt.y += warp_offset.y;
++    return pt;
++}
++
+ static POINT map_event_coords( HWND hwnd, Window window, Window event_root, POINT root, POINT src )
+ {
+     struct x11drv_thread_data *thread_data;
+@@ -598,6 +633,8 @@ static POINT map_event_coords( HWND hwnd, Window window, Window event_root, POIN
+         release_win_data( data );
+     }
+ 
++    if (warp_pending) check_warp( dst );
++    dst = apply_warp_offset( dst );
+     TRACE( "mapped %s to %s\n", wine_dbgstr_point( &src ), wine_dbgstr_point( &dst ) );
+     return dst;
+ }
+@@ -1449,6 +1486,23 @@ BOOL X11DRV_SetCursorPos( INT x, INT y )
+         return FALSE;
+     }
+ 
++    {
++        Window root, child;
++        int root_x, root_y, win_x, win_y;
++        unsigned int state;
++
++        /* while dragging, check with the next pointer position that the warp happened */
++        if (XQueryPointer( data->display, root_window, &root, &child, &root_x, &root_y, &win_x, &win_y, &state ) &&
++            (state & (Button1Mask | Button2Mask | Button3Mask | Button4Mask | Button5Mask)))
++        {
++            warp_from = root_to_virtual_screen( root_x, root_y );
++            warp_to.x = x;
++            warp_to.y = y;
++            warp_pending = TRUE;
++        }
++        else warp_emulated = warp_pending = FALSE;
++    }
++
+     XWarpPointer( data->display, root_window, root_window, 0, 0, 0, 0, pos.x, pos.y );
+     data->warp_serial = NextRequest( data->display );
+ 
+@@ -1476,7 +1530,7 @@ BOOL X11DRV_GetCursorPos(LPPOINT pos)
+     if (ret)
+     {
+         POINT old = *pos;
+-        *pos = root_to_virtual_screen( winX, winY );
++        *pos = apply_warp_offset( root_to_virtual_screen( winX, winY ));
+         TRACE( "pointer at %s server pos %s\n", wine_dbgstr_point(pos), wine_dbgstr_point(&old) );
+     }
+     return ret;
+@@ -1615,6 +1669,9 @@ BOOL X11DRV_ButtonRelease( HWND hwnd, XEvent *xev )
+ 
+     pt = map_event_coords( hwnd, event->window, event->root, root, pt );
+     send_mouse_input( hwnd, pt, MOUSEEVENTF_ABSOLUTE | flags, button_up_data[button], time, NULL );
++    /* the drag is over, the cursor is where the pointer is again */
++    if (!(event->state & (Button1Mask | Button2Mask | Button3Mask | Button4Mask | Button5Mask) & ~(Button1Mask << button)))
++        warp_emulated = warp_pending = FALSE;
+     return TRUE;
+ }
+ 

@@ -1,0 +1,62 @@
+diff --git a/dlls/ntdll/unix/server.c b/dlls/ntdll/unix/server.c
+index fa9138d..389a192 100644
+--- a/dlls/ntdll/unix/server.c
++++ b/dlls/ntdll/unix/server.c
+@@ -1459,6 +1459,16 @@ static int server_connect(void)
+ #endif
+         if (connect( s, (struct sockaddr *)&addr, slen ) != -1)
+         {
++#ifdef SO_PEERCRED
++            /* a server that has no process id here runs in another PID namespace, like
++             * another container, and can't signal us; it refuses the connection */
++            struct ucred cred;
++            socklen_t cred_len = sizeof(cred);
++
++            if (!getsockopt( s, SOL_SOCKET, SO_PEERCRED, &cred, &cred_len ) && !cred.pid)
++                fatal_error( "the wineserver for this prefix runs in another PID namespace, like another "
++                             "container. Run this in the container of the running wineserver, or stop it first.\n" );
++#endif
+             fchdir( initial_cwd );  /* switch back to the starting directory */
+             fcntl( s, F_SETFD, FD_CLOEXEC );
+             return s;
+diff --git a/server/request.c b/server/request.c
+index 5135ed5..6d55c08 100644
+--- a/server/request.c
++++ b/server/request.c
+@@ -539,6 +539,22 @@ static void master_socket_poll_event( struct fd *fd, int event )
+         socklen_t len = sizeof(dummy);
+         int client = accept( get_unix_fd( master_socket->fd ), (struct sockaddr *) &dummy, &len );
+         if (client == -1) return;
++#ifdef SO_PEERCRED
++        {
++            /* The server signals its processes and reads their memory by their Unix ids,
++             * which mean nothing, or another process, outside its PID namespace; a peer
++             * that has no id here, like one in a sibling container, can't be served. */
++            struct ucred cred;
++            socklen_t cred_len = sizeof(cred);
++
++            if (!getsockopt( client, SOL_SOCKET, SO_PEERCRED, &cred, &cred_len ) && !cred.pid)
++            {
++                fprintf( stderr, "wineserver: refusing a client from another PID namespace\n" );
++                close( client );
++                return;
++            }
++        }
++#endif
+         fcntl( client, F_SETFL, O_NONBLOCK );
+         if ((process = create_process( client, NULL, 0, NULL, NULL, NULL, 0, NULL )))
+         {
+@@ -716,7 +732,12 @@ int kill_lock_owner( int sig )
+         if (fl.l_type != F_WRLCK) goto done;  /* the file is not locked */
+         if (!pid)  /* first time around */
+         {
+-            if (!(pid = fl.l_pid)) goto done;  /* shouldn't happen */
++            if (!(pid = fl.l_pid))
++            {
++                /* the lock owner has no id in our PID namespace */
++                fprintf( stderr, "wineserver: the server runs in another PID namespace, it can't be signaled from here\n" );
++                goto done;
++            }
+             if (sig == -1)
+             {
+                 if (kill( pid, SIGINT ) == -1) goto done;
