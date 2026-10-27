@@ -49,8 +49,8 @@ CUSTOM_DXVK_DIR=""
 RHINO_INSTALLER=""
 RUN_RHINO=0
 WINE_INSTALL_DIR="${XDG_DATA_HOME:-$HOME/.local/share}/wine-rhino"
-WINE_RELEASE_URL="https://github.com/Jabern/rhino-linux/releases/download/v1.2.0/wine-rhino-11.18-x86_64.tar.xz"
-WINE_RELEASE_SHA256="ed034657823ffcca0480b7a69dff0a514f2b94504f9259b4281b061baeb03a9f"
+WINE_RELEASE_URL="https://github.com/Jabern/rhino-linux/releases/download/v1.3.0/wine-rhino-11.20-x86_64.tar.xz"
+WINE_RELEASE_SHA256="784b3e08299460eba6147ac88b9dbc6764865c6688104bdfea189e120b3db1a5"
 
 # Rhino versions and their prefixes (rhino_prefix_for, find_rhino_dir, ...)
 # shellcheck source=tools/rhino-versions.sh
@@ -362,7 +362,7 @@ verify_sha256() {
 download_prebuilt_wine() {
     echo -e "\n${BOLD}${BLUE}[Step 2/4] Downloading Pre-built Patched Wine...${NC}"
     local cache_dir="${XDG_CACHE_HOME:-$HOME/.cache}/rhino-linux"
-    local tarball="$cache_dir/wine-rhino-11.18-x86_64.tar.xz"
+    local tarball="$cache_dir/wine-rhino-11.20-x86_64.tar.xz"
     local temp_tarball="$tarball.part.$$"
 
     mkdir -p "$cache_dir" "$WINE_INSTALL_DIR"
