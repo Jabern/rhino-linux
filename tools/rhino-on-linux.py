@@ -155,9 +155,13 @@ def menu_files(version):
     the host's ~/.local/share (HOME is the real home folder in the Flatpak)."""
     share = os.path.join(HOME, ".local/share")
     if IN_FLATPAK:
-        entry, icon = f"{os.environ['FLATPAK_ID']}.Rhino{version}.desktop", f"{os.environ['FLATPAK_ID']}.Rhino{version}.png"
-    else:
-        entry, icon = f"rhino-{version}-version.desktop", f"rhino-on-linux-rhino{version}.png"
+        app = os.environ['FLATPAK_ID']
+        entry, icon = f"{app}.Rhino{version}.desktop", f"{app}.Rhino{version}.png"
+        # the icon is in the app's own data folder (before 1.3.1, in ~/.local/share)
+        data = os.environ.get("XDG_DATA_HOME", os.path.join(HOME, ".var/app", app, "data"))
+        return [os.path.join(share, "applications", entry), os.path.join(data, "icons", icon),
+                os.path.join(share, "icons/hicolor/256x256/apps", icon)]
+    entry, icon = f"rhino-{version}-version.desktop", f"rhino-on-linux-rhino{version}.png"
     return [os.path.join(share, "applications", entry), os.path.join(share, "icons/hicolor/256x256/apps", icon)]
 
 

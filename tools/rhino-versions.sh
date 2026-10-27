@@ -144,18 +144,35 @@ rhino_menu_entry_file() {
 rhino_menu_icon_name() {
     if [ -n "${FLATPAK_ID:-}" ]; then echo "$FLATPAK_ID.Rhino$1"; else echo "rhino-on-linux-rhino$1"; fi
 }
-RHINO_ICON_DIR="$HOME/.local/share/icons/hicolor/256x256/apps"
+# A Flatpak runs nothing when it is uninstalled: its icons stay in its own data
+# folder, which "flatpak uninstall --delete-data" removes with it.
+if [ -n "${FLATPAK_ID:-}" ]; then
+    RHINO_ICON_DIR="${XDG_DATA_HOME:-$HOME/.var/app/$FLATPAK_ID/data}/icons"
+else
+    RHINO_ICON_DIR="$HOME/.local/share/icons/hicolor/256x256/apps"
+fi
+
+# The host path of the Flatpak's rhino-linux command, through the deployment's
+# current/active links: it follows updates and goes away when the app is
+# uninstalled, so menus hide entries whose TryExec points to it from then on.
+rhino_flatpak_command_path() {
+    local app_path
+    app_path="$(sed -n 's/^app-path=//p' /.flatpak-info 2>/dev/null)"
+    # app-path is <installation>/app/<id>/<arch>/<branch>/<commit>/files
+    [ -n "$app_path" ] && echo "${app_path%/*/*/*/*}/current/active/files/bin/rhino-linux"
+}
 
 # One menu entry per installed version, named after its folder ("Rhino 9 WIP"),
 # with the icon of its own Rhino.exe and the window class rhino-linux gives it
 # (WINE_WM_CLASS=rhinoN), so menus and taskbars keep the versions apart as on
 # Windows. Entries of versions no longer installed are removed.
 rhino_write_menu_entries() {
-    local tools v prefix name file icon exec_cmd fallback_icon
+    local tools v prefix name file icon exec_cmd fallback_icon try_exec=""
     tools="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
     if [ -n "${FLATPAK_ID:-}" ]; then
         exec_cmd="flatpak run --command=rhino-linux $FLATPAK_ID"
         fallback_icon="$FLATPAK_ID"
+        try_exec="$(rhino_flatpak_command_path)"
     else
         exec_cmd="$HOME/.local/bin/rhino-linux"
         fallback_icon="rhino9"
@@ -165,6 +182,8 @@ rhino_write_menu_entries() {
         file="$(rhino_menu_entry_file "$v")"
         icon="$(rhino_menu_icon_name "$v")"
         prefix="$(rhino_prefix_for "$v")"
+        # where Flatpak versions before 1.3.1 put their icons
+        [ -n "${FLATPAK_ID:-}" ] && rm -f "$HOME/.local/share/icons/hicolor/256x256/apps/$icon.png"
         if ! name="$(find_rhino_dir "$prefix" "$v")"; then
             rm -f "$file" "$RHINO_ICON_DIR/$icon.png"
             continue
@@ -191,6 +210,7 @@ MimeType=application/x-3dm;
 StartupWMClass=rhino$v
 StartupNotify=true
 ENTRY
+        [ -n "$try_exec" ] && sed -i "/^Exec=/a TryExec=$try_exec" "$file"
         chmod +x "$file"
     done
     if command -v update-desktop-database >/dev/null 2>&1; then
