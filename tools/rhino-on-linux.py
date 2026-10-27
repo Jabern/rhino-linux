@@ -40,9 +40,10 @@ MILESTONES = [
     (re.compile(r"\[[56]/6\]"), 0.58, "Adding Rhino to your applications"),
     (re.compile(r"Installing \.NET Framework 4\.8"), 0.30, "Installing .NET Framework 4.8 for Rhino 7 — this takes 15 to 40 minutes"),
     (re.compile(r"Installing core fonts"), 0.45, "Installing fonts for Rhino 7"),
-    (re.compile(r"Visual C\+\+ runtime"), 0.48, "Installing the Visual C++ runtime for Rhino 7"),
-    (re.compile(r"Launching Rhino Installer"), 0.62, "Installing Rhino — the Rhino installer shows its own progress"),
-    (re.compile(r"\[Step 4/4\]"), 0.97, "Checking the installation"),
+    (re.compile(r"Visual C\+\+ runtime"), 0.48, "Installing the Visual C++ runtime"),
+    # install.sh's step 4 comes before it launches the Rhino installer
+    (re.compile(r"\[Step 4/4\]"), 0.60, "Checking the installation"),
+    (re.compile(r"Launching Rhino Installer"), 0.62, "Installing Rhino — this takes a few minutes"),
 ]
 
 
