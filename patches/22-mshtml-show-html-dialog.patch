@@ -1,5 +1,5 @@
 diff --git a/dlls/ieframe/events.c b/dlls/ieframe/events.c
-index 9c0711d..826cf4d 100644
+index 42e06e3..4d5f588 100644
 --- a/dlls/ieframe/events.c
 +++ b/dlls/ieframe/events.c
 @@ -201,6 +201,7 @@ static HRESULT WINAPI EnumConnections_Next(IEnumConnections *iface, ULONG cConne
@@ -7,9 +7,9 @@ index 9c0711d..826cf4d 100644
  
          pgcd[cnt].pUnk = (IUnknown*)This->cp->sinks[This->iter];
 +        IUnknown_AddRef(pgcd[cnt].pUnk);
-         pgcd[cnt].dwCookie = cnt+1;
-         This->iter++;
+         pgcd[cnt].dwCookie = ++This->iter;
          cnt++;
+     }
 diff --git a/dlls/mshtml/Makefile.in b/dlls/mshtml/Makefile.in
 index 6cce210..58bb082 100644
 --- a/dlls/mshtml/Makefile.in
@@ -1356,10 +1356,10 @@ index 0000000..05c2683
 +    }
 +}
 diff --git a/dlls/mshtml/htmlwindow.c b/dlls/mshtml/htmlwindow.c
-index 0fb6e18..0ff588b 100644
+index 4b87fc6..ec55b7a 100644
 --- a/dlls/mshtml/htmlwindow.c
 +++ b/dlls/mshtml/htmlwindow.c
-@@ -793,6 +793,11 @@ static HRESULT WINAPI HTMLWindow2_close(IHTMLWindow2 *iface)
+@@ -797,6 +797,11 @@ static HRESULT WINAPI HTMLWindow2_close(IHTMLWindow2 *iface)
      if(!notify_webbrowser_close(window, window->browser->doc))
          return S_OK;
  
@@ -1371,7 +1371,7 @@ index 0fb6e18..0ff588b 100644
      FIXME("default action not implemented\n");
      return E_NOTIMPL;
  }
-@@ -3825,6 +3830,15 @@ static void HTMLWindow_last_release(DispatchEx *dispex)
+@@ -3853,6 +3858,15 @@ static void HTMLWindow_last_release(DispatchEx *dispex)
      remove_target_tasks(This->task_magic);
  }
  
@@ -1387,7 +1387,7 @@ index 0fb6e18..0ff588b 100644
  static HRESULT HTMLWindow_lookup_dispid(DispatchEx *dispex, const WCHAR *name, DWORD grfdex, DISPID *dispid)
  {
      HTMLInnerWindow *This = impl_from_DispatchEx(dispex);
-@@ -3876,6 +3890,19 @@ static HRESULT HTMLWindow_find_dispid(DispatchEx *dispex, const WCHAR *name, DWO
+@@ -3904,6 +3918,19 @@ static HRESULT HTMLWindow_find_dispid(DispatchEx *dispex, const WCHAR *name, DWO
          }
      }
  
@@ -1407,7 +1407,7 @@ index 0fb6e18..0ff588b 100644
      hres = get_frame_by_name(This->base.outer_window, name, FALSE, &frame);
      if(SUCCEEDED(hres) && frame) {
          prop = alloc_global_prop(This, GLOBAL_FRAMEVAR, name);
-@@ -3998,6 +4025,13 @@ HRESULT HTMLWindow_invoke(DispatchEx *dispex, DISPID id, LCID lcid, WORD flags,
+@@ -4026,6 +4053,13 @@ HRESULT HTMLWindow_invoke(DispatchEx *dispex, DISPID id, LCID lcid, WORD flags,
          }
      case GLOBAL_DISPEXVAR:
          return IWineJSDispatchHost_InvokeEx(&This->event_target.dispex.IWineJSDispatchHost_iface, prop->id, 0, flags, params, res, ei, caller);
@@ -1449,10 +1449,10 @@ index 8fd737a..0c65528 100644
  @ stub ShowModelessHTMLDialog
  
 diff --git a/dlls/mshtml/mshtml_private.h b/dlls/mshtml/mshtml_private.h
-index e5236ed..238682b 100644
+index 70aa48b..ba432cb 100644
 --- a/dlls/mshtml/mshtml_private.h
 +++ b/dlls/mshtml/mshtml_private.h
-@@ -711,7 +711,8 @@ typedef enum {
+@@ -716,7 +716,8 @@ typedef enum {
      GLOBAL_SCRIPTVAR,
      GLOBAL_ELEMENTVAR,
      GLOBAL_DISPEXVAR,
@@ -1462,7 +1462,7 @@ index e5236ed..238682b 100644
  } global_prop_type_t;
  
  typedef struct {
-@@ -963,6 +964,7 @@ struct HTMLDocumentObj {
+@@ -968,6 +969,7 @@ struct HTMLDocumentObj {
      IAdviseSink *view_sink;
      IDocObjectService *doc_object_service;
      IUnknown *webbrowser;
@@ -1470,7 +1470,7 @@ index e5236ed..238682b 100644
      ITravelLog *travel_log;
      IUnknown *browser_service;
      IOleAdviseHolder *advise_holder;
-@@ -1549,9 +1551,23 @@ typedef struct {
+@@ -1554,9 +1556,23 @@ typedef struct {
      void *blocking_xhr;
      unsigned tasks_locked;
      BOOL timer_blocked;
@@ -1524,10 +1524,10 @@ index 7dffdbe..a50539d 100644
  }
  
 diff --git a/dlls/mshtml/script.c b/dlls/mshtml/script.c
-index 786c499..457ef03 100644
+index 4649461..da62394 100644
 --- a/dlls/mshtml/script.c
 +++ b/dlls/mshtml/script.c
-@@ -1898,6 +1898,8 @@ HRESULT global_prop_still_exists(HTMLInnerWindow *window, global_prop_t *prop)
+@@ -1905,6 +1905,8 @@ HRESULT global_prop_still_exists(HTMLInnerWindow *window, global_prop_t *prop)
  
          return frame ? S_OK : DISP_E_MEMBERNOTFOUND;
      }

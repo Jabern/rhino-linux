@@ -431,8 +431,8 @@ build_patched_wine() {
     jobs="$(nproc 2>/dev/null || echo 4)"
 
     if [ ! -d "$src_dir" ]; then
-        echo -e "Cloning Wine 11.18 repository into ${CYAN}$src_dir${NC}..."
-        git clone --depth 1 --branch wine-11.18 https://gitlab.winehq.org/wine/wine.git "$src_dir"
+        echo -e "Cloning Wine 11.20 repository into ${CYAN}$src_dir${NC}..."
+        git clone --depth 1 --branch wine-11.20 https://gitlab.winehq.org/wine/wine.git "$src_dir"
     fi
 
     local patch_files=()
@@ -441,7 +441,7 @@ build_patched_wine() {
         patch_files=("$REPO_DIR"/patches/*.patch)
     else
         echo "Applying standard patch set for X11 / XWayland (all except Patch 16)..."
-        patch_files=("$REPO_DIR"/patches/{0[1-9],1[0-5],1[7-9],2[0-9]}-*.patch)
+        patch_files=("$REPO_DIR"/patches/{0[1-9],1[0-5],1[7-9],[2-9][0-9]}-*.patch)
     fi
 
     cd "$src_dir"

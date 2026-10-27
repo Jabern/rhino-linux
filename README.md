@@ -245,10 +245,10 @@ If you prefer building Wine yourself instead of running `./install.sh`:
 # 1. Clone Wine
 git clone https://gitlab.winehq.org/wine/wine.git ~/src/wine
 cd ~/src/wine
-git checkout wine-11.18
+git checkout wine-11.20
 
 # 2. Apply patches
-for p in /path/to/rhino-linux/patches/{0[1-9],1[0-5],1[7-9],2[0-9]}-*.patch; do
+for p in /path/to/rhino-linux/patches/{0[1-9],1[0-5],1[7-9],[2-9][0-9]}-*.patch; do
     patch -p1 < "$p"
 done
 

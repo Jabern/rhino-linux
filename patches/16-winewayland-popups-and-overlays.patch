@@ -1,8 +1,8 @@
 diff --git a/dlls/winewayland.drv/wayland_surface.c b/dlls/winewayland.drv/wayland_surface.c
-index bcaa8c07f29..0845dc3df65 100644
+index b32a43f..d1e9fcf 100644
 --- a/dlls/winewayland.drv/wayland_surface.c
 +++ b/dlls/winewayland.drv/wayland_surface.c
-@@ -680,6 +680,292 @@ static void wayland_surface_reconfigure_size(struct wayland_surface *surface,
+@@ -769,6 +769,292 @@ static void wayland_surface_reconfigure_size(struct wayland_surface *surface,
          wp_viewport_set_destination(surface->wp_viewport, -1, -1);
  }
  
@@ -295,7 +295,7 @@ index bcaa8c07f29..0845dc3df65 100644
  /**********************************************************************
   *          wayland_surface_reconfigure_client
   *
-@@ -699,7 +985,10 @@ static void wayland_surface_reconfigure_client(struct wayland_surface *surface,
+@@ -788,7 +1074,10 @@ static void wayland_surface_reconfigure_client(struct wayland_surface *surface,
      if (client->wl_subsurface)
      {
          wl_subsurface_set_position(client->wl_subsurface, rect.left, rect.top);
@@ -307,7 +307,7 @@ index bcaa8c07f29..0845dc3df65 100644
      }
  
      if (rect.left != rect.right && rect.top != rect.bottom)
-@@ -708,6 +997,13 @@ static void wayland_surface_reconfigure_client(struct wayland_surface *surface,
+@@ -797,6 +1086,13 @@ static void wayland_surface_reconfigure_client(struct wayland_surface *surface,
          wp_viewport_set_destination(client->wp_viewport, 1, 1);
  
      client->rect = *client_rect;
@@ -321,7 +321,7 @@ index bcaa8c07f29..0845dc3df65 100644
  }
  
  /**********************************************************************
-@@ -780,6 +1076,26 @@ static void wayland_surface_reconfigure_subsurface(struct wayland_surface *surfa
+@@ -869,6 +1165,26 @@ static void wayland_surface_reconfigure_subsurface(struct wayland_surface *surfa
              wl_subsurface_place_above(surface->wl_subsurface, owner_data->client_surface->wl_surface);
          else
              wl_subsurface_place_above(surface->wl_subsurface, owner_surface->wl_surface);
@@ -348,15 +348,15 @@ index bcaa8c07f29..0845dc3df65 100644
          wl_surface_commit(owner_surface->wl_surface);
  
          memset(&surface->processing, 0, sizeof(surface->processing));
-@@ -1156,6 +1472,7 @@ static void wayland_client_surface_destroy(struct client_surface *client)
+@@ -1245,6 +1561,7 @@ static void wayland_client_surface_destroy(struct client_surface *client)
  
      TRACE("%s\n", debugstr_client_surface(client));
  
 +    destroy_overlays(surface);
+     if (surface->color_management)
+         wp_color_management_surface_v1_destroy(surface->color_management);
      if (surface->wp_viewport)
-         wp_viewport_destroy(surface->wp_viewport);
-     if (surface->wl_subsurface)
-@@ -1245,6 +1562,8 @@ struct client_surface *WAYLAND_CreateClientSurface(HWND hwnd, int pixel_format,
+@@ -1376,6 +1693,8 @@ struct client_surface *WAYLAND_CreateClientSurface(HWND hwnd, int pixel_format,
      struct wl_region *empty_region;
  
      if (!(client = client_surface_create(&wayland_client_surface_funcs, hwnd, pixel_format, raw))) return NULL;
@@ -365,7 +365,7 @@ index bcaa8c07f29..0845dc3df65 100644
  
      client->wl_surface =
          wl_compositor_create_surface(process_wayland.wl_compositor);
-@@ -1288,12 +1607,24 @@ void wayland_client_surface_attach(struct wayland_client_surface *client, HWND t
+@@ -1419,12 +1738,24 @@ void wayland_client_surface_attach(struct wayland_client_surface *client, HWND t
  
      if (!toplevel)
      {
@@ -390,7 +390,7 @@ index bcaa8c07f29..0845dc3df65 100644
          client->toplevel = 0;
          return;
      }
-@@ -1318,6 +1649,11 @@ void wayland_client_surface_attach(struct wayland_client_surface *client, HWND t
+@@ -1449,6 +1780,11 @@ void wayland_client_surface_attach(struct wayland_client_surface *client, HWND t
          wl_subsurface_set_desync(client->wl_subsurface);
  
          client->toplevel = toplevel;
@@ -403,10 +403,10 @@ index bcaa8c07f29..0845dc3df65 100644
  
      wayland_surface_reconfigure_client(surface, client, rect);
 diff --git a/dlls/winewayland.drv/waylanddrv.h b/dlls/winewayland.drv/waylanddrv.h
-index c7766752b7f..516395e603f 100644
+index 1cb525b..04f7585 100644
 --- a/dlls/winewayland.drv/waylanddrv.h
 +++ b/dlls/winewayland.drv/waylanddrv.h
-@@ -59,6 +59,8 @@
+@@ -60,6 +60,8 @@
   */
  
  extern char *process_name;
@@ -415,7 +415,7 @@ index c7766752b7f..516395e603f 100644
  extern struct wayland process_wayland;
  
  /**********************************************************************
-@@ -248,6 +250,16 @@ struct wayland_window_config
+@@ -250,6 +252,16 @@ struct wayland_window_config
      BOOL resizeable;
  };
  
@@ -432,10 +432,10 @@ index c7766752b7f..516395e603f 100644
  struct wayland_client_surface
  {
      struct client_surface client;
-@@ -256,6 +268,23 @@ struct wayland_client_surface
-     struct wl_surface *wl_surface;
+@@ -259,6 +271,23 @@ struct wayland_client_surface
      struct wl_subsurface *wl_subsurface;
      struct wp_viewport *wp_viewport;
+     struct wp_color_management_surface_v1 *color_management;
 +    /* list entry in the toplevel's attached client surface list */
 +    struct wl_list link;
 +    BOOL in_list;
@@ -456,7 +456,7 @@ index c7766752b7f..516395e603f 100644
  };
  
  extern struct wayland_client_surface *impl_from_client_surface(struct client_surface *client);
-@@ -342,6 +371,10 @@ POINT map_point_to_surface(struct wayland_surface *surface, POINT point);
+@@ -348,6 +377,10 @@ POINT map_point_to_surface(struct wayland_surface *surface, POINT point);
  RECT map_rect_from_surface(struct wayland_surface *surface, RECT rect);
  POINT map_point_from_surface(struct wayland_surface *surface, POINT point);
  void wayland_client_surface_attach(struct wayland_client_surface *client, HWND toplevel, const RECT *rect);
@@ -467,7 +467,7 @@ index c7766752b7f..516395e603f 100644
  void wayland_surface_ensure_contents(struct wayland_surface *surface);
  void wayland_surface_set_title(struct wayland_surface *surface, LPCWSTR title);
  void wayland_surface_assign_icon(struct wayland_surface *surface);
-@@ -380,6 +413,8 @@ struct wayland_win_data
+@@ -386,6 +419,8 @@ struct wayland_win_data
      struct wayland_surface *wayland_surface;
      /* wayland client surface (if any) for this window */
      struct wayland_client_surface *client_surface;
@@ -477,7 +477,7 @@ index c7766752b7f..516395e603f 100644
      struct window_rects rects;
      BOOL is_fullscreen;
 diff --git a/dlls/winewayland.drv/waylanddrv_main.c b/dlls/winewayland.drv/waylanddrv_main.c
-index 275a3907f92..14c67cf014d 100644
+index 275a390..14c67cf 100644
 --- a/dlls/winewayland.drv/waylanddrv_main.c
 +++ b/dlls/winewayland.drv/waylanddrv_main.c
 @@ -31,6 +31,8 @@
@@ -513,7 +513,7 @@ index 275a3907f92..14c67cf014d 100644
  
      return 0;
 diff --git a/dlls/winewayland.drv/window.c b/dlls/winewayland.drv/window.c
-index 270fdfb40e6..6240bbdf4d5 100644
+index 270fdfb..6240bbd 100644
 --- a/dlls/winewayland.drv/window.c
 +++ b/dlls/winewayland.drv/window.c
 @@ -71,6 +71,7 @@ static struct wayland_win_data *wayland_win_data_create(HWND hwnd, const struct
@@ -548,7 +548,7 @@ index 270fdfb40e6..6240bbdf4d5 100644
      data->is_fullscreen = fullscreen;
      data->resizeable = swp_flags & WINE_SWP_RESIZABLE;
 diff --git a/dlls/winewayland.drv/window_surface.c b/dlls/winewayland.drv/window_surface.c
-index 36a825a7ab7..f407ecccc2e 100644
+index 36a825a..f407ecc 100644
 --- a/dlls/winewayland.drv/window_surface.c
 +++ b/dlls/winewayland.drv/window_surface.c
 @@ -365,6 +365,35 @@ static void wayland_shm_buffer_copy_shape(struct wayland_shm_buffer *buffer, con

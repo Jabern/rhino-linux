@@ -6,7 +6,7 @@ on:
       wine_version:
         description: 'Wine upstream git branch/tag'
         required: true
-        default: 'wine-11.18'
+        default: 'wine-11.20'
       create_release:
         description: 'Publish archive to GitHub Releases'
         required: false
@@ -15,7 +15,7 @@ on:
       release_tag:
         description: 'Release tag (if publishing)'
         required: false
-        default: 'v1.0.0-wine11.18'
+        default: 'v1.0.0-wine11.20'
   push:
     branches:
       - main
@@ -31,7 +31,7 @@ permissions:
 
 jobs:
   build-wine:
-    name: Build Wine (${{ inputs.wine_version || 'wine-11.18' }})
+    name: Build Wine (${{ inputs.wine_version || 'wine-11.20' }})
     runs-on: ubuntu-24.04
 
     steps:
@@ -84,9 +84,9 @@ jobs:
         uses: actions/cache@v6
         with:
           path: ~/.cache/ccache
-          key: ccache-wine-${{ runner.os }}-${{ inputs.wine_version || 'wine-11.18' }}-${{ github.sha }}
+          key: ccache-wine-${{ runner.os }}-${{ inputs.wine_version || 'wine-11.20' }}-${{ github.sha }}
           restore-keys: |
-            ccache-wine-${{ runner.os }}-${{ inputs.wine_version || 'wine-11.18' }}-
+            ccache-wine-${{ runner.os }}-${{ inputs.wine_version || 'wine-11.20' }}-
             ccache-wine-${{ runner.os }}-
 
       - name: Configure ccache environment
@@ -96,7 +96,7 @@ jobs:
 
       - name: Clone Wine upstream
         run: |
-          WINE_VER="${{ inputs.wine_version || 'wine-11.18' }}"
+          WINE_VER="${{ inputs.wine_version || 'wine-11.20' }}"
           echo "Cloning Wine $WINE_VER..."
           git clone --depth 1 --branch "$WINE_VER" https://gitlab.winehq.org/wine/wine.git wine-src
 
@@ -223,7 +223,7 @@ jobs:
             echo "::error::Runtime requires a newer x86-64 level than baseline"; exit 1
           fi
 
-          WINE_VER="${{ inputs.wine_version || 'wine-11.18' }}"
+          WINE_VER="${{ inputs.wine_version || 'wine-11.20' }}"
           TARBALL="wine-rhino-${WINE_VER#wine-}-x86_64.tar.xz"
           echo "Packaging $TARBALL..."
           tar -cf - * | xz -9 -T0 > "$GITHUB_WORKSPACE/$TARBALL"

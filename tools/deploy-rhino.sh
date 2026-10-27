@@ -132,7 +132,7 @@ if [ ! -d "$TARGET_PREFIX/drive_c" ]; then
     echo "[1/6] Initializing fresh 64-bit Wine prefix..."
     # The Rhino installer needs Wine Mono (.NET Framework) and uses the IE control
     # (Wine Gecko). Wine installs both silently from its cache instead of asking
-    # the user, so stage the versions this Wine release expects (11.18).
+    # the user, so stage the versions this Wine release expects (11.20).
     WINE_ADDON_CACHE="${XDG_CACHE_HOME:-$HOME/.cache}/wine"
     mkdir -p "$WINE_ADDON_CACHE"
     while read -r addon sum; do
