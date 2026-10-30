@@ -198,13 +198,14 @@ flatpak run --env=RHINO_GPU=4080 --command=rhino-linux io.github.jabern.RhinoOnL
 ## OpenGL with Zink
 
 Rhino 7 and 8 draw their viewports with OpenGL, and so does Rhino 9 when set to
-it. With an NVIDIA card running NVIDIA's driver, Rhino on Linux uses
+it. Rhino on Linux uses your graphics driver's own OpenGL. You can switch to
 [Zink](https://docs.mesa3d.org/drivers/zink.html), Mesa's OpenGL on top of
-Vulkan, which draws Rhino's viewports more evenly under Wine than NVIDIA's own
-OpenGL. With AMD and Intel graphics, the native OpenGL already is
-Mesa's and stays in use. Rhino 7 keeps NVIDIA's OpenGL for now: under Zink, its
-viewport can show the frame before its last redraw. Choose in the app's **OpenGL** section, or when starting
-Rhino:
+Vulkan, in the app's **OpenGL** section, or when starting Rhino. On NVIDIA cards
+with recent drivers, Rhino sometimes hits a driver fault (`Xid 109` in
+`journalctl -k`): NVIDIA's OpenGL freezes for a few seconds at a time and then
+recovers, while Zink loses its viewport until Rhino restarts, so Zink is no longer
+the default. Under Zink, Rhino 7's viewport can also show the frame before its
+last redraw.
 
 ```bash
 RHINO_GL=native rhino-linux    # NVIDIA's (or your driver's) own OpenGL
@@ -283,7 +284,7 @@ cd /path/to/rhino-linux
 ## Credits & Acknowledgements
 
 - Thanks to [ItHasLegs](https://github.com/ItHasLegs/rhino8-wine) for researching the early `uxtheme` dark-mode crash (now upstream in Wine 11.14) and for the `--fresh` wineserver restart concept to clear stale HTTP state for Cloud Zoo OAuth licensing.
-- [Zink](https://docs.mesa3d.org/drivers/zink.html), Mesa's OpenGL on Vulkan, started by Erik Faye-Lund and developed by Mike Blumenkrantz and the Mesa contributors, draws the OpenGL viewports on NVIDIA cards.
+- [Zink](https://docs.mesa3d.org/drivers/zink.html), Mesa's OpenGL on Vulkan, started by Erik Faye-Lund and developed by Mike Blumenkrantz and the Mesa contributors, is available for the OpenGL viewports.
 - [DXVK](https://github.com/doitsujin/dxvk) by Philip Rebohle and contributors runs Rhino's Direct3D, and [nvidia-libs](https://github.com/SveSop/nvidia-libs) by SveSop brings CUDA and OptiX to Rhino Render.
 - Thanks to [eqeka](https://github.com/eqeka) for testing, and for tracking down the straight Grasshopper wires (fixed in Patch 21) and the Grasshopper menu focus issue on Niri.
 

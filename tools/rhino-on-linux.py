@@ -730,24 +730,21 @@ class Window(Adw.ApplicationWindow):
 
     def opengl_group(self):
         """OpenGL for the viewports of Rhino 7 and 8 (RHINO_GL, which rhino-linux reads):
-        Mesa's Zink on Vulkan, or the native driver."""
+        the native driver, or Mesa's Zink on Vulkan."""
         group = Adw.PreferencesGroup(title="OpenGL",
-                                     description="Rhino 7 and 8 draw their viewports with OpenGL, and Rhino 9 when set to it. "
-                                                 "Zink runs OpenGL on Vulkan, which draws them more evenly with NVIDIA cards.")
-        choices = [("auto", "Automatic", "Zink for Rhino 8 and 9 with NVIDIA cards, the native driver otherwise"),
-                   ("zink", "Zink", "OpenGL on Vulkan, from Mesa"),
-                   ("native", "Native driver", "The graphics driver's own OpenGL")]
+                                     description="Rhino 7 and 8 draw their viewports with OpenGL, and Rhino 9 when set to it.")
+        choices = [("", "Native driver", "The graphics driver's own OpenGL"),
+                   ("zink", "Zink", "Mesa's OpenGL on Vulkan; Rhino 7's viewport may lag one redraw")]
         row = Adw.ComboRow(title="Viewports use", model=Gtk.StringList.new([c[1] for c in choices]))
-        current = read_config().get("RHINO_GL", "auto")
-        index = next((i for i, c in enumerate(choices) if c[0] == current), 0)
+        index = 1 if read_config().get("RHINO_GL") == "zink" else 0
         row.set_selected(index)
         row.set_subtitle(choices[index][2])
 
         def changed(combo, _param):
             key, name, subtitle = choices[combo.get_selected()]
             combo.set_subtitle(subtitle)
-            write_config("RHINO_GL", "" if key == "auto" else key)
-            self.toast(f"Rhino uses {name.lower() if key != 'auto' else 'the automatic choice'} from its next start")
+            write_config("RHINO_GL", key)
+            self.toast(f"Rhino uses {'Zink' if key else 'the native driver'} from its next start")
         row.connect("notify::selected", changed)
         group.add(row)
         return group

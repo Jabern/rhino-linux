@@ -365,23 +365,12 @@ if [ -n "$RHINO_GPU" ] && [ -z "${DXVK_FILTER_DEVICE_NAME:-}" ]; then
     export DXVK_FILTER_DEVICE_NAME="$RHINO_GPU"
 fi
 
-# OpenGL (the viewports of Rhino 7 and 8, and of Rhino 9 set to OpenGL): Mesa's
-# Zink, which draws through the Vulkan driver, or the native OpenGL driver.
-# RHINO_GL=zink or native, chosen in the app; "auto" (the default) takes Zink
-# when the screens hang on an NVIDIA card with NVIDIA's own driver, where it
-# draws Rhino's viewports more evenly under Wine. With AMD and Intel, the native
-# OpenGL already is Mesa's. Rhino 7 stays on the native driver: under Zink its
-# viewport shows the frame before its last redraw until it draws again.
-nvidia_drives_screens() {
-    local status card
-    [ -e /proc/driver/nvidia/version ] || return 1
-    for status in /sys/class/drm/card*-*/status; do
-        [ "$(cat "$status" 2>/dev/null)" = connected ] || continue
-        card="${status#/sys/class/drm/}"; card="${card%%-*}"
-        [ "$(basename "$(readlink -f "/sys/class/drm/$card/device/driver")")" = nvidia ] || return 1
-    done
-    return 0
-}
+# OpenGL (the viewports of Rhino 7 and 8, and of Rhino 9 set to OpenGL): the
+# native OpenGL driver, or with RHINO_GL=zink (chosen in the app) Mesa's Zink,
+# which draws through the Vulkan driver. On NVIDIA cards both meet the same
+# driver fault (Xid 109) now and then; NVIDIA's OpenGL recovers from it, Zink
+# loses its device. Under Zink, Rhino 7's viewport can also show the frame
+# before its last redraw.
 find_zink() {
     local json dir
     for json in /usr/lib/x86_64-linux-gnu/GL/glvnd/egl_vendor.d/50_mesa.json \
@@ -395,12 +384,7 @@ find_zink() {
     return 1
 }
 RHINO_GL="${RHINO_GL-$(rhino_config_get RHINO_GL)}"
-case "${RHINO_GL:-auto}" in
-    zink) use_zink=1 ;;
-    native) use_zink=0 ;;
-    *) [ "$RHINO_MAJOR" != 7 ] && nvidia_drives_screens && use_zink=1 || use_zink=0 ;;
-esac
-if [ "$use_zink" = 1 ] && [ -z "${__EGL_VENDOR_LIBRARY_FILENAMES:-}" ]; then
+if [ "$RHINO_GL" = zink ] && [ -z "${__EGL_VENDOR_LIBRARY_FILENAMES:-}" ]; then
     if mesa_egl="$(find_zink)"; then
         export __EGL_VENDOR_LIBRARY_FILENAMES="$mesa_egl" __GLX_VENDOR_LIBRARY_NAME=mesa MESA_LOADER_DRIVER_OVERRIDE=zink
     else
