@@ -127,6 +127,11 @@ if [ ! -x "$WINESERVER_BIN" ]; then
 fi
 [ -x "$WINESERVER_BIN" ] || WINESERVER_BIN="$(command -v wineserver 2>/dev/null || echo "wineserver")"
 
+# Wine's menu builder turns Windows shortcuts and file types into entries and file
+# associations on the host (a .reg or .vbs file would open in this prefix). Step 3
+# turns it off in the registry; until then, nothing this script runs starts it.
+export WINEDLLOVERRIDES="winemenubuilder.exe=d${WINEDLLOVERRIDES:+;$WINEDLLOVERRIDES}"
+
 # 1. Initialize Prefix if needed
 if [ ! -d "$TARGET_PREFIX/drive_c" ]; then
     echo "[1/6] Initializing fresh 64-bit Wine prefix..."
@@ -203,7 +208,7 @@ get_winetricks() {
 
 # winetricks VERB [timeout in minutes], with our DLL overrides out of the way
 run_winetricks() {
-    env -u WINEDLLOVERRIDES WINE="$WINE_BIN" WINESERVER="$WINESERVER_BIN" WINEPREFIX="$TARGET_PREFIX" \
+    env WINEDLLOVERRIDES="winemenubuilder.exe=d" WINE="$WINE_BIN" WINESERVER="$WINESERVER_BIN" WINEPREFIX="$TARGET_PREFIX" \
         timeout "${2:-20}m" "$WINETRICKS" -q -f "$1"
 }
 
@@ -476,6 +481,13 @@ EOF
 
 "$WINE_BIN" regedit /S "$REG_FILE"
 rm -f "$REG_FILE"
+
+# File associations the menu builder made for this prefix before it was turned off
+# (earlier versions of this script), in the host's and the Flatpak's menus
+for entry in "$HOME"/.local/share/applications/wine-extension-*.desktop \
+             "${XDG_DATA_HOME:-$HOME/.local/share}"/applications/wine-extension-*.desktop; do
+    [ -f "$entry" ] && grep -qF "WINEPREFIX=$TARGET_PREFIX\"" "$entry" && rm -f "$entry"
+done
 
 # Import font registry if available
 if [ -f "$SCRIPT_DIR/windows-fonts.reg" ]; then
