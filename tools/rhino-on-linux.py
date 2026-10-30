@@ -940,8 +940,8 @@ class Window(Adw.ApplicationWindow):
             version, bundle = release
             if version_tuple(version) <= version_tuple(current):
                 self.update_runtime()
-            elif IN_FLATPAK and bundle:
-                self.offer_app_update(version, bundle, current)
+            elif IN_FLATPAK:
+                self.update_app(version, bundle, current)
             else:
                 dialog = Adw.AlertDialog(heading=f"Rhino on Linux {version} is available",
                                          body=f"You have {current}. In the folder you installed it from, run "
@@ -955,6 +955,76 @@ class Window(Adw.ApplicationWindow):
     def update_runtime(self):
         self.run_script("Updating", [os.path.join(REPO_DIR, "install.sh"), "-y"],
                         lambda ok, d: self.after_maintenance(ok, d, "Rhino on Linux is up to date"))
+
+    def update_app(self, version, bundle, current):
+        """Update the Flatpak in place through the Flatpak portal, from the repository
+        it was installed from. Installs from a bundle of 1.4.1 or older have none, and
+        get the new bundle instead, which subscribes them to the repository."""
+        def progress(_proxy, _sender, signal, params):
+            if signal == "Progress" and params.unpack()[0].get("status", 0) != 0:
+                finish(params.unpack()[0])
+
+        def finish(info):
+            """status 2: done; 1: nothing to update; 3: failed (or no answer)."""
+            if not pending:
+                return
+            pending.clear()
+            monitor.disconnect(handler)
+            monitor.call("Close", None, Gio.DBusCallFlags.NONE, -1, None, None)
+            status = info.get("status")
+            if status == 2:
+                self.offer_restart(version)
+            elif bundle:
+                self.offer_app_update(version, bundle, current)
+            else:
+                self.show_failure("Rhino on Linux was not updated", info.get("error_message", ""))
+
+        try:
+            bus = Gio.bus_get_sync(Gio.BusType.SESSION)
+            portal = Gio.DBusProxy.new_sync(bus, Gio.DBusProxyFlags.NONE, None, "org.freedesktop.portal.Flatpak",
+                                            "/org/freedesktop/portal/Flatpak", "org.freedesktop.portal.Flatpak", None)
+            path = portal.call_sync("CreateUpdateMonitor", GLib.Variant("(a{sv})", ({},)),
+                                    Gio.DBusCallFlags.NONE, -1, None).unpack()[0]
+            monitor = Gio.DBusProxy.new_sync(bus, Gio.DBusProxyFlags.NONE, None, "org.freedesktop.portal.Flatpak",
+                                             path, "org.freedesktop.portal.Flatpak.UpdateMonitor", None)
+            handler = monitor.connect("g-signal", progress)
+            pending = [True]
+            monitor.call_sync("Update", GLib.Variant("(sa{sv})", ("", {})), Gio.DBusCallFlags.NONE, -1, None)
+            # A portal that never answers counts as a failure: the bundle remains.
+            GLib.timeout_add_seconds(120, lambda: finish({"status": 3}) and False)
+        except GLib.Error:
+            if bundle:
+                self.offer_app_update(version, bundle, current)
+            return
+        self.toast(f"Updating Rhino on Linux to {version}…")
+
+    def offer_restart(self, version):
+        """The portal installed the new version; this process still runs the old one."""
+        dialog = Adw.AlertDialog(heading=f"Rhino on Linux {version} is installed",
+                                 body="Restart the app to use it. A Rhino that is open keeps running "
+                                      "the previous version until you close it.")
+        dialog.add_response("later", "Later")
+        dialog.add_response("restart", "Restart")
+        dialog.set_response_appearance("restart", Adw.ResponseAppearance.SUGGESTED)
+
+        def chosen(dlg, res):
+            if dlg.choose_finish(res) != "restart":
+                return
+            # The portal starts the newest installed version; it waits for this
+            # instance to leave, else it would only bring this window forward.
+            try:
+                bus = Gio.bus_get_sync(Gio.BusType.SESSION)
+                bus.call_sync("org.freedesktop.portal.Flatpak", "/org/freedesktop/portal/Flatpak",
+                              "org.freedesktop.portal.Flatpak", "Spawn",
+                              GLib.Variant("(ayaaya{uh}a{ss}ua{sv})",
+                                           (b"/\0", [b"sh\0", b"-c\0", b"sleep 1; exec rhino-on-linux\0"],
+                                            {}, {}, 2, {})),  # 2: FLATPAK_SPAWN_FLAGS_LATEST_VERSION
+                              GLib.VariantType("(u)"), Gio.DBusCallFlags.NONE, -1, None)
+            except GLib.Error as e:
+                self.show_failure("Rhino on Linux did not restart", e.message)
+                return
+            self.get_application().quit()
+        dialog.choose(self, None, chosen)
 
     def offer_app_update(self, version, url, current):
         """Download the new Flatpak and hand it to the software center; once it is

@@ -108,8 +108,17 @@ Installing from a terminal always works:
 flatpak install --user ~/Downloads/RhinoOnLinux.flatpak
 ```
 
-The download doesn't update itself. When a new version comes out, download it
-again and install it over the old one; Rhino and your settings stay.
+Or install straight from our Flatpak repository:
+
+```bash
+flatpak install --user https://jabern.github.io/rhino-linux/rhino-on-linux.flatpakref
+```
+
+Either way, the app then updates like any other Flatpak: **Update** in the app,
+your software center or `flatpak update` brings new versions, signed by this
+project. Versions 1.4.1 and older, installed from a downloaded bundle, have no
+repository yet: **Update** in the app downloads the new bundle once, and after you
+install it, updates come by themselves.
 
 To build it yourself from this repository instead:
 

@@ -27,9 +27,18 @@ on:
 permissions:
   contents: write
 
+# Publishing commits to gh-pages: one at a time.
+concurrency:
+  group: ${{ (github.event_name == 'release' || inputs.release_tag != '') && 'flatpak-publish' || format('flatpak-{0}', github.run_id) }}
+  cancel-in-progress: false
+
 env:
   APP_ID: io.github.jabern.RhinoOnLinux
   BUNDLE: RhinoOnLinux.flatpak
+  # App releases go to the Flatpak repository on GitHub Pages; the Wine runtime's
+  # pre-releases only get a bundle.
+  PUBLISH: ${{ (github.event_name == 'release' && !github.event.release.prerelease) || inputs.release_tag != '' }}
+  GPG_KEY_ID: 57A572D418F22EDC6BDE579398FD4B888F6609A7
 
 jobs:
   flatpak:
@@ -44,7 +53,7 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
-            flatpak flatpak-builder appstream desktop-file-utils dbus elfutils
+            flatpak flatpak-builder appstream desktop-file-utils dbus elfutils ostree
           # Ubuntu 24.04 restricts unprivileged user namespaces, which
           # bubblewrap needs for both building and running Flatpaks.
           sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 || true
@@ -71,11 +80,38 @@ jobs:
             --repo=repo --force-clean build-flatpak flatpak/${APP_ID}.yml
 
       - name: Export bundle
+        if: env.PUBLISH != 'true'
         run: |
           # --runtime-repo lets software centers fetch the GNOME runtime from
           # Flathub when someone opens the bundle.
           flatpak build-bundle --runtime-repo=https://dl.flathub.org/repo/flathub.flatpakrepo \
             repo "$BUNDLE" "$APP_ID" master
+
+      - name: Publish to the Flatpak repository
+        if: env.PUBLISH == 'true'
+        env:
+          GPG_PRIVATE_KEY: ${{ secrets.FLATPAK_GPG_PRIVATE_KEY }}
+        run: |
+          export GPG_HOMEDIR="$RUNNER_TEMP/gnupg"
+          mkdir -m 700 "$GPG_HOMEDIR"
+          printf '%s\n' "$GPG_PRIVATE_KEY" | gpg --homedir "$GPG_HOMEDIR" --batch --import
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          if git fetch --depth=1 origin gh-pages; then
+            git worktree add site FETCH_HEAD
+          else
+            git worktree add --orphan -b gh-pages site
+          fi
+          # The new commit goes on top of the published one; the bundle holds the
+          # same signed commit and subscribes whoever installs it to the repository.
+          flatpak/publish-repo.sh repo site "$BUNDLE"
+          cd site
+          git add -A
+          git commit -q -m "Rhino on Linux ${{ inputs.release_tag || github.event.release.tag_name }}"
+          git push origin HEAD:gh-pages
+
+      - name: Checksum
+        run: |
           sha256sum "$BUNDLE" > "$BUNDLE.sha256"
           ls -l "$BUNDLE"
           cat "$BUNDLE.sha256"
