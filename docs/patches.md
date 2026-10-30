@@ -1,10 +1,10 @@
 # Wine Patches Reference
 
-This repository maintains 34 targeted patches against Wine (tested against Wine 11.20) to run McNeel Rhinoceros 8 and Rhino 9 WIP smoothly on Linux.
+This repository maintains 35 targeted patches against Wine (tested against Wine 11.20) to run McNeel Rhinoceros 8 and Rhino 9 WIP smoothly on Linux.
 
 Stock Wine encounters several critical blockers when running Rhino: multi-threaded OpenMP crashes, blank Cloud Zoo login windows (due to incomplete DirectComposition visual tree hosting), black borders around toolbars and menus, startup template screen dismissal, viewport rendering glitches upon maximizing, and multi-monitor coordinate bugs.
 
-Below is the technical breakdown of all 34 patches.
+Below is the technical breakdown of all 35 patches.
 
 ---
 
@@ -269,3 +269,10 @@ Below is the technical breakdown of all 34 patches.
 - **Subsystem**: `dlls/winex11.drv/opengl.c`, `dlls/win32u/opengl.c`
 - **Problem**: with EGL, Wine 11's default OpenGL backend on X11, NVIDIA only offers configs with an alpha channel on a 32-bit visual, and Wine doesn't let windows of another depth than the screen's draw with OpenGL, so no window format had alpha. Rhino's OpenGL pipeline looks for one to list their antialiasing modes: the list stayed empty, and after showing a layout with a detail, Rhino turned multisampling off for good, leaving every viewport jagged until a restart. Other applications (SDL, OpenTK) found no format at all.
 - **Solution**: windows of these formats are created with a config of the screen depth and the same color sizes, and Wine renders into a framebuffer of the requested format (alpha, samples, depth, stencil), which it copies to the window. A framebuffer resized while the application draws now presents that frame first, instead of an empty one.
+
+### Patch 35: Viewports at the Monitor's Refresh Rate on Wayland
+- **File**: [`35-x11-offscreen-surfaces-toplevel-pacing.patch`](../patches/35-x11-offscreen-surfaces-toplevel-pacing.patch)
+- **Subsystem**: `dlls/winex11.drv/window.c`, `dlls/winex11.drv/init.c`, `dlls/winex11.drv/event.c`
+- **Problem**: GL and Vulkan child windows render into offscreen X windows that Wine kept in a hidden "dummy parent". Xwayland paces presents with the frame callbacks of a window's top-level window, and presents to a window without one with a 17 ms timer, so vsync ran at about 60 Hz whatever the monitor: Rhino's viewports ran at 59 fps on a 144 Hz display (147 fps on Windows on the same laptop).
+- **Solution**: offscreen client windows live in an invisible, input-transparent window inside their own top-level window, which follows the top-level when Wine recreates its X window. Unmapping the top-level (minimizing) discards their contents, so the last frame of each surface is kept in a pixmap and shown again on restore until the application presents a new one. Rhino 8 viewports: 59 fps to 137-149 fps with vsync.
+

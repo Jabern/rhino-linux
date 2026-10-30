@@ -1,0 +1,273 @@
+diff --git a/dlls/winex11.drv/event.c b/dlls/winex11.drv/event.c
+index e1b48bef..ce5c06f3 100644
+--- a/dlls/winex11.drv/event.c
++++ b/dlls/winex11.drv/event.c
+@@ -922,6 +922,7 @@ static BOOL X11DRV_UnmapNotify( HWND hwnd, XEvent *event )
+     struct x11drv_win_data *data;
+ 
+     if (!(data = get_win_data( hwnd ))) return FALSE;
++    if (event->xany.window == data->whole_window) data->unmap_count++;
+     if (data->managed && !data->wm_state_serial && data->current_state.wm_state == NormalState)
+     {
+         WARN( "window %p/%lx unexpectedly unmapped, assuming reparenting\n", data->hwnd, data->whole_window );
+diff --git a/dlls/winex11.drv/init.c b/dlls/winex11.drv/init.c
+index 9810767f..a4571f70 100644
+--- a/dlls/winex11.drv/init.c
++++ b/dlls/winex11.drv/init.c
+@@ -376,6 +376,7 @@ static void x11drv_client_surface_destroy( struct client_surface *client )
+     if (surface->window) destroy_client_window( hwnd, surface->window );
+     if (surface->hdc_dst) NtGdiDeleteObjectApp( surface->hdc_dst );
+     if (surface->hdc_src) NtGdiDeleteObjectApp( surface->hdc_src );
++    if (surface->last_frame) XFreePixmap( gdi_display, surface->last_frame );
+ }
+ 
+ static void x11drv_client_surface_detach( struct client_surface *client )
+@@ -596,24 +597,64 @@ static void x11drv_client_surface_update( struct client_surface *client )
+     client_surface_update_offscreen( hwnd, surface );
+ }
+ 
++/* Keep a copy of the frame just shown: the X server discards the contents of an offscreen
++ * window when it is unmapped with its toplevel window, e.g. when it is minimized. */
++static void client_surface_save_last_frame( struct x11drv_client_surface *surface, int width, int height )
++{
++    GC gc;
++
++    if (width <= 0 || height <= 0) return;
++    if (!surface->last_frame || surface->last_frame_size.cx != width || surface->last_frame_size.cy != height)
++    {
++        if (surface->last_frame) XFreePixmap( gdi_display, surface->last_frame );
++        surface->last_frame = XCreatePixmap( gdi_display, surface->window, width, height, surface->depth );
++        surface->last_frame_size.cx = width;
++        surface->last_frame_size.cy = height;
++    }
++    if (!surface->last_frame) return;
++    gc = XCreateGC( gdi_display, surface->last_frame, 0, NULL );
++    XCopyArea( gdi_display, surface->window, surface->last_frame, gc, 0, 0, width, height, 0, 0 );
++    XFreeGC( gdi_display, gc );
++}
++
+ static void X11DRV_client_surface_present( struct client_surface *client, HDC hdc )
+ {
+     struct x11drv_client_surface *surface = impl_from_client_surface( client );
+     HWND hwnd = client->hwnd, toplevel = client->toplevel;
+     RECT rect_dst = client->monitor_rect, rect_src, rect, rect_src_offset;
+-    Drawable window;
++    struct x11drv_win_data *data;
++    BOOL landed, from_last_frame;
++    Drawable window, src;
+     HRGN region;
+ 
+     if (!hdc) return;
++
++    /* Unmapping the toplevel window unmaps the offscreen windows inside it, and the X server
++     * discards their contents; mapping it again damages them with nothing in. Until the
++     * application presents a new frame, show the copy of the last one. */
++    if ((data = get_win_data( toplevel )))
++    {
++        if (data->unmap_count != surface->unmap_count)
++        {
++            surface->unmap_count = data->unmap_count;
++            if (surface->last_frame)
++            {
++                surface->show_last_frame = TRUE;
++                InterlockedExchange( &surface->client.presented, FALSE );
++            }
++        }
++        release_win_data( data );
++    }
++    landed = presenting_damage && damaged_drawable == surface->window &&
++             InterlockedCompareExchange( &surface->client.presented, 0, 0 );
++    if (landed) surface->show_last_frame = FALSE;
++
+     /* right after vkQueuePresentKHR the frame usually hasn't reached the offscreen window yet;
+      * for a new surface that would show black, so let the damage event copy its first frame.
+      * Only a frame landing in this surface's window counts: resizing or redirecting a window
+      * damages it too, and another surface of the window, like the one of a swap chain the
+      * application has replaced, would then show black over the last frame. */
+-    if (!surface->has_frame && surface->damage &&
+-        !(presenting_damage && damaged_drawable == surface->window &&
+-          InterlockedCompareExchange( &surface->client.presented, 0, 0 )))
+-        return;
++    if (!surface->has_frame && surface->damage && !landed) return;
+     window = X11DRV_get_whole_window( toplevel );
+     if (!window) return;
+ 
+@@ -626,6 +667,7 @@ static void X11DRV_client_surface_present( struct client_surface *client, HDC hd
+         rect_dst = surface->last_dst;
+         SetRect( &rect_src, 0, 0, surface->changes.width, surface->changes.height );
+         region = 0;
++        if (surface->last_frame) surface->show_last_frame = TRUE;
+     }
+     else
+     {
+@@ -644,12 +686,18 @@ static void X11DRV_client_surface_present( struct client_surface *client, HDC hd
+         set_dc_drawable( surface->hdc_dst, window, &rect_dst, IncludeInferiors );
+     if (region) NtGdiExtSelectClipRgn( surface->hdc_dst, region, RGN_COPY );
+ 
+-    SetRect( &rect_src_offset, 0, 0, rect_src.right - rect_src.left, rect_src.bottom - rect_src.top );
+-    if (get_dc_drawable( surface->hdc_src, &rect ) != surface->window || !EqualRect( &rect, &rect_src_offset ))
+-        set_dc_drawable( surface->hdc_src, surface->window, &rect_src_offset, IncludeInferiors );
++    from_last_frame = surface->show_last_frame && surface->last_frame;
++    if (from_last_frame)
++        SetRect( &rect_src_offset, 0, 0, surface->last_frame_size.cx, surface->last_frame_size.cy );
++    else
++        SetRect( &rect_src_offset, 0, 0, rect_src.right - rect_src.left, rect_src.bottom - rect_src.top );
++    src = from_last_frame ? surface->last_frame : surface->window;
++    if (get_dc_drawable( surface->hdc_src, &rect ) != src || !EqualRect( &rect, &rect_src_offset ))
++        set_dc_drawable( surface->hdc_src, src, &rect_src_offset, IncludeInferiors );
+ 
+     NtGdiStretchBlt( surface->hdc_dst, 0, 0, rect_dst.right - rect_dst.left, rect_dst.bottom - rect_dst.top,
+-                     surface->hdc_src, 0, 0, rect_src.right - rect_src.left, rect_src.bottom - rect_src.top, SRCCOPY, 0 );
++                     surface->hdc_src, 0, 0, rect_src_offset.right, rect_src_offset.bottom, SRCCOPY, 0 );
++    if (!from_last_frame) client_surface_save_last_frame( surface, rect_src_offset.right, rect_src_offset.bottom );
+     XFlush( gdi_display );
+     surface->has_frame = TRUE;
+ 
+@@ -697,6 +745,7 @@ struct client_surface *X11DRV_CreateClientSurface( HWND hwnd, int format, BOOL r
+ 
+     if (!(surface = client_surface_create( &x11drv_client_surface_funcs, hwnd, format, raw ))) goto failed;
+     surface->colormap = colormap;
++    surface->depth = visual.depth;
+     rect = raw ? surface->client.monitor_rect : surface->client.virtual_rect;
+     if (!(surface->window = create_client_window( hwnd, rect, &visual, colormap ))) goto failed;
+     x11drv_client_surface_update( &surface->client );
+diff --git a/dlls/winex11.drv/window.c b/dlls/winex11.drv/window.c
+index 65b5d774..443bb38f 100644
+--- a/dlls/winex11.drv/window.c
++++ b/dlls/winex11.drv/window.c
+@@ -2354,6 +2354,52 @@ Window get_dummy_parent(void)
+     return dummy_parent;
+ }
+ 
++/* Offscreen client windows are redirected, and their frames copied on-screen by us. Xwayland
++ * paces presents with the frame callbacks of a window's top-level window, and presents to a
++ * window outside any that is shown (the dummy parent) with a 17 ms timer, so vsync ran at about
++ * 60 Hz whatever the monitor's refresh rate. Keep them in an invisible window inside their
++ * top-level window instead, when it is ours. */
++static Window create_offscreen_parent( Window parent )
++{
++#ifdef HAVE_LIBXSHAPE
++    static XRectangle empty_rect;
++    XSetWindowAttributes attrib;
++    Window ret;
++
++    attrib.border_pixel = 0;
++    attrib.colormap = default_colormap;
++    ret = XCreateWindow( gdi_display, parent, 0, 0, 1, 1, 0, default_visual.depth, InputOutput,
++                         default_visual.visual, CWColormap | CWBorderPixel, &attrib );
++    if (!ret) return 0;
++    XShapeCombineRectangles( gdi_display, ret, ShapeBounding, 0, 0, &empty_rect, 1, ShapeSet, YXBanded );
++    XShapeCombineRectangles( gdi_display, ret, ShapeInput, 0, 0, &empty_rect, 1, ShapeSet, YXBanded );
++    XMapWindow( gdi_display, ret );
++    return ret;
++#else
++    return 0;
++#endif
++}
++
++static Window get_offscreen_parent( HWND hwnd )
++{
++    HWND top = NtUserGetAncestor( hwnd, GA_ROOT );
++    struct x11drv_win_data *data;
++    Window ret = 0;
++
++    if (top && (data = get_win_data( top )))
++    {
++        if (!data->offscreen_parent && data->whole_window && data->whole_window != root_window)
++        {
++            XFlush( data->display ); /* make sure whole_window is known from gdi_display */
++            data->offscreen_parent = create_offscreen_parent( data->whole_window );
++            TRACE( "%p/%lx offscreen parent %lx\n", top, data->whole_window, data->offscreen_parent );
++        }
++        ret = data->offscreen_parent;
++        release_win_data( data );
++    }
++    return ret ? ret : get_dummy_parent();
++}
++
+ static void client_window_events_enable( struct x11drv_win_data *data, Window client_window )
+ {
+     XSaveContext( data->display, client_window, winContext, (char *)data->hwnd );
+@@ -2393,7 +2439,7 @@ void detach_client_window( struct x11drv_win_data *data, Window client_window )
+     if (data->whole_window)
+     {
+         client_window_events_disable( data, client_window );
+-        reparent_client_window( data, client_window, get_dummy_parent(), 0, 0 );
++        reparent_client_window( data, client_window, get_offscreen_parent( data->hwnd ), 0, 0 );
+     }
+ 
+     data->client_window = 0;
+@@ -2452,7 +2498,7 @@ Window create_client_window( HWND hwnd, RECT client_rect, const XVisualInfo *vis
+ {
+     struct x11drv_win_data *data = get_win_data( hwnd ), dummy = {0};
+     XSetWindowAttributes attr;
+-    Window ret, parent = get_dummy_parent();
++    Window ret, parent = get_offscreen_parent( hwnd );
+     int x, y, cx, cy;
+ 
+     if (!data) data = &dummy; /* use a dummy window data for HWND_MESSAGE and foreign windows, to create an offscreen client window */
+@@ -2724,6 +2770,8 @@ void create_whole_window( struct x11drv_win_data *data )
+ 
+     XFlush( data->display );  /* make sure the window exists before we start painting to it */
+ 
++    if (data->offscreen_parent) XReparentWindow( gdi_display, data->offscreen_parent, data->whole_window, 0, 0 );
++
+ done:
+     if (win_rgn) NtGdiDeleteObjectApp( win_rgn );
+ }
+@@ -2746,6 +2794,10 @@ static void destroy_whole_window( struct x11drv_win_data *data, BOOL already_des
+     {
+         if (!already_destroyed) detach_client_window( data, data->client_window );
+         else if (data->client_window) client_window_events_disable( data, data->client_window );
++        /* the offscreen client windows outlive whole_window, put them back in the next one */
++        if (data->offscreen_parent && !already_destroyed)
++            XReparentWindow( gdi_display, data->offscreen_parent, get_dummy_parent(), 0, 0 );
++        else if (already_destroyed) data->offscreen_parent = 0;
+         XDeleteContext( data->display, data->whole_window, winContext );
+         if (!already_destroyed)
+         {
+@@ -2889,6 +2941,19 @@ void X11DRV_DestroyWindow( HWND hwnd )
+     if (!(data = get_win_data( hwnd ))) return;
+ 
+     destroy_whole_window( data, FALSE );
++    if (data->offscreen_parent)
++    {
++        Window root, parent, *children;
++        unsigned int i, count;
++
++        if (XQueryTree( gdi_display, data->offscreen_parent, &root, &parent, &children, &count ))
++        {
++            for (i = 0; i < count; i++) XReparentWindow( gdi_display, children[i], get_dummy_parent(), 0, 0 );
++            XFree( children );
++        }
++        XDestroyWindow( gdi_display, data->offscreen_parent );
++        data->offscreen_parent = 0;
++    }
+     if (thread_data->last_focus == hwnd) thread_data->last_focus = 0;
+     if (thread_data->last_xic_hwnd == hwnd) thread_data->last_xic_hwnd = 0;
+     if (data->icon_pixmap) XFreePixmap( gdi_display, data->icon_pixmap );
+diff --git a/dlls/winex11.drv/x11drv.h b/dlls/winex11.drv/x11drv.h
+index 8de19df3..47dccb59 100644
+--- a/dlls/winex11.drv/x11drv.h
++++ b/dlls/winex11.drv/x11drv.h
+@@ -377,6 +377,11 @@ struct x11drv_client_surface
+     XID damage;
+     BOOL has_frame; /* a frame was presented, so the window holds something to show */
+     RECT last_dst;  /* where the last frame was shown while the toplevel wasn't minimized */
++    int depth;      /* depth of the window's visual */
++    Pixmap last_frame; /* copy of the last frame shown, which outlives the window's contents */
++    SIZE last_frame_size;
++    BOOL show_last_frame; /* the window lost its contents: show last_frame until a new frame */
++    UINT unmap_count; /* the toplevel's unmap_count when last presented */
+ };
+ 
+ extern struct x11drv_client_surface *impl_from_client_surface( struct client_surface *client );
+@@ -685,6 +690,8 @@ struct x11drv_win_data
+     HWND        hwnd;           /* hwnd that this private data belongs to */
+     Window      whole_window;   /* X window for the complete window */
+     Window      client_window;  /* X window for the client area */
++    Window      offscreen_parent; /* X window holding the offscreen client windows of this top-level window */
++    UINT        unmap_count;    /* times whole_window was unmapped, discarding the offscreen windows' contents */
+     struct window_rects rects;  /* window rects in monitor DPI, relative to parent client area */
+     struct host_window *parent; /* the host window parent, frame or embedder, NULL if root_window */
+     POINT       child_pos;      /* position of a child window's whole_window in its X parent */
