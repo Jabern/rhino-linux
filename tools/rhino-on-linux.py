@@ -6,11 +6,14 @@ the same thing.
 
 Requires: Python 3, PyGObject, GTK 4, libadwaita 1.5+.
 """
+import json
 import os
 import re
 import shutil
 import subprocess
 import sys
+import threading
+import urllib.request
 
 import gi
 
@@ -27,6 +30,8 @@ CONFIG_DIR = os.path.join(os.environ.get("XDG_CONFIG_HOME", os.path.join(HOME, "
 CONFIG_FILE = os.path.join(CONFIG_DIR, "config")
 GUI_SETTINGS = os.path.join(CONFIG_DIR, "app.ini")
 DOWNLOAD_URL = "https://www.rhino3d.com/download/"
+RELEASES_API = "https://api.github.com/repos/Jabern/rhino-linux/releases/latest"
+APP_BUNDLE = "RhinoOnLinux.flatpak"
 PLUGIN_SUFFIXES = ("rhi", "yak", "gha", "ghuser", "zip", "exe", "msi")
 ANSI = re.compile(r"\x1b\[[0-9;]*m")
 
@@ -62,6 +67,58 @@ def read_config():
 
 def wine_path():
     return read_config().get("RHINO_WINE", os.path.join(DATA_HOME, "wine-rhino/bin/wine"))
+
+
+def app_version():
+    """This app's version, the newest release in its metainfo; None if unknown."""
+    for path in (os.path.join(REPO_DIR, "..", "metainfo", f"{APP_ID}.metainfo.xml"),  # Flatpak
+                 os.path.join(REPO_DIR, "flatpak", f"{APP_ID}.metainfo.xml")):         # checkout
+        try:
+            with open(path) as f:
+                m = re.search(r'<release version="([\d.]+)"', f.read())
+        except OSError:
+            continue
+        if m:
+            return m.group(1)
+    return None
+
+
+def version_tuple(version):
+    return tuple(int(n) for n in re.findall(r"\d+", version or ""))
+
+
+def latest_release():
+    """(version, Flatpak bundle URL or None) of the latest app release on GitHub;
+    pre-releases (the Wine runtime builds) are not "latest". Blocks: call it in a thread."""
+    request = urllib.request.Request(RELEASES_API, headers={"Accept": "application/vnd.github+json"})
+    with urllib.request.urlopen(request, timeout=15) as response:
+        release = json.load(response)
+    bundle = next((a["browser_download_url"] for a in release.get("assets", []) if a.get("name") == APP_BUNDLE), None)
+    return release.get("tag_name", "").lstrip("v"), bundle
+
+
+def runtime_outdated():
+    """The downloaded Wine runtime is not the one this version of the app comes with
+    (install.sh's WINE_RELEASE_SHA256); a runtime built here is never outdated."""
+    try:
+        with open(os.path.join(DATA_HOME, "wine-rhino", ".rhino-linux-runtime")) as f:
+            stamp = f.read().strip()
+        with open(os.path.join(REPO_DIR, "install.sh")) as f:
+            m = re.search(r'^WINE_RELEASE_SHA256="([0-9a-f]+)"', f.read(), re.M)
+    except OSError:
+        return False
+    return bool(m) and stamp not in (m.group(1), "local-build")
+
+
+def in_thread(work, done):
+    """Run work() in a thread and done(result, error) in the main loop."""
+    def run():
+        try:
+            result, error = work(), None
+        except Exception as e:  # network, disk: reported to the user
+            result, error = None, e
+        GLib.idle_add(lambda: done(result, error) and False)
+    threading.Thread(target=run, daemon=True).start()
 
 
 # Rhino major versions, newest first, and their folders under Program Files.
@@ -600,6 +657,8 @@ class Window(Adw.ApplicationWindow):
             box.append(open_btn)
         else:
             box.append(app_header("Rhino on Linux", f"{len(versions)} versions of Rhino are installed."))
+        if runtime_outdated():
+            box.append(self.runtime_update_group())
         box.append(self.versions_group(versions))
 
         gpus = [name for kind, name in graphics_cards() if kind == "gpu"]
@@ -634,6 +693,19 @@ class Window(Adw.ApplicationWindow):
         if self.expert:
             box.append(self.expert_group())
         return self.page("Rhino on Linux", box, "home")
+
+    def runtime_update_group(self):
+        """After the app was updated: the Wine runtime it comes with isn't installed yet."""
+        group = Adw.PreferencesGroup()
+        row = Adw.ActionRow(title="Finish updating", subtitle="This version of Rhino on Linux comes with a newer "
+                                                              "Windows compatibility layer")
+        row.add_prefix(Gtk.Image(icon_name="software-update-available-symbolic"))
+        button = Gtk.Button(label="Update", valign=Gtk.Align.CENTER)
+        button.add_css_class("suggested-action")
+        button.connect("clicked", lambda *_: self.update_runtime())
+        row.add_suffix(button)
+        group.add(row)
+        return group
 
     def graphics_group(self, gpus):
         """With several graphics cards: the one Rhino draws with (RHINO_GPU, which
@@ -835,8 +907,64 @@ class Window(Adw.ApplicationWindow):
             self.show_failure("The plug-in was not installed", detail)
 
     def on_update(self, *_):
+        """A newer app release replaces the app itself, which brings its own Wine
+        runtime; else install.sh refreshes the runtime this version comes with."""
+        current = app_version()
+
+        def checked(release, error):
+            if error or not release or not current:
+                self.update_runtime()
+                return
+            version, bundle = release
+            if version_tuple(version) <= version_tuple(current):
+                self.update_runtime()
+            elif IN_FLATPAK and bundle:
+                self.offer_app_update(version, bundle, current)
+            else:
+                dialog = Adw.AlertDialog(heading=f"Rhino on Linux {version} is available",
+                                         body=f"You have {current}. In the folder you installed it from, run "
+                                              "git pull, then ./install.sh")
+                dialog.add_response("ok", "OK")
+                dialog.present(self)
+
+        self.toast("Checking for updates…")
+        in_thread(latest_release, checked)
+
+    def update_runtime(self):
         self.run_script("Updating", [os.path.join(REPO_DIR, "install.sh"), "-y"],
                         lambda ok, d: self.after_maintenance(ok, d, "Rhino on Linux is up to date"))
+
+    def offer_app_update(self, version, url, current):
+        """Download the new Flatpak and hand it to the software center; once it is
+        installed, the new app updates the Wine runtime when it next opens."""
+        path = os.path.join(HOME, "Downloads", f"RhinoOnLinux-{version}.flatpak")
+        dialog = Adw.AlertDialog(heading=f"Rhino on Linux {version} is available",
+                                 body=f"You have {current}. The new version is downloaded to your Downloads folder "
+                                      "and opens in your software center: install it there, then open Rhino on "
+                                      "Linux again. Your Rhino, plug-ins and settings stay.\n\n"
+                                      "If no software center opens, run:\n"
+                                      f"flatpak install --user {path.replace(HOME, '~', 1)}")
+        dialog.add_response("cancel", "Later")
+        dialog.add_response("download", "Download")
+        dialog.set_response_appearance("download", Adw.ResponseAppearance.SUGGESTED)
+
+        def download():
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            with urllib.request.urlopen(url, timeout=60) as response, open(path + ".part", "wb") as f:
+                shutil.copyfileobj(response, f)
+            os.replace(path + ".part", path)
+
+        def downloaded(_result, error):
+            if error:
+                self.show_failure("The new version was not downloaded", str(error))
+            else:
+                self.open_path(path)
+
+        def chosen(dlg, res):
+            if dlg.choose_finish(res) == "download":
+                self.toast(f"Downloading Rhino on Linux {version}…")
+                in_thread(download, downloaded)
+        dialog.choose(self, None, chosen)
 
     def on_repair(self, *_):
         self.repair(installed_versions())
@@ -1020,6 +1148,7 @@ class Window(Adw.ApplicationWindow):
 
     def on_about(self, *_):
         about = Adw.AboutDialog(application_name="Rhino on Linux", developer_name="Rhino on Linux contributors",
+                                version=app_version() or "",
                                 website="https://github.com/Jabern/rhino-linux",
                                 issue_url="https://github.com/Jabern/rhino-linux/issues",
                                 license_type=Gtk.License.MIT_X11,
