@@ -33,6 +33,8 @@ if [ ! -f "$REPO/config" ]; then
     mkdir -p "$REPO"
     ostree init --mode=archive --repo="$REPO"
 fi
+# Git keeps no empty folders, and ostree needs these.
+mkdir -p "$REPO"/refs/{heads,remotes,mirrors} "$REPO"/{objects,state,extensions,tmp}
 
 # A new commit on top of the published one, so the repository keeps history.
 flatpak build-commit-from --src-repo="$BUILD_REPO" "${sign[@]}" "$REPO" "$REF"

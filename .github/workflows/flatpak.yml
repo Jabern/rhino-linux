@@ -107,7 +107,8 @@ jobs:
           flatpak/publish-repo.sh repo site "$BUNDLE"
           cd site
           git add -A
-          git commit -q -m "Rhino on Linux ${{ inputs.release_tag || github.event.release.tag_name }}"
+          # A rerun of the same build changes nothing.
+          git diff --cached --quiet || git commit -q -m "Rhino on Linux ${{ inputs.release_tag || github.event.release.tag_name }}"
           git push origin HEAD:gh-pages
 
       - name: Checksum
