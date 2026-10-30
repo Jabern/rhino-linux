@@ -664,6 +664,7 @@ class Window(Adw.ApplicationWindow):
         gpus = [name for kind, name in graphics_cards() if kind == "gpu"]
         if len(gpus) > 1:
             box.append(self.graphics_group(gpus))
+        box.append(self.opengl_group())
 
         plugins = Adw.PreferencesGroup(title="Plug-ins",
                                        description="You can also drop a plug-in file on this window, or double-click it in your file manager.")
@@ -723,6 +724,30 @@ class Window(Adw.ApplicationWindow):
             write_config("RHINO_GPU", "" if name == "Automatic" else name)
             self.toast("Rhino chooses its graphics card itself from its next start" if name == "Automatic"
                        else f"Rhino uses the {name} from its next start")
+        row.connect("notify::selected", changed)
+        group.add(row)
+        return group
+
+    def opengl_group(self):
+        """OpenGL for the viewports of Rhino 7 and 8 (RHINO_GL, which rhino-linux reads):
+        Mesa's Zink on Vulkan, or the native driver."""
+        group = Adw.PreferencesGroup(title="OpenGL",
+                                     description="Rhino 7 and 8 draw their viewports with OpenGL, and Rhino 9 when set to it. "
+                                                 "Zink runs OpenGL on Vulkan, which draws them more evenly with NVIDIA cards.")
+        choices = [("auto", "Automatic", "Zink for Rhino 8 and 9 with NVIDIA cards, the native driver otherwise"),
+                   ("zink", "Zink", "OpenGL on Vulkan, from Mesa"),
+                   ("native", "Native driver", "The graphics driver's own OpenGL")]
+        row = Adw.ComboRow(title="Viewports use", model=Gtk.StringList.new([c[1] for c in choices]))
+        current = read_config().get("RHINO_GL", "auto")
+        index = next((i for i, c in enumerate(choices) if c[0] == current), 0)
+        row.set_selected(index)
+        row.set_subtitle(choices[index][2])
+
+        def changed(combo, _param):
+            key, name, subtitle = choices[combo.get_selected()]
+            combo.set_subtitle(subtitle)
+            write_config("RHINO_GL", "" if key == "auto" else key)
+            self.toast(f"Rhino uses {name.lower() if key != 'auto' else 'the automatic choice'} from its next start")
         row.connect("notify::selected", changed)
         group.add(row)
         return group
@@ -1153,7 +1178,13 @@ class Window(Adw.ApplicationWindow):
                                 issue_url="https://github.com/Jabern/rhino-linux/issues",
                                 license_type=Gtk.License.MIT_X11,
                                 comments="Sets up and launches McNeel Rhinoceros with Wine and DXVK. "
-                                         "Not affiliated with Robert McNeel & Associates.")
+                                         "Not affiliated with Robert McNeel &amp; Associates.")
+        about.add_acknowledgement_section("Built on", [
+            "Wine https://www.winehq.org",
+            "DXVK by Philip Rebohle and contributors https://github.com/doitsujin/dxvk",
+            "Zink, Mesa's OpenGL on Vulkan, by Erik Faye-Lund, Mike Blumenkrantz and the Mesa contributors https://docs.mesa3d.org/drivers/zink.html",
+            "nvidia-libs by SveSop https://github.com/SveSop/nvidia-libs",
+        ])
         about.present(self)
 
     def do_close_request(self):
