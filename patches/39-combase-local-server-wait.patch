@@ -1,0 +1,76 @@
+diff --git a/dlls/combase/rpc.c b/dlls/combase/rpc.c
+index dc338778..aa67ba93 100644
+--- a/dlls/combase/rpc.c
++++ b/dlls/combase/rpc.c
+@@ -629,44 +629,61 @@ HRESULT rpc_get_local_class_object(REFCLSID rclsid, REFIID riid, void **obj)
+     IStream *stream = NULL;
+     ULARGE_INTEGER newpos;
+     LARGE_INTEGER seekto;
+-    int tries = 0;
++    DWORD start = GetTickCount(), delay = 10;
++    HANDLE process = 0, event = NULL;
++    BOOL started = FALSE;
+     ULONG length;
+     HRESULT hr;
+-    static const int MAXTRIES = 30; /* 30 seconds */
++    static const DWORD max_wait = 30000; /* 30 seconds */
+ 
+     TRACE("clsid %s, riid %s\n", debugstr_guid(rclsid), debugstr_guid(riid));
+ 
+-    while (tries++ < MAXTRIES)
++    for (;;)
+     {
+         DWORD index, start_ticks;
+-        HANDLE process = 0;
++        HANDLE handle;
+ 
+         if (SUCCEEDED(hr = rpcss_get_class_object(rclsid, &objref)))
+             break;
+ 
+-        if (tries == 1)
++        if (!started)
+         {
++            started = TRUE;
+             if ((hr = create_local_service(rclsid)) && (hr = create_server(rclsid, &process)) &&
+                 (hr = create_surrogate_server(rclsid, &process)) )
+                 return hr;
+         }
+ 
+-        /* Wait for one second, even if messages arrive. */
++        if (GetTickCount() - start >= max_wait)
++            break;
++
++        /* Wait for the server to register its class, polling less often the longer it
++         * takes. A service leaves no process to watch: CoWaitForMultipleHandles() returns
++         * at once without a handle, so wait on an event nothing sets instead of spinning. */
++        if (!process && !event && !(event = CreateEventW(NULL, TRUE, FALSE, NULL)))
++            break;
++        handle = process ? process : event;
++
++        /* Wait for the whole delay, even if messages arrive. */
+         start_ticks = GetTickCount();
+         do
+         {
+-            if (SUCCEEDED(CoWaitForMultipleHandles(0, 1000, (process != 0), &process, &index)) && process && !index)
++            if (SUCCEEDED(CoWaitForMultipleHandles(0, delay, 1, &handle, &index)) && process && !index)
+             {
+                 WARN("Server for %s failed to start.\n", debugstr_guid(rclsid));
+                 CloseHandle(process);
++                if (event) CloseHandle(event);
+                 return E_NOINTERFACE;
+             }
+-        } while (GetTickCount() - start_ticks < 1000);
++        } while (GetTickCount() - start_ticks < delay);
+ 
+-        if (process) CloseHandle(process);
++        delay = min(delay * 2, 1000);
+     }
+ 
+-    if (!objref || tries >= MAXTRIES)
++    if (process) CloseHandle(process);
++    if (event) CloseHandle(event);
++
++    if (!objref)
+         return E_NOINTERFACE;
+ 
+     if (SUCCEEDED(hr = CreateStreamOnHGlobal(0, TRUE, &stream)))

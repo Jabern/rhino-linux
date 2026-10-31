@@ -1,6 +1,6 @@
 # Wine Patches for Rhinoceros on Linux
 
-This directory contains 38 modular topic patches for Wine 11.20 (37 core patches for X11 / XWayland and 1 optional patch for pure Wayland) to run **McNeel Rhinoceros** on Linux with native performance, hardware-accelerated Direct3D 11 viewports, and Cloud Zoo licensing support.
+This directory contains 40 modular topic patches for Wine 11.20 (39 core patches for X11 / XWayland and 1 optional patch for pure Wayland) to run **McNeel Rhinoceros** on Linux with native performance, hardware-accelerated Direct3D 11 viewports, and Cloud Zoo licensing support.
 
 ---
 
@@ -46,6 +46,8 @@ This directory contains 38 modular topic patches for Wine 11.20 (37 core patches
 | **36** | `36-dwrite-keep-recent-font-streams.patch` | `dwrite` | DirectWrite keeps the 32 font files it used last mapped instead of reopening each one for every question: 43,000 font file opens down to 4,000 while Rhino 8 starts, 2.7 s sooner. |
 | **37** | `37-ws2_32-linklocal-unreachable.patch` | `ws2_32` | With `WINE_LINKLOCAL_UNREACHABLE=1` (set by the launcher off cloud machines), connects to link-local IPv4 addresses fail at once instead of waiting for a gateway that drops them: Rhino 8's EC2 metadata check no longer stalls startup for 3 s. |
 | **38** | `38-kernelbase-own-process-modules.patch` | `kernelbase` | `EnumProcessModules` and module-name lookups through a real handle to the own process read the loader list in place, as for `GetCurrentProcess()`, instead of one wineserver round trip per entry (74,000 while Rhino 8 starts). |
+| **39** | `39-combase-local-server-wait.patch` | `combase` | Waiting for an out-of-process COM server (a service such as BITS) to register its class no longer spins a CPU core for a second at a time; the class is used as soon as it's registered (BITS: over a second to 60 ms). |
+| **40** | `40-ntdll-environment-scan.patch` | `ntdll` | Environment lookups find the end of each string four characters at a time; .NET's JIT makes two lookups per compiled method. |
 
 ---
 

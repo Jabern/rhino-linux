@@ -1,0 +1,47 @@
+diff --git a/dlls/ntdll/env.c b/dlls/ntdll/env.c
+index d6c5fb7c..c049511c 100644
+--- a/dlls/ntdll/env.c
++++ b/dlls/ntdll/env.c
+@@ -152,6 +152,33 @@ NTSTATUS WINAPI RtlDestroyEnvironment(PWSTR env)
+     return STATUS_SUCCESS;
+ }
+ 
++/* The end of an environment string, reading four characters at a time:
++ * applications such as .NET query variables thousands of times, and each
++ * query walks the whole environment block. */
++static const WCHAR *env_string_end( const WCHAR *str )
++{
++    const ULONGLONG low = 0x0001000100010001ull, high = 0x8000800080008000ull;
++    ULONGLONG word;
++
++    if (!((ULONG_PTR)str & 1))
++    {
++        while ((ULONG_PTR)str & 7)
++        {
++            if (!*str) return str;
++            str++;
++        }
++        /* aligned reads never cross into the next page */
++        for (;;)
++        {
++            memcpy( &word, str, sizeof(word) );
++            if ((word - low) & ~word & high) break;
++            str += 4;
++        }
++    }
++    while (*str) str++;
++    return str;
++}
++
+ static LPCWSTR ENV_FindVariable(PCWSTR var, PCWSTR name, unsigned namelen)
+ {
+     while (*var)
+@@ -159,7 +186,7 @@ static LPCWSTR ENV_FindVariable(PCWSTR var, PCWSTR name, unsigned namelen)
+         /* match var names, but avoid setting a var with a name including a '='
+          * (a starting '=' is valid though)
+          */
+-        unsigned int len = wcslen( var );
++        unsigned int len = env_string_end( var ) - var;
+         if (len > namelen &&
+             var[namelen] == '=' &&
+             !RtlCompareUnicodeStrings( var, namelen, name, namelen, TRUE ) &&

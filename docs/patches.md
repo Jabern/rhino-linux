@@ -294,3 +294,15 @@ Below is the technical breakdown of all 35 patches.
 - **Problem**: `EnumProcessModules`, `GetModuleBaseName`, `GetModuleFileNameEx` and `GetModuleInformation` read the loader list in place for `GetCurrentProcess()`, but through `ReadProcessMemory` for a real process handle: one wineserver round trip per list entry. .NET's `System.Diagnostics.Process` opens a real handle to its own process and looks up each module in turn, walking the list again each time: 74,000 requests while Rhino 8 started (the Windows trace saw the same calls as 241,000 `NtReadVirtualMemory`).
 - **Solution**: the module iterator already queries the process id; for the own process it reads the entries directly. Lookups through a real handle are six times faster; time to ready 6.8 s to 6.4 s, and wineserver requests during startup 179,000 to 91,000.
 
+### Patch 39: COM Local Servers Without a Spinning Wait
+- **File**: [`39-combase-local-server-wait.patch`](../patches/39-combase-local-server-wait.patch)
+- **Subsystem**: `dlls/combase/rpc.c`
+- **Problem**: after starting an out-of-process COM server, Wine polls rpcss once a second for its class object and waits in between on the server's process. A service has no process handle (and the handle was lost after the first poll anyway), and without one `CoWaitForMultipleHandles()` returns at once, so the wait loop spun for a full second at a time. Rhino 8 activates BITS (Background Intelligent Transfer Service) while it starts: a .NET worker burned a second of CPU, and Rhino's exit waited for it.
+- **Solution**: keep the process handle for the whole wait, wait on an event nothing sets when there is no process, and poll after 10 ms, doubling up to a second, within the same 30-second limit. BITS is ready in 60 ms; Rhino exits a second sooner.
+
+### Patch 40: Faster Environment Lookups
+- **File**: [`40-ntdll-environment-scan.patch`](../patches/40-ntdll-environment-scan.patch)
+- **Subsystem**: `dlls/ntdll/env.c`
+- **Problem**: each environment variable lookup walks the whole environment block and measures every string with `wcslen()`, one character at a time. .NET's JIT reads `DOTNET_ReadPGOData` and `COMPlus_ReadPGOData` for every method it compiles: 28,000 lookups while Rhino 8 starts, about 0.1 s.
+- **Solution**: the lookup finds each string's end four characters at a time (aligned 64-bit reads, which never cross a page).
+
