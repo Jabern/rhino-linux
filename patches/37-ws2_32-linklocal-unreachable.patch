@@ -1,0 +1,73 @@
+diff --git a/dlls/ws2_32/socket.c b/dlls/ws2_32/socket.c
+index b398d802..2dad5c78 100644
+--- a/dlls/ws2_32/socket.c
++++ b/dlls/ws2_32/socket.c
+@@ -1364,6 +1364,42 @@ int WINAPI closesocket( SOCKET s )
+ }
+ 
+ 
++/* With WINE_LINKLOCAL_UNREACHABLE=1, connecting to a link-local IPv4 address
++ * (169.254.0.0/16, also IPv4-mapped) fails at once. Such addresses are never
++ * forwarded by a router, but without an on-link route Linux sends them to the
++ * default gateway, which drops them, and the caller waits for its timeout:
++ * applications probing a cloud metadata service stall for seconds. */
++static BOOL is_unreachable_linklocal( const struct sockaddr *addr, int len )
++{
++    static int enabled = -1;
++    const BYTE *ip;
++
++    if (enabled == -1)
++    {
++        char value[2] = "";
++        GetEnvironmentVariableA( "WINE_LINKLOCAL_UNREACHABLE", value, sizeof(value) );
++        enabled = value[0] == '1';
++    }
++    if (!enabled) return FALSE;
++
++    if (addr->sa_family == AF_INET && len >= sizeof(struct sockaddr_in))
++        ip = (const BYTE *)&((const struct sockaddr_in *)addr)->sin_addr;
++    else if (addr->sa_family == AF_INET6 && len >= sizeof(struct sockaddr_in6))
++    {
++        static const BYTE v4mapped[12] = {0,0,0,0,0,0,0,0,0,0,0xff,0xff};
++        ip = (const BYTE *)&((const struct sockaddr_in6 *)addr)->sin6_addr;
++        if (memcmp( ip, v4mapped, sizeof(v4mapped) )) return FALSE;
++        ip += 12;
++    }
++    else
++        return FALSE;
++
++    if (ip[0] != 169 || ip[1] != 254) return FALSE;
++    TRACE( "link-local address %s is unreachable\n", debugstr_sockaddr( addr ) );
++    return TRUE;
++}
++
++
+ /***********************************************************************
+  *      connect   (ws2_32.4)
+  */
+@@ -1378,6 +1414,12 @@ int WINAPI connect( SOCKET s, const struct sockaddr *addr, int len )
+ 
+     if (!(sync_event = get_sync_event())) return -1;
+ 
++    if (addr && is_unreachable_linklocal( addr, len ))
++    {
++        SetLastError( WSAEHOSTUNREACH );
++        return -1;
++    }
++
+     if (!(params = malloc( sizeof(*params) + len )))
+     {
+         SetLastError( ERROR_NOT_ENOUGH_MEMORY );
+@@ -1435,6 +1477,12 @@ static BOOL WINAPI WS2_ConnectEx( SOCKET s, const struct sockaddr *name, int nam
+         return FALSE;
+     }
+ 
++    if (name && is_unreachable_linklocal( name, namelen ))
++    {
++        SetLastError( WSAEHOSTUNREACH );
++        return FALSE;
++    }
++
+     if (!((ULONG_PTR)overlapped->hEvent & 1)) cvalue = overlapped;
+     overlapped->Internal = STATUS_PENDING;
+     overlapped->InternalHigh = 0;

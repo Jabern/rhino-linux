@@ -276,3 +276,21 @@ Below is the technical breakdown of all 35 patches.
 - **Problem**: GL and Vulkan child windows render into offscreen X windows that Wine kept in a hidden "dummy parent". Xwayland paces presents with the frame callbacks of a window's top-level window, and presents to a window without one with a 17 ms timer, so vsync ran at about 60 Hz whatever the monitor: Rhino's viewports ran at 59 fps on a 144 Hz display (147 fps on Windows on the same laptop).
 - **Solution**: offscreen client windows live in an invisible, input-transparent window inside their own top-level window, which follows the top-level when Wine recreates its X window. Unmapping the top-level (minimizing) discards their contents, so the last frame of each surface is kept in a pixmap and shown again on restore until the application presents a new one. Rhino 8 viewports: 59 fps to 137-149 fps with vsync.
 
+### Patch 36: Font Files Opened Once, Not Fifty Times
+- **File**: [`36-dwrite-keep-recent-font-streams.patch`](../patches/36-dwrite-keep-recent-font-streams.patch)
+- **Subsystem**: `dlls/dwrite/font.c`
+- **Problem**: DirectWrite's loader for local font files dropped a file's mapping as soon as its last stream was released. Building the system font collection asks for the same file's stream many times in a row, so while Rhino 8 started, its UI thread opened, mapped, unmapped and closed each of the system's 871 font files about fifty times: 43,000 opens, each several wineserver requests, about 3 s before Rhino could start its .NET code. Windows opens 5,370 files in its whole startup.
+- **Solution**: the loader holds a reference to the 32 streams it handed out last, so a file asked for again stays mapped. Font file opens while Rhino starts: 43,300 to 4,180; time to ready 12.6 s to 9.9 s. The font collection itself is unchanged (324 families and 2,064 faces on the test machine, before and after).
+
+### Patch 37: No Stall on Cloud Metadata Checks
+- **File**: [`37-ws2_32-linklocal-unreachable.patch`](../patches/37-ws2_32-linklocal-unreachable.patch)
+- **Subsystem**: `dlls/ws2_32/socket.c`
+- **Problem**: Rhino 8 checks whether it runs on an AWS EC2 machine (for AWS Marketplace licensing) by asking `http://169.254.169.254/latest/api/token`, synchronously on its UI thread. Link-local addresses are never forwarded by a router, but without an on-link route Linux sends them to the default gateway (or a VPN), which drops them, and the connection waits until Rhino's 3-second timeout: every Rhino thread sat idle for 3.0 s.
+- **Solution**: with `WINE_LINKLOCAL_UNREACHABLE=1`, `connect()` and `ConnectEx()` fail link-local IPv4 destinations (IPv4-mapped ones too, as .NET uses) at once with `WSAEHOSTUNREACH`, which is what Rhino gets on a network where the address isn't there. Wine leaves it off by default; `rhino-linux` turns it on unless the machine's firmware names a cloud provider (Amazon EC2, Google, Azure, OpenStack, Oracle, Alibaba, DigitalOcean, Hetzner), where the metadata service answers. Time to ready 9.9 s to 6.8 s.
+
+### Patch 38: Module Lookups on the Own Process Without Server Round Trips
+- **File**: [`38-kernelbase-own-process-modules.patch`](../patches/38-kernelbase-own-process-modules.patch)
+- **Subsystem**: `dlls/kernelbase/debug.c`
+- **Problem**: `EnumProcessModules`, `GetModuleBaseName`, `GetModuleFileNameEx` and `GetModuleInformation` read the loader list in place for `GetCurrentProcess()`, but through `ReadProcessMemory` for a real process handle: one wineserver round trip per list entry. .NET's `System.Diagnostics.Process` opens a real handle to its own process and looks up each module in turn, walking the list again each time: 74,000 requests while Rhino 8 started (the Windows trace saw the same calls as 241,000 `NtReadVirtualMemory`).
+- **Solution**: the module iterator already queries the process id; for the own process it reads the entries directly. Lookups through a real handle are six times faster; time to ready 6.8 s to 6.4 s, and wineserver requests during startup 179,000 to 91,000.
+

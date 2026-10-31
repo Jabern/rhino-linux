@@ -1,0 +1,63 @@
+diff --git a/dlls/dwrite/font.c b/dlls/dwrite/font.c
+index 9544784b..b51274f5 100644
+--- a/dlls/dwrite/font.c
++++ b/dlls/dwrite/font.c
+@@ -5337,12 +5337,17 @@ struct dwrite_localfontfilestream
+     UINT64 size;
+ };
+ 
++/* Building a font collection opens the same file many times in a row; the
++   streams used last stay mapped instead of being reopened each time. */
++#define LOCAL_RECENT_STREAMS 32
++
+ struct dwrite_localfontfileloader
+ {
+     IDWriteLocalFontFileLoader IDWriteLocalFontFileLoader_iface;
+     LONG refcount;
+ 
+     struct list streams;
++    IDWriteFontFileStream *recent[LOCAL_RECENT_STREAMS];
+     CRITICAL_SECTION cs;
+ };
+ 
+@@ -5653,6 +5658,30 @@ static HRESULT create_local_cached_stream(const void *key, UINT32 key_size, stru
+     return S_OK;
+ }
+ 
++/* Called with the loader's lock held. */
++static void keep_recent_stream(struct dwrite_localfontfileloader *loader, IDWriteFontFileStream *stream)
++{
++    IDWriteFontFileStream *evicted;
++    unsigned int i;
++
++    for (i = 0; i < ARRAY_SIZE(loader->recent); ++i)
++        if (loader->recent[i] == stream) break;
++
++    if (i < ARRAY_SIZE(loader->recent))
++    {
++        memmove(&loader->recent[1], &loader->recent[0], i * sizeof(*loader->recent));
++        loader->recent[0] = stream;
++        return;
++    }
++
++    evicted = loader->recent[ARRAY_SIZE(loader->recent) - 1];
++    memmove(&loader->recent[1], &loader->recent[0], (ARRAY_SIZE(loader->recent) - 1) * sizeof(*loader->recent));
++    IDWriteFontFileStream_AddRef(stream);
++    loader->recent[0] = stream;
++    if (evicted)
++        IDWriteFontFileStream_Release(evicted);
++}
++
+ static HRESULT WINAPI localfontfileloader_CreateStreamFromKey(IDWriteLocalFontFileLoader *iface, const void *key,
+         UINT32 key_size, IDWriteFontFileStream **ret)
+ {
+@@ -5681,6 +5710,9 @@ static HRESULT WINAPI localfontfileloader_CreateStreamFromKey(IDWriteLocalFontFi
+         *ret = stream->stream;
+     }
+ 
++    if (*ret)
++        keep_recent_stream(loader, *ret);
++
+     LeaveCriticalSection(&loader->cs);
+ 
+     return hr;

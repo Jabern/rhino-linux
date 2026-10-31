@@ -1,6 +1,6 @@
 # Wine Patches for Rhinoceros on Linux
 
-This directory contains 35 modular topic patches for Wine 11.20 (34 core patches for X11 / XWayland and 1 optional patch for pure Wayland) to run **McNeel Rhinoceros** on Linux with native performance, hardware-accelerated Direct3D 11 viewports, and Cloud Zoo licensing support.
+This directory contains 38 modular topic patches for Wine 11.20 (37 core patches for X11 / XWayland and 1 optional patch for pure Wayland) to run **McNeel Rhinoceros** on Linux with native performance, hardware-accelerated Direct3D 11 viewports, and Cloud Zoo licensing support.
 
 ---
 
@@ -43,6 +43,9 @@ This directory contains 35 modular topic patches for Wine 11.20 (34 core patches
 | **33** | `33-x11-frame-landed-per-surface.patch` | `winex11.drv` / `win32u` | A damage event counts as a frame only for the surface it is for, once the application presented to it: WPF menus and popups no longer come up black. |
 | **34** | `34-x11-egl-alpha-window-formats.patch` | `winex11.drv` / `win32u` | Window pixel formats with an alpha channel on EGL, as Windows drivers offer: Rhino's OpenGL viewports (tested with Rhino 8) list their antialiasing modes again and keep antialiasing after showing a layout. |
 | **35** | `35-x11-offscreen-surfaces-toplevel-pacing.patch` | `winex11.drv` | Offscreen GL/Vulkan surfaces (child windows such as viewports) are kept inside their top-level window, so Xwayland paces their vsync at the monitor's rate instead of about 60 Hz; their last frame is kept to show again when the window is restored. |
+| **36** | `36-dwrite-keep-recent-font-streams.patch` | `dwrite` | DirectWrite keeps the 32 font files it used last mapped instead of reopening each one for every question: 43,000 font file opens down to 4,000 while Rhino 8 starts, 2.7 s sooner. |
+| **37** | `37-ws2_32-linklocal-unreachable.patch` | `ws2_32` | With `WINE_LINKLOCAL_UNREACHABLE=1` (set by the launcher off cloud machines), connects to link-local IPv4 addresses fail at once instead of waiting for a gateway that drops them: Rhino 8's EC2 metadata check no longer stalls startup for 3 s. |
+| **38** | `38-kernelbase-own-process-modules.patch` | `kernelbase` | `EnumProcessModules` and module-name lookups through a real handle to the own process read the loader list in place, as for `GetCurrentProcess()`, instead of one wineserver round trip per entry (74,000 while Rhino 8 starts). |
 
 ---
 

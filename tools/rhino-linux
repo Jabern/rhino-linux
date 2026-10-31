@@ -392,6 +392,25 @@ if [ "$RHINO_GL" = zink ] && [ -z "${__EGL_VENDOR_LIBRARY_FILENAMES:-}" ]; then
     fi
 fi
 
+# Rhino 8 asks the link-local metadata address 169.254.169.254 whether it runs
+# on an AWS EC2 machine, on its UI thread while it starts. Off a cloud machine
+# nothing answers, and Linux sends the connection to the default gateway (or a
+# VPN) until Rhino gives up after 3 s. WINE_LINKLOCAL_UNREACHABLE (patch 37)
+# fails it at once, unless the firmware names a cloud provider, whose metadata
+# service answers.
+on_cloud_machine() {
+    local f
+    for f in sys_vendor board_vendor bios_vendor product_name chassis_asset_tag; do
+        case "$(cat "/sys/class/dmi/id/$f" 2>/dev/null)" in
+            *Amazon*|*Google*|*OpenStack*|*Alibaba*|*DigitalOcean*|*Hetzner*|*OracleCloud*|\
+            7783-7084-3265-9085-8269-3286-77) return 0 ;;  # the last one: Azure's asset tag
+        esac
+    done
+    case "$(cat /sys/hypervisor/uuid 2>/dev/null)" in ec2*) return 0 ;; esac
+    return 1
+}
+[ -n "${WINE_LINKLOCAL_UNREACHABLE+x}" ] || on_cloud_machine || export WINE_LINKLOCAL_UNREACHABLE=1
+
 # Rhino 7 runs on the .NET Framework 4.8 installed into its prefix (not Wine
 # Mono) and draws its viewports with OpenGL 4.1.
 if [ "$RHINO_MAJOR" = 7 ]; then

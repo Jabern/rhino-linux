@@ -1,0 +1,55 @@
+diff --git a/dlls/kernelbase/debug.c b/dlls/kernelbase/debug.c
+index 07f64bde..fdd5207e 100644
+--- a/dlls/kernelbase/debug.c
++++ b/dlls/kernelbase/debug.c
+@@ -841,6 +841,7 @@ struct module_iterator
+     LIST_ENTRY            *head;
+     LIST_ENTRY            *current;
+     BOOL                   wow64;
++    BOOL                   local;
+     LDR_DATA_TABLE_ENTRY   ldr_module;
+     LDR_DATA_TABLE_ENTRY32 ldr_module32;
+ };
+@@ -853,6 +854,7 @@ static BOOL init_module_iterator_wow64( struct module_iterator *iter, HANDLE pro
+     PEB32 *peb32;
+ 
+     iter->wow64 = TRUE;
++    iter->local = FALSE;
+     if (!set_ntstatus( NtQueryInformationProcess( process, ProcessWow64Information,
+                                                   &peb32, sizeof(peb32), NULL )))
+         return FALSE;
+@@ -879,6 +881,19 @@ static BOOL init_module_iterator( struct module_iterator *iter, HANDLE process )
+                                                   &pbi, sizeof(pbi), NULL )))
+         return FALSE;
+ 
++    /* A real handle to this process walks the list in place, as GetCurrentProcess()
++     * does: through ReadProcessMemory each entry would be a server round trip. */
++    if (pbi.UniqueProcessId == GetCurrentProcessId())
++    {
++        ldr_data = NtCurrentTeb()->Peb->LdrData;
++        iter->current = ldr_data->InLoadOrderModuleList.Flink;
++        iter->head = &ldr_data->InLoadOrderModuleList;
++        iter->process = process;
++        iter->local = TRUE;
++        return TRUE;
++    }
++    iter->local = FALSE;
++
+     /* read address of LdrData from PEB */
+     if (!ReadProcessMemory( process, &pbi.PebBaseAddress->LdrData, &ldr_data, sizeof(ldr_data), NULL ))
+         return FALSE;
+@@ -916,9 +931,11 @@ static int module_iterator_next( struct module_iterator *iter )
+         return 1;
+     }
+ 
+-    if (!ReadProcessMemory( iter->process,
+-                            CONTAINING_RECORD(iter->current, LDR_DATA_TABLE_ENTRY, InLoadOrderLinks),
+-                            &iter->ldr_module, sizeof(iter->ldr_module), NULL ))
++    if (iter->local)
++        iter->ldr_module = *CONTAINING_RECORD(iter->current, LDR_DATA_TABLE_ENTRY, InLoadOrderLinks);
++    else if (!ReadProcessMemory( iter->process,
++                                 CONTAINING_RECORD(iter->current, LDR_DATA_TABLE_ENTRY, InLoadOrderLinks),
++                                 &iter->ldr_module, sizeof(iter->ldr_module), NULL ))
+          return -1;
+ 
+     iter->current = iter->ldr_module.InLoadOrderLinks.Flink;
