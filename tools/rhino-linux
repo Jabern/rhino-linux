@@ -442,5 +442,16 @@ if ! grep -qF 'msedgewebview2.exe\\Direct3D]' "$WINEPREFIX/user.reg" 2>/dev/null
         /v renderer /d vulkan /f >/dev/null 2>&1 || true
 fi
 
+# windows-fonts.reg was ASCII with a Unicode header until 1.5, so regedit read
+# its REG_MULTI_SZ font links as ANSI and stored each character as a string of
+# its own: every Wine process then looked up some 2,400 one-letter font files.
+# Prefixes set up that way get the fixed (UTF-16) font links once.
+fonts_reg="$SCRIPT_DIR/windows-fonts.reg"
+if grep -qF '"Tahoma"=str(7):"M\0S\0G\0O\0' "$WINEPREFIX/system.reg" 2>/dev/null &&
+   [ "$(head -c 2 "$fonts_reg" 2>/dev/null | od -An -tx1 | tr -d ' ')" = fffe ]; then
+    WINEDEBUG=-all "$WINE_BIN" reg delete 'HKLM\Software\Microsoft\Windows NT\CurrentVersion\FontLink\SystemLink' /f >/dev/null 2>&1 || true
+    WINEDEBUG=-all "$WINE_BIN" regedit /S "$fonts_reg" >/dev/null 2>&1 || true
+fi
+
 cd "$RHINO_DIR"
 exec "$WINE_BIN" "C:\\Program Files\\$RHINO_NAME\\System\\Rhino.exe" "${args[@]}"
