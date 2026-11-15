@@ -1,0 +1,60 @@
+diff --git a/dlls/winex11.drv/window.c b/dlls/winex11.drv/window.c
+index 443bb38..c487542 100644
+--- a/dlls/winex11.drv/window.c
++++ b/dlls/winex11.drv/window.c
+@@ -1891,7 +1891,13 @@ BOOL X11DRV_GetWindowStateUpdates( HWND hwnd, UINT *state_cmd, UINT *swp_flags,
+         !window_has_pending_wm_state( old_foreground, NormalState ) && !window_is_reparenting( old_foreground ) &&
+         !thread_data->net_active_window_serial)
+     {
+-        *foreground = hwnd_from_window( thread_data->display, thread_data->current_state.net_active_window );
++        Window active = thread_data->current_state.net_active_window;
++
++        /* No X11 window is active: under Xwayland, a Wayland window has the focus. None of ours
++         * is foreground then either, else the application could take the focus back whenever it
++         * activates one of its windows, which Windows only lets the foreground process do. */
++        if (!active) *foreground = NtUserGetDesktopWindow();
++        else *foreground = hwnd_from_window( thread_data->display, active );
+         if (*foreground == old_foreground) *foreground = 0;
+     }
+ 
+@@ -2101,7 +2107,7 @@ void net_active_window_init( struct x11drv_thread_data *data )
+     data->current_state.net_active_window = window;
+ }
+ 
+-static BOOL window_set_pending_activate( HWND hwnd, BOOL *withdrawn )
++static BOOL window_set_pending_activate( HWND hwnd, BOOL *withdrawn, BOOL *iconic )
+ {
+     struct x11drv_win_data *data;
+     BOOL pending;
+@@ -2109,6 +2115,7 @@ static BOOL window_set_pending_activate( HWND hwnd, BOOL *withdrawn )
+     if (!(data = get_win_data( hwnd ))) return FALSE;
+     if ((pending = !!data->wm_state_serial)) data->pending_state.activate = TRUE;
+     *withdrawn = data->pending_state.wm_state == WithdrawnState;
++    *iconic = data->desired_state.wm_state == IconicState;
+     release_win_data( data );
+ 
+     return pending;
+@@ -2117,14 +2124,21 @@ static BOOL window_set_pending_activate( HWND hwnd, BOOL *withdrawn )
+ void set_net_active_window( HWND hwnd, HWND previous )
+ {
+     struct x11drv_thread_data *data = x11drv_thread_data();
+-    BOOL withdrawn = FALSE;
++    BOOL withdrawn = FALSE, iconic = FALSE;
+     Window window;
+     XEvent xev;
+ 
+     if (!is_net_supported( x11drv_atom(_NET_ACTIVE_WINDOW) )) return;
+     if (!(window = X11DRV_get_whole_window( hwnd ))) return;
+     if (data->pending_state.net_active_window == window) return;
+-    if (window_set_pending_activate( hwnd, &withdrawn )) return;
++    if (window_set_pending_activate( hwnd, &withdrawn, &iconic )) return;
++    if (iconic)
++    {
++        /* On Windows, activating a minimized window leaves it minimized, but window managers
++         * restore a window they are asked to activate: only ask once it is restored. */
++        TRACE( "not requesting _NET_ACTIVE_WINDOW for minimized window %p/%lx\n", hwnd, window );
++        return;
++    }
+ 
+     xev.xclient.type = ClientMessage;
+     xev.xclient.window = window;

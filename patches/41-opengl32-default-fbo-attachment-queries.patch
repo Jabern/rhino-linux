@@ -1,0 +1,128 @@
+diff --git a/dlls/opengl32/make_opengl b/dlls/opengl32/make_opengl
+index 67b03ac..e8a6f2d 100755
+--- a/dlls/opengl32/make_opengl
++++ b/dlls/opengl32/make_opengl
+@@ -219,6 +219,7 @@ sub manual_unix_thunks($)
+ 
+     return "glDrawPixels"                   if $name =~ /^glDrawPixels/;
+     return "glReadPixels"                   if $name =~ /^glReadPixels/;
++    return "glGetFramebufferAttachmentParameteriv" if $name =~ /^glGetFramebufferAttachmentParameteriv/;
+     return "glGetFramebufferParameterivEXT" if $name =~ /^glGetFramebufferParameterivEXT$/;
+     return "glGetFramebufferParameteriv"    if $name =~ /^glGetFramebufferParameteriv/;
+ 
+@@ -239,7 +240,6 @@ sub hide_default_fbo($)
+     my $name = shift;
+     return 1 if $name =~ /^glFramebufferRenderbuffer/;
+     return 1 if $name =~ /^glFramebufferTexture/;
+-    return 1 if $name =~ /^glGetFramebufferAttachmentParameteriv/;
+     return 0;
+ }
+ 
+diff --git a/dlls/opengl32/unix_thunks.c b/dlls/opengl32/unix_thunks.c
+index 820977a..5099b42 100644
+--- a/dlls/opengl32/unix_thunks.c
++++ b/dlls/opengl32/unix_thunks.c
+@@ -9555,9 +9555,7 @@ static NTSTATUS ext_glGetFramebufferAttachmentParameteriv( void *args )
+     struct glGetFramebufferAttachmentParameteriv_params *params = args;
+     const struct opengl_funcs *funcs = params->teb->glTable;
+     if (!funcs->p_glGetFramebufferAttachmentParameteriv) return STATUS_NOT_IMPLEMENTED;
+-    push_default_fbo( params->teb );
+-    funcs->p_glGetFramebufferAttachmentParameteriv( params->target, params->attachment, params->pname, params->params );
+-    pop_default_fbo( params->teb );
++    wrap_glGetFramebufferAttachmentParameteriv( params->teb, params->target, params->attachment, params->pname, params->params, funcs->p_glGetFramebufferAttachmentParameteriv );
+     return STATUS_SUCCESS;
+ }
+ 
+@@ -9566,9 +9564,7 @@ static NTSTATUS ext_glGetFramebufferAttachmentParameterivEXT( void *args )
+     struct glGetFramebufferAttachmentParameterivEXT_params *params = args;
+     const struct opengl_funcs *funcs = params->teb->glTable;
+     if (!funcs->p_glGetFramebufferAttachmentParameterivEXT) return STATUS_NOT_IMPLEMENTED;
+-    push_default_fbo( params->teb );
+-    funcs->p_glGetFramebufferAttachmentParameterivEXT( params->target, params->attachment, params->pname, params->params );
+-    pop_default_fbo( params->teb );
++    wrap_glGetFramebufferAttachmentParameteriv( params->teb, params->target, params->attachment, params->pname, params->params, funcs->p_glGetFramebufferAttachmentParameterivEXT );
+     return STATUS_SUCCESS;
+ }
+ 
+@@ -48101,9 +48097,7 @@ static NTSTATUS wow64_ext_glGetFramebufferAttachmentParameteriv( void *args )
+     TEB *teb = get_teb64( params->teb );
+     const struct opengl_funcs *funcs = teb->glTable;
+     if (!funcs->p_glGetFramebufferAttachmentParameteriv) return STATUS_NOT_IMPLEMENTED;
+-    push_default_fbo( teb );
+-    funcs->p_glGetFramebufferAttachmentParameteriv( params->target, params->attachment, params->pname, ULongToPtr(params->params) );
+-    pop_default_fbo( teb );
++    wrap_glGetFramebufferAttachmentParameteriv( teb, params->target, params->attachment, params->pname, ULongToPtr(params->params), funcs->p_glGetFramebufferAttachmentParameteriv );
+     return STATUS_SUCCESS;
+ }
+ 
+@@ -48120,9 +48114,7 @@ static NTSTATUS wow64_ext_glGetFramebufferAttachmentParameterivEXT( void *args )
+     TEB *teb = get_teb64( params->teb );
+     const struct opengl_funcs *funcs = teb->glTable;
+     if (!funcs->p_glGetFramebufferAttachmentParameterivEXT) return STATUS_NOT_IMPLEMENTED;
+-    push_default_fbo( teb );
+-    funcs->p_glGetFramebufferAttachmentParameterivEXT( params->target, params->attachment, params->pname, ULongToPtr(params->params) );
+-    pop_default_fbo( teb );
++    wrap_glGetFramebufferAttachmentParameteriv( teb, params->target, params->attachment, params->pname, ULongToPtr(params->params), funcs->p_glGetFramebufferAttachmentParameterivEXT );
+     return STATUS_SUCCESS;
+ }
+ 
+diff --git a/dlls/opengl32/unix_thunks.h b/dlls/opengl32/unix_thunks.h
+index 6a47fd6..64d3fd4 100644
+--- a/dlls/opengl32/unix_thunks.h
++++ b/dlls/opengl32/unix_thunks.h
+@@ -25,6 +25,7 @@ extern GLsync wrap_glFenceSync( TEB *teb, GLenum condition, GLbitfield flags, GL
+ extern void wrap_glFramebufferDrawBufferEXT( TEB *teb, GLuint framebuffer, GLenum mode, PFN_glFramebufferDrawBufferEXT func );
+ extern void wrap_glFramebufferDrawBuffersEXT( TEB *teb, GLuint framebuffer, GLsizei n, const GLenum *bufs, PFN_glFramebufferDrawBuffersEXT func );
+ extern void wrap_glFramebufferReadBufferEXT( TEB *teb, GLuint framebuffer, GLenum mode, PFN_glFramebufferReadBufferEXT func );
++extern void wrap_glGetFramebufferAttachmentParameteriv( TEB *teb, GLenum target, GLenum attachment, GLenum pname, GLint *params, PFN_glGetFramebufferAttachmentParameteriv func );
+ extern void wrap_glGetFramebufferParameteriv( TEB *teb, GLenum target, GLenum pname, GLint *params, PFN_glGetFramebufferParameteriv func );
+ extern void wrap_glGetFramebufferParameterivEXT( TEB *teb, GLuint framebuffer, GLenum pname, GLint *params, PFN_glGetFramebufferParameterivEXT func );
+ extern void wrap_glGetInteger64v( TEB *teb, GLenum pname, GLint64 *data, PFN_glGetInteger64v func );
+diff --git a/dlls/opengl32/unix_wgl.c b/dlls/opengl32/unix_wgl.c
+index 55321e1..914405e 100644
+--- a/dlls/opengl32/unix_wgl.c
++++ b/dlls/opengl32/unix_wgl.c
+@@ -1090,6 +1090,43 @@ void wrap_glGetFramebufferParameteriv( TEB *teb, GLenum target, GLenum pname, GL
+     p_glGetFramebufferParameteriv( target, pname, params );
+ }
+ 
++void wrap_glGetFramebufferAttachmentParameteriv( TEB *teb, GLenum target, GLenum attachment, GLenum pname, GLint *params,
++                                                 PFN_glGetFramebufferAttachmentParameteriv p_glGetFramebufferAttachmentParameteriv )
++{
++    struct opengl_drawable *draw, *read, *drawable;
++    struct opengl_context *ctx;
++    GLenum buffer = GL_NONE;
++    GLuint fbo;
++
++    if ((ctx = get_current_context( teb, &draw, &read, NULL )))
++    {
++        drawable = target == GL_READ_FRAMEBUFFER ? read : draw;
++        fbo = target == GL_READ_FRAMEBUFFER ? ctx->read_fbo : ctx->draw_fbo;
++
++        /* When the default framebuffer is a framebuffer object of win32u, its attachments are what
++         * the application draws to. The host surface it is presented to can have another format,
++         * with no alpha channel, samples or depth (see get_window_unused_drawable()): queries on
++         * the default framebuffer are answered from the framebuffer object's attachments. */
++        if (!fbo && drawable && drawable->draw_fbo && pname != GL_FRAMEBUFFER_ATTACHMENT_OBJECT_NAME)
++        {
++            if (attachment == GL_DEPTH) buffer = GL_DEPTH_ATTACHMENT;
++            else if (attachment == GL_STENCIL) buffer = GL_STENCIL_ATTACHMENT;
++            else buffer = drawable_buffer_from_buffer( drawable, attachment );
++        }
++    }
++
++    if (buffer)
++    {
++        p_glGetFramebufferAttachmentParameteriv( target, buffer, pname, params );
++        if (pname == GL_FRAMEBUFFER_ATTACHMENT_OBJECT_TYPE && *params != GL_NONE) *params = GL_FRAMEBUFFER_DEFAULT;
++        return;
++    }
++
++    push_default_fbo( teb );
++    p_glGetFramebufferAttachmentParameteriv( target, attachment, pname, params );
++    pop_default_fbo( teb );
++}
++
+ void wrap_glGetFramebufferParameterivEXT( TEB *teb, GLuint fbo, GLenum pname, GLint *params, PFN_glGetFramebufferParameterivEXT p_glGetFramebufferParameterivEXT )
+ {
+     struct opengl_drawable *draw, *read;
