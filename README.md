@@ -222,6 +222,36 @@ RHINO_GL=zink rhino-linux      # Zink, whatever the card
 flatpak run --env=RHINO_GL=native --command=rhino-linux io.github.jabern.RhinoOnLinux
 ```
 
+## Interface size
+
+On a large or high-resolution screen, Rhino's menus, toolbars and panels can look
+small. Choose a larger size in the app's **Display** section (100 to 200 %, as
+Windows' display scaling), or when starting Rhino:
+
+```bash
+RHINO_SCALE=150 rhino-linux
+flatpak run --env=RHINO_SCALE=150 --command=rhino-linux io.github.jabern.RhinoOnLinux
+```
+
+## Using a 3Dconnexion SpaceMouse
+
+Tested with a SpacePilot Pro by alexander_rollay on the McNeel forum:
+
+1. In Rhino, run `PlugInManager`, click **Install…** and pick
+   `C:\Program Files\Rhino 9\Plug-ins\3dxrhino.rhp` (or your Rhino version's folder).
+2. Linux also treats the SpaceMouse as a pointer, so the cursor drifts while you
+   navigate. Find its vendor and product ids with `lsusb | grep -i 3Dconnexion`
+   (for example `046d:c629`), and tell libinput to ignore it as a pointer while
+   Rhino still reads it:
+
+   ```bash
+   echo 'ACTION=="add|change", KERNEL=="event*", ATTRS{idVendor}=="046d", ATTRS{idProduct}=="c629", ENV{LIBINPUT_IGNORE_DEVICE}="1"' \
+       | sudo tee /etc/udev/rules.d/99-spacemouse-ignore-mouse.rules
+   sudo udevadm control --reload-rules && sudo udevadm trigger
+   ```
+
+   Then unplug the SpaceMouse and plug it back in.
+
 ## Dependencies
 
 ### Runtime Dependencies
@@ -296,6 +326,8 @@ cd /path/to/rhino-linux
 - [Zink](https://docs.mesa3d.org/drivers/zink.html), Mesa's OpenGL on Vulkan, started by Erik Faye-Lund and developed by Mike Blumenkrantz and the Mesa contributors, is available for the OpenGL viewports.
 - [DXVK](https://github.com/doitsujin/dxvk) by Philip Rebohle and contributors runs Rhino's Direct3D, and [nvidia-libs](https://github.com/SveSop/nvidia-libs) by SveSop brings CUDA and OptiX to Rhino Render.
 - Thanks to [eqeka](https://github.com/eqeka) for testing, and for tracking down the straight Grasshopper wires (fixed in Patch 21) and the Grasshopper menu focus issue on Niri.
+- Thanks to [Gavin Metzler](https://github.com/gavinmetzler) for Patch 41 (antialiasing kept after a layout on NVIDIA) and Patch 42 (no focus stealing from the background), and for his testing and bug reports.
+- Thanks to alexander_rollay for the 3Dconnexion SpaceMouse setup (see [Using a SpaceMouse](#using-a-3dconnexion-spacemouse)), and to the McNeel forum testers whose reports led to the 1.5 fixes.
 
 ## License
 
