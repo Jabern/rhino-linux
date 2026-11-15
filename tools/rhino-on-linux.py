@@ -1210,6 +1210,7 @@ class Window(Adw.ApplicationWindow):
             self.toast(f"{what} was uninstalled")
         dialog.choose(self, None, chosen)
 
+    @staticmethod
     def remove_targets(targets):
         for t in targets:
             if os.path.isdir(t) and not os.path.islink(t):
