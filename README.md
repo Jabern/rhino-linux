@@ -1,72 +1,33 @@
 # Rhino on Linux
 
-Patches and scripts to get McNeel Rhinoceros running on Linux using Wine and DXVK.
+Run McNeel's **Rhinoceros 7, 8 and 9** on Linux, with hardware-accelerated
+viewports, Cloud Zoo sign-in, plug-ins and GPU rendering. Rhino on Linux sets up
+a patched [Wine](https://www.winehq.org) for Rhino and looks after it for you.
 
-![Rhino 9 running on Linux: shaded Perspective viewport rendered with DXVK, wireframe Top, Front and Right views](docs/images/rhino-9-on-linux.png)
+![Rhino 8 on Linux (KDE Plasma, CachyOS): Bella renders a diamond ring in its window, its live preview fills the Perspective viewport, and a terminal shows the system](docs/images/bella-ring-on-linux.jpg)
 
-## Quickstart
+*Rhino 8 on CachyOS with KDE Plasma, rendering Bella's ring sample scene with the Bella plug-in.*
 
-```bash
-git clone https://github.com/Jabern/rhino-linux.git
-cd rhino-linux
-./install.sh
-```
+## What you need
 
-`./install.sh` automatically downloads our pre-built patched Wine runtime (~54 MB) directly from GitHub Releases, so you **do not** need to compile Wine from source.
+- **A Rhino installer and license** from McNeel. Download the Windows installer
+  (`rhino_en-us_8….exe`) from [rhino3d.com](https://www.rhino3d.com/download/);
+  the evaluation works too.
+- **A 64-bit Intel or AMD computer** with a graphics card and driver that support
+  Vulkan (NVIDIA, AMD or Intel).
+- **About 8 GB of free space** per Rhino version.
+- **Any desktop Linux.** KDE Plasma, GNOME and Cinnamon (Linux Mint) work out of
+  the box; tiling window managers need [a few window rules](docs/tiling-window-managers.md).
 
-The runtime works on any 64-bit Intel or AMD processor. It needs a Linux
-distribution from 2023 or later (glibc 2.38 or newer), such as Ubuntu 24.04,
-Fedora 39, Debian 13 or a current Arch. On older systems, like Ubuntu 22.04 or
-Debian 12, use the [Flatpak](#as-a-flatpak) instead: it brings its own system
-libraries. You can check your version with `ldd --version`.
+## Install
 
-To run your Rhino installer directly, pass `--installer`:
+### The easy way: the app
 
-```bash
-./install.sh --installer /path/to/rhino_installer.exe
-```
-
-After install, launch it with:
-
-```bash
-rhino-linux
-
-# or open a model directly:
-rhino-linux model.3dm
-```
-
-### Rhino 7, 8 and 9 side by side
-
-Install as many versions as you like; run `./install.sh --installer` once per
-installer. The version is read from the installer's name
-(`rhino_en-us_8.36….exe` is Rhino 8), or pass `--version 7`, `8` or `9`.
-
-Each version gets its own Windows environment (`~/.wine-rhino7`,
-`~/.wine-rhino8`, `~/.wine-rhino9`), sharing one Wine runtime, so they never
-interfere and each can be repaired or removed on its own. A prefix from an
-earlier release is kept as the home of the version it already holds.
-
-```bash
-rhino-linux              # the newest installed Rhino
-rhino-linux --version 8  # Rhino 8; rhino-8 does the same (rhino-7 and rhino-9 too)
-rhino-linux --stop       # close every Rhino that is running
-```
-
-Before 1.2 the command was `rhino-9`, whatever the version. It still works: it
-opens Rhino 9, or the newest Rhino when Rhino 9 is not installed.
-
-Rhino 7 runs on Microsoft's .NET Framework 4.8 instead of the .NET that Rhino 8
-and 9 ship with. The installer sets it up first with
-[winetricks](https://github.com/Winetricks/winetricks), which makes Rhino 7's
-first installation take 30 to 60 minutes. That part comes from
-[Rhino7-Linux](https://github.com/JonasPedrotti/Rhino7-Linux).
-
-## Prefer not to use the terminal?
-
-**Rhino on Linux** is a small app that installs Rhino for you and looks after it
-afterwards. It checks your computer, asks for the Rhino installer you downloaded
-from McNeel, and shows the installation as it goes. You never have to open a
-terminal.
+1. Download [**RhinoOnLinux.flatpak**](https://github.com/Jabern/rhino-linux/releases/latest/download/RhinoOnLinux.flatpak).
+2. Double-click it. Your software center (GNOME Software, Discover, …) installs it.
+3. Open **Rhino on Linux** from your applications menu, click **Get Started**,
+   and pick the Rhino installer you downloaded. The app checks your computer,
+   installs Rhino and shows its progress. You never need a terminal.
 
 <p align="center">
   <img src="docs/images/app-welcome.png" width="200" alt="Welcome page of the Rhino on Linux app with a Get Started button">
@@ -75,179 +36,111 @@ terminal.
   <img src="docs/images/app-home.png" width="200" alt="Home page once Rhino 8 is installed: Open Rhino, install another Rhino version, install a plug-in, and maintenance actions">
 </p>
 
-Once Rhino is installed, the app is where you go to:
-
-- open Rhino, or one of several versions installed side by side
-- install another version (Rhino 7, 8 or 9)
-- choose the graphics card Rhino uses, on computers with more than one
-- install plug-ins (see below)
-- check for updates
-- repair the setup if something breaks, without losing your files or sign-in
-- close Rhino when it is stuck
-- uninstall everything it installed
-
-Turn on *Expert mode* in the menu if you want the Wine side of things:
-winecfg, the registry editor, the DXVK settings and the prefix folder.
-
-### As a Flatpak
-
-The Flatpak works the same on every distribution and brings everything the
-app needs with it. You only need Flatpak and the Flathub remote, which most
-desktop distributions set up already.
-
-Download [RhinoOnLinux.flatpak](https://github.com/Jabern/rhino-linux/releases/latest/download/RhinoOnLinux.flatpak)
-and double-click it. Your software center (GNOME Software, Discover) installs
-it, along with the GNOME runtime it needs from Flathub.
-
-If double-clicking opens nothing, your software center may not handle
-downloaded Flatpak files. Shelly on CachyOS, for example, shows its normal
-package list when its Flatpak support is switched off in its settings.
-Installing from a terminal always works:
+If double-clicking the file opens nothing, install it from a terminal instead,
+either from the download or straight from our signed Flatpak repository:
 
 ```bash
 flatpak install --user ~/Downloads/RhinoOnLinux.flatpak
-```
-
-Or install straight from our Flatpak repository:
-
-```bash
+# or
 flatpak install --user https://jabern.github.io/rhino-linux/rhino-on-linux.flatpakref
 ```
 
-Either way, the app then updates like any other Flatpak: **Update** in the app,
-your software center or `flatpak update` brings new versions, signed by this
-project. Versions 1.4.1 and older, installed from a downloaded bundle, have no
-repository yet: **Update** in the app downloads the new bundle once, and after you
-install it, updates come by themselves.
+The Flatpak brings everything it needs and works the same on every
+distribution, old or new.
 
-To build it yourself from this repository instead:
+### From a terminal
 
 ```bash
-flatpak install --user flathub org.flatpak.Builder
-flatpak run org.flatpak.Builder --user --install --install-deps-from=flathub \
-    --force-clean build-flatpak flatpak/io.github.jabern.RhinoOnLinux.yml
+git clone https://github.com/Jabern/rhino-linux.git
+cd rhino-linux
+./install.sh --installer ~/Downloads/rhino_en-us_8.xx.exe
 ```
 
-Either way, open **Rhino on Linux** from your applications menu. Rhino gets its own
-entry there too, and double-clicking a `.3dm` file opens it in Rhino.
+`install.sh` downloads our pre-built Wine runtime (about 55 MB) from GitHub
+Releases, so nothing is compiled. Add `--deps` to have it install the system
+packages it needs (Vulkan, cabextract, …) with your package manager.
 
-The Flatpak keeps Rhino and its Wine setup in
-`~/.var/app/io.github.jabern.RhinoOnLinux/`, separate from a regular install.
-**Uninstall** in the app removes Rhino;
-`flatpak uninstall --delete-data io.github.jabern.RhinoOnLinux` removes the app
-and everything with it. It can see your home folder, so you can open and save
-models wherever you keep them.
+The pre-built runtime needs a distribution from 2023 or later (glibc 2.38 or
+newer: Ubuntu 24.04, Fedora 39, Debian 13, current Arch, Linux Mint 22). On older
+systems such as Ubuntu 22.04 or Debian 12, use the Flatpak. `ldd --version`
+shows your glibc version.
 
-### Without Flatpak
-
-Run the app straight from the downloaded folder with
-`python3 tools/rhino-on-linux.py`. After the first installation it also shows up
-in your applications menu. It runs the same scripts as the command line, so
-both ways give you the same result.
-
-This needs Python with GTK 4 and libadwaita 1.5 or newer (Ubuntu 24.04, Fedora 40
-and current Arch have it):
+You can also run the app without Flatpak, straight from this folder, with
+`python3 tools/rhino-on-linux.py`. It needs Python with GTK 4 and libadwaita 1.5
+or newer:
 - **Arch / Manjaro**: `sudo pacman -S --needed python-gobject gtk4 libadwaita`
-- **Ubuntu / Debian**: `sudo apt install python3-gi gir1.2-gtk-4.0 gir1.2-adw-1`
+- **Ubuntu / Debian / Mint**: `sudo apt install python3-gi gir1.2-gtk-4.0 gir1.2-adw-1`
 - **Fedora**: `sudo dnf install python3-gobject gtk4 libadwaita`
 
-## Installing plug-ins
+## Using Rhino
 
-Rhino's own Package Manager (`_PackageManager` inside Rhino) lists many
-plug-ins. For the ones you download yourself, use **Install a plug-in…** in the
-app, drop the file on its window, or double-click the file in your file manager.
-The app knows these files:
+Open **Rhino** from your applications menu, or double-click a `.3dm` file. You
+open and save models anywhere, on any drive, as on Windows. From a terminal:
+
+```bash
+rhino-linux                 # the newest installed Rhino
+rhino-linux model.3dm       # open a model
+rhino-linux --version 8     # a given version (rhino-7, rhino-8, rhino-9 do the same)
+rhino-linux --stop          # close every Rhino that is running
+```
+
+With the Flatpak, the same commands are
+`flatpak run --command=rhino-linux io.github.jabern.RhinoOnLinux …`.
+
+### Rhino 7, 8 and 9 side by side
+
+Install as many versions as you like: **Install another Rhino version** in the
+app, or `./install.sh --installer` once per installer. Each version gets its own
+Windows environment, so they never interfere, and each can be repaired or removed
+on its own. Rhino 7 runs on Microsoft's .NET Framework 4.8, which makes its first
+installation take 30 to 60 minutes.
+
+## Settings
+
+The app's home page has a few settings. Each one also works as a variable when
+starting Rhino from a terminal, for example `RHINO_SCALE=150 rhino-linux`.
+
+| Setting | What it does | Variable |
+|---|---|---|
+| **Interface size** | Rhino's menus, toolbars and panels at 100 to 200 %, as Windows' display scaling, for large or high-resolution screens | `RHINO_SCALE=150` |
+| **Windows colors** | **Dark** makes the menus, message boxes and file dialogs dark too, to go with Rhino's dark mode (Options › Appearance) | `RHINO_COLORS=dark` |
+| **Graphics card** | with several graphics cards, the one Rhino draws with (it can hang at its start screen on the wrong one) | `RHINO_GPU=4080` (part of its name) |
+| **OpenGL** | your driver's own OpenGL, or [Zink](https://docs.mesa3d.org/drivers/zink.html) (Mesa's OpenGL on Vulkan) for the viewports of Rhino 7 and 8 | `RHINO_GL=zink` |
+
+Settings apply from Rhino's next start. Turn on *Expert mode* in the app's menu
+for the Wine side of things: winecfg, the registry editor, the DXVK settings and
+the prefix folder.
+
+## Plug-ins
+
+Rhino's own Package Manager (`_PackageManager` in Rhino) works as on Windows. For
+plug-ins you download yourself, use **Install a plug-in…** in the app, drop the
+file on its window, or double-click it in your file manager:
 
 | File | What happens |
 |---|---|
 | `.rhi` | McNeel's Rhino Installer Engine installs it, the same tool Windows uses |
 | `.yak` | Rhino's package manager installs it from the file |
 | `.gha`, `.ghuser` | copied into Grasshopper's Libraries or UserObjects folder |
-| `.exe`, `.msi` | the plug-in's own installer runs, inside Rhino's Wine prefix |
+| `.exe`, `.msi` | the plug-in's own installer runs, inside Rhino's Windows environment |
 | `.zip` | unpacked first, then installed as above |
 
-Close Rhino before installing. If it is still open, the app offers to close it
-for you. From the terminal, the same thing is
-`tools/install-plugin.sh bella_rhino-26.4.0-win32.zip`.
+Close Rhino before installing; the app offers to close it for you. From a
+terminal: `tools/install-plugin.sh bella_rhino-26.4.0-win32.zip`.
 
-Here is the [Bella](https://bellarender.com) renderer, installed from its
-download `.zip` and rendering its sample scene:
+The picture at the top is [Bella](https://bellarender.com), installed this way from
+its download `.zip`. Plug-ins that install a Windows driver, such as a USB license
+dongle, don't work under Wine.
 
-![Bella for Rhino rendering a glass jug of orange juice, a glass and two oranges on a checked tablecloth, next to the Rhino viewports](docs/images/bella-in-rhino.jpg)
-
-Some plug-ins won't work under Wine: anything that installs a Windows driver,
-such as a USB license dongle. Bella renders on the CPU, so it isn't affected.
-
-## GPU rendering on NVIDIA
-
-Rhino Render and the Raytraced display mode (Cycles) render on NVIDIA GPUs
-with CUDA or OptiX. When the setup finds the NVIDIA driver, it adds `nvcuda` and
-`nvoptix` from [nvidia-libs](https://github.com/SveSop/nvidia-libs), which pass
-Rhino's calls to the Linux driver. In Rhino, pick the GPU under
-**Options > Cycles**, or with `RhinoCycles_SelectDevice`.
-
-- Needs the proprietary NVIDIA driver; the Flatpak gets CUDA and OptiX from its
-  NVIDIA driver extension.
-- The first Raytraced start on OptiX shows "Uploading" for about half a minute
-  while the driver compiles the kernels; later starts are quick.
-- To skip this step, run the setup with `RHINO_NO_CUDA=1`.
-
-### Computers with several graphics cards
-
-With more than one graphics card, for example two NVIDIA cards or a laptop with
-built-in graphics, Rhino can hang at its start screen. Choose the card your
-monitor is connected to in the app's **Graphics card** section, or give part of
-its name when starting Rhino:
-
-```bash
-RHINO_GPU=4080 rhino-linux
-flatpak run --env=RHINO_GPU=4080 --command=rhino-linux io.github.jabern.RhinoOnLinux
-```
-
-## OpenGL with Zink
-
-Rhino 7 and 8 draw their viewports with OpenGL, and so does Rhino 9 when set to
-it. Rhino on Linux uses your graphics driver's own OpenGL. You can switch to
-[Zink](https://docs.mesa3d.org/drivers/zink.html), Mesa's OpenGL on top of
-Vulkan, in the app's **OpenGL** section, or when starting Rhino. On NVIDIA cards
-with recent drivers, Rhino sometimes hits a driver fault (`Xid 109` in
-`journalctl -k`): NVIDIA's OpenGL freezes for a few seconds at a time and then
-recovers, while Zink loses its viewport until Rhino restarts, so Zink is no longer
-the default. Under Zink, Rhino 7's viewport can also show the frame before its
-last redraw.
-
-```bash
-RHINO_GL=native rhino-linux    # NVIDIA's (or your driver's) own OpenGL
-RHINO_GL=zink rhino-linux      # Zink, whatever the card
-flatpak run --env=RHINO_GL=native --command=rhino-linux io.github.jabern.RhinoOnLinux
-```
-
-## Interface size
-
-On a large or high-resolution screen, Rhino's menus, toolbars and panels can look
-small. Choose a larger size in the app's **Display** section (100 to 200 %, as
-Windows' display scaling), or when starting Rhino:
-
-```bash
-RHINO_SCALE=150 rhino-linux
-flatpak run --env=RHINO_SCALE=150 --command=rhino-linux io.github.jabern.RhinoOnLinux
-```
-
-With Rhino's dark mode (Options › Appearance), the menus, message boxes and file
-dialogs that Rhino leaves to Windows stay light. Set **Windows colors** to
-**Dark** in the same section, or start Rhino with `RHINO_COLORS=dark`, to make
-them dark too.
-
-## Using a 3Dconnexion SpaceMouse
+### 3Dconnexion SpaceMouse
 
 Tested with a SpacePilot Pro by alexander_rollay on the McNeel forum:
 
 1. In Rhino, run `PlugInManager`, click **Install…** and pick
-   `C:\Program Files\Rhino 9\Plug-ins\3dxrhino.rhp` (or your Rhino version's folder).
-2. Linux also treats the SpaceMouse as a pointer, so the cursor drifts while you
+   `C:\Program Files\Rhino 8\Plug-ins\3dxrhino.rhp` (your Rhino version's folder).
+2. Linux also treats the SpaceMouse as a mouse, so the cursor drifts while you
    navigate. Find its vendor and product ids with `lsusb | grep -i 3Dconnexion`
-   (for example `046d:c629`), and tell libinput to ignore it as a pointer while
-   Rhino still reads it:
+   (for example `046d:c629`), and tell Linux to leave it to Rhino:
 
    ```bash
    echo 'ACTION=="add|change", KERNEL=="event*", ATTRS{idVendor}=="046d", ATTRS{idProduct}=="c629", ENV{LIBINPUT_IGNORE_DEVICE}="1"' \
@@ -257,82 +150,109 @@ Tested with a SpacePilot Pro by alexander_rollay on the McNeel forum:
 
    Then unplug the SpaceMouse and plug it back in.
 
-## Dependencies
+## Updating and uninstalling
 
-### Runtime Dependencies
-Make sure you have Vulkan drivers and DXVK installed:
+**Update** in the app, your software center or `flatpak update` brings new
+versions, signed by this project. Versions 1.4.1 and older, installed from a
+downloaded file, have no update source yet: **Update** in the app downloads the
+new version once, and later updates come by themselves. Without Flatpak, run
+`git pull` and `./install.sh` again.
 
-- **Arch / Manjaro**:
-  ```bash
-  sudo pacman -S --needed wine vulkan-icd-loader vulkan-headers dxvk-bin libx11 freetype2 gnutls
-  ```
-- **Ubuntu / Debian**:
-  ```bash
-  sudo apt update && sudo apt install -y wine64 libvulkan1 vulkan-tools libx11-6 libfreetype6 libgnutls30 dxvk
-  ```
-- **Fedora**:
-  ```bash
-  sudo dnf install -y wine vulkan-loader libX11 freetype gnutls dxvk
-  ```
-- **openSUSE**:
-  ```bash
-  sudo zypper install -y wine vulkan libX11 freetype2 libgnutls dxvk
-  ```
+**Uninstall** in the app removes Rhino and everything it installed.
+`flatpak uninstall --delete-data io.github.jabern.RhinoOnLinux` removes the app
+too. The Flatpak keeps Rhino and its Windows environments in
+`~/.var/app/io.github.jabern.RhinoOnLinux/`; a terminal install keeps them in
+`~/.wine-rhino7`, `~/.wine-rhino8` and `~/.wine-rhino9`.
 
-### Build Dependencies (Optional)
-Only required if you choose to compile Wine from source with `--build-wine` (requires `bison`, `flex`, `gcc`, `mingw-w64`, X11 dev headers).
+## Troubleshooting
+
+- **Something broke after an update or a crash**: **Repair** in the app sets
+  up Rhino's Windows environment again, without losing your files, settings or
+  sign-in.
+- **Rhino hangs at its start screen** on a computer with several graphics cards:
+  choose the card your monitor is connected to under **Graphics card**.
+- **Rhino is stuck or won't open again**: **Close Rhino** in the app, or
+  `rhino-linux --stop`.
+- **Cloud Zoo sign-in doesn't come back to Rhino**: start Rhino with
+  `rhino-linux --fresh`.
+- **Viewports freeze for a few seconds on NVIDIA**: a driver fault (`Xid 109` in
+  `journalctl -k`); NVIDIA's own OpenGL recovers from it, Zink doesn't, which is why
+  Zink isn't the default.
+- **Still stuck?** Ask in the
+  [McNeel forum thread](https://discourse.mcneel.com/t/rhino-on-linux/8820) or
+  [open an issue](https://github.com/Jabern/rhino-linux/issues), with your
+  distribution, desktop, graphics card and Rhino version.
+
+## GPU rendering on NVIDIA
+
+Rhino Render and the Raytraced display mode (Cycles) render on NVIDIA GPUs with
+CUDA or OptiX. When the setup finds the NVIDIA driver, it adds `nvcuda` and
+`nvoptix` from [nvidia-libs](https://github.com/SveSop/nvidia-libs), which pass
+Rhino's calls to the Linux driver. In Rhino, pick the GPU under
+**Options › Cycles**.
+
+- Needs the proprietary NVIDIA driver; the Flatpak gets CUDA and OptiX from its
+  NVIDIA driver extension.
+- The first Raytraced start on OptiX shows "Uploading" for about half a minute
+  while the driver compiles its kernels; later starts are quick.
+- To skip this step, run the setup with `RHINO_NO_CUDA=1`.
 
 ## What the patches do
 
-Stock Wine experiences crashes, blank web panels, and visual glitches when running Rhino. We maintain 21 targeted patches to resolve these issues across all major subsystems:
+Stock Wine crashes, shows blank panels or misplaces windows with Rhino. This
+project keeps 44 patches for Wine 11.20 (in [`patches/`](patches)), grouped here
+by what they fix:
 
-- **Compute & Stability**: Adds 64-bit dynamic OpenMP loop scheduling ([Patch 01](patches/01-vcomp-dynamic-init-next-i8.patch)), NT thread pool worker caps ([Patch 02](patches/02-ntdll-threadpool-worker-leak.patch)), and CPU affinity APIs ([Patch 03](patches/03-set-thread-ideal-processor-ex.patch)).
-- **Cloud Zoo & Licensing**: Implements DirectComposition visual tree swapchain hosting for Microsoft Edge WebView2 ([Patch 06](patches/06-wine-dcomp-webview2-visual-hosting.patch), [Patch 07](patches/07-wine-dcomp-hidden-target-guards.patch)), ECDSA P-256 JWT auth ([Patch 15](patches/15-wine-ncrypt-ecdsa-p256.patch)), and Session 0 RPC services ([Patch 13](patches/13-wine-services-session0.patch)).
-- **UI Chrome & Popups**: Fixes 32bpp depth matching and alpha-blended menu icons ([Patch 04](patches/04-wine-x11-layered-and-depth-match.patch), [Patch 05](patches/05-wine-menu-alpha-blend.patch)), layered child panels ([Patch 08](patches/08-wine-layered-child-windows.patch)), Task Dialogs ([Patch 14](patches/14-wine-comctl32-taskdialog.patch)), and `RhinoGreet` startup window visibility ([Patch 17](patches/17-rhino-greet-x11-startup.patch)).
-- **Viewport & Graphics**: Rebinds X11 client surfaces and forces redraws on Vulkan swapchain recreation to eliminate viewport maximize black bars ([Patch 18](patches/18-x11-client-surface-repaint.patch)), plus DXGI format fallback ([Patch 11](patches/11-wine-dxgi-unknown-swapchain-format.patch)).
-- **Multi-Monitor & Wayland**: Excludes MDI child windows from multi-monitor desktop offset shifts ([Patch 19](patches/19-wine-multimonitor-child-maximize.patch)), anchors XRandR coordinates to prevent Wayland mouse drift ([Patch 20](patches/20-wine-xrandr-primary-anchor.patch)), and adds Wayland popup overlay compositing ([Patch 16](patches/16-winewayland-popups-and-overlays.patch)).
+- **Stability and speed**: OpenMP loop scheduling, thread pools, CPU affinity,
+  COM services, faster start (Rhino 8 ready in about 6 s instead of 12.6 s).
+- **Cloud Zoo, licensing and the Script Editor**: WebView2 with GPU
+  DirectComposition, ECDSA sign-in keys, Session 0 services, HTML dialogs.
+- **Windows and menus**: layered and alpha-blended windows, task dialogs, the
+  start screen, popups, focus, maximizing and window placement under KWin,
+  Mutter and Cinnamon.
+- **Viewports**: Vulkan and OpenGL surfaces that redraw on resize without black
+  frames, antialiasing on NVIDIA, smooth frame pacing under Xwayland.
+- **Multi-monitor and Wayland**: monitor offsets, pointer drift, Wayland popups.
 
-See [docs/patches.md](docs/patches.md) for the detailed technical breakdown and file lists for all patches.
+[docs/patches.md](docs/patches.md) explains each patch, and
+[patches/README.md](patches/README.md) lists them all.
 
-## Desktop Environments & Window Managers
+### Building Wine yourself
 
-- **Recommended**: **KDE Plasma** or **GNOME**. Stacking desktop environments handle multi-window CAD applications, floating palettes, middle-click popups, and multi-monitor setups out of the box with zero configuration.
-- **Tiling Window Managers (Niri, Hyprland, Sway)**: Supported with custom window rules. See [docs/tiling-window-managers.md](docs/tiling-window-managers.md) for required floating rules and configuration snippets.
-
-## Building Wine manually
-
-If you prefer building Wine yourself instead of running `./install.sh`:
+`./install.sh --build-wine` compiles Wine with the patches instead of downloading
+it (needs `bison`, `flex`, `gcc`, `mingw-w64` and the X11 development headers).
+By hand:
 
 ```bash
-# 1. Clone Wine
-git clone https://gitlab.winehq.org/wine/wine.git ~/src/wine
+git clone --branch wine-11.20 https://gitlab.winehq.org/wine/wine.git ~/src/wine
 cd ~/src/wine
-git checkout wine-11.20
-
-# 2. Apply patches
-for p in /path/to/rhino-linux/patches/{0[1-9],1[0-5],1[7-9],[2-9][0-9]}-*.patch; do
-    patch -p1 < "$p"
-done
-
-# 3. Build Wine 64-bit
+# every patch except 16, which is for Wine's Wayland driver only
+for p in /path/to/rhino-linux/patches/{0[1-9],1[0-5],1[7-9],[2-9][0-9]}-*.patch; do patch -p1 < "$p"; done
 mkdir ~/src/build-wine && cd ~/src/build-wine
 ../wine/configure --enable-win64 --prefix=/opt/wine-rhino --without-capi
-make -j$(nproc)
-sudo make install
-
-# 4. Configure prefix
+make -j"$(nproc)" && sudo make install
 cd /path/to/rhino-linux
-./tools/deploy-rhino.sh --prefix ~/.wine-rhino --wine /opt/wine-rhino/bin/wine
+./tools/deploy-rhino.sh --prefix ~/.wine-rhino8 --wine /opt/wine-rhino/bin/wine
+```
+
+To build the Flatpak from this repository:
+
+```bash
+flatpak install --user flathub org.flatpak.Builder
+flatpak run org.flatpak.Builder --user --install --install-deps-from=flathub \
+    --force-clean build-flatpak flatpak/io.github.jabern.RhinoOnLinux.yml
 ```
 
 ## Credits & Acknowledgements
 
 - Thanks to [ItHasLegs](https://github.com/ItHasLegs/rhino8-wine) for researching the early `uxtheme` dark-mode crash (now upstream in Wine 11.14) and for the `--fresh` wineserver restart concept to clear stale HTTP state for Cloud Zoo OAuth licensing.
+- Rhino 7's .NET Framework setup comes from [Rhino7-Linux](https://github.com/JonasPedrotti/Rhino7-Linux) by Jonas Pedrotti.
 - [Zink](https://docs.mesa3d.org/drivers/zink.html), Mesa's OpenGL on Vulkan, started by Erik Faye-Lund and developed by Mike Blumenkrantz and the Mesa contributors, is available for the OpenGL viewports.
 - [DXVK](https://github.com/doitsujin/dxvk) by Philip Rebohle and contributors runs Rhino's Direct3D, and [nvidia-libs](https://github.com/SveSop/nvidia-libs) by SveSop brings CUDA and OptiX to Rhino Render.
 - Thanks to [eqeka](https://github.com/eqeka) for testing, and for tracking down the straight Grasshopper wires (fixed in Patch 21) and the Grasshopper menu focus issue on Niri.
 - Thanks to [Gavin Metzler](https://github.com/gavinmetzler) for Patch 41 (antialiasing kept after a layout on NVIDIA) and Patch 42 (no focus stealing from the background), and for his testing and bug reports.
-- Thanks to alexander_rollay for the 3Dconnexion SpaceMouse setup (see [Using a SpaceMouse](#using-a-3dconnexion-spacemouse)), and to the McNeel forum testers whose reports led to the 1.5 fixes.
+- Thanks to alexander_rollay for the 3Dconnexion SpaceMouse setup, and to the McNeel forum testers whose reports led to the 1.5 fixes.
+- The ring scene in the picture at the top is one of [Bella's sample scenes](https://bellarender.com/scenes/).
 
 ## License
 

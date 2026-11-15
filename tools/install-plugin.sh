@@ -40,9 +40,10 @@ if [ -z "$RHINO_VERSION" ]; then
     echo "Error: Rhino is not installed yet."
     exit 1
 fi
-WINE_BIN="$(rhino_config_get RHINO_WINE)"
+WINE_BIN="${WINE:-$(rhino_config_get RHINO_WINE)}"
 WINE_BIN="${WINE_BIN:-$DATA_HOME/wine-rhino/bin/wine}"
-export WINEPREFIX="$(rhino_prefix_for "$RHINO_VERSION")" WINEDEBUG="${WINEDEBUG:--all}"
+# RHINO_PREFIX and WINE as for rhino-linux
+export WINEPREFIX="${RHINO_PREFIX:-$(rhino_prefix_for "$RHINO_VERSION")}" WINEDEBUG="${WINEDEBUG:--all}"
 unset WINEDLLOVERRIDES
 
 if [ ! -x "$WINE_BIN" ] || ! RHINO_NAME="$(find_rhino_dir "$WINEPREFIX" "$RHINO_VERSION")"; then
