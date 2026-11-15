@@ -1,0 +1,49 @@
+diff --git a/dlls/winex11.drv/event.c b/dlls/winex11.drv/event.c
+index 8d57f21..819b7d2 100644
+--- a/dlls/winex11.drv/event.c
++++ b/dlls/winex11.drv/event.c
+@@ -1010,8 +1010,9 @@ static BOOL X11DRV_GravityNotify( HWND hwnd, XEvent *xev )
+ {
+     XGravityEvent *event = &xev->xgravity;
+     struct x11drv_win_data *data;
+-    RECT rect;
++    RECT rect, x_rect = {0};
+     POINT pos = {event->x, event->y};
++    unsigned int i;
+ 
+     if (!hwnd) return FALSE;
+     if (!(data = get_win_data( hwnd ))) return FALSE;
+@@ -1020,8 +1021,13 @@ static BOOL X11DRV_GravityNotify( HWND hwnd, XEvent *xev )
+     /* update our view of the window tree for mouse event coordinate mapping */
+     if (data->whole_window && data->parent && !data->parent_invalid)
+     {
++        /* keep the X window's size from its last ConfigureNotify */
++        for (i = 0; i < data->parent->children_count; i++)
++            if (data->parent->children[i].window == data->whole_window) x_rect = data->parent->children[i].rect;
++        if (!IsRectEmpty( &x_rect )) OffsetRect( &x_rect, event->x - x_rect.left, event->y - x_rect.top );
+         OffsetRect( &rect, event->x - rect.left, event->y - rect.top );
+-        host_window_configure_child( data->parent, data->whole_window, rect, event->send_event );
++        host_window_configure_child( data->parent, data->whole_window, IsRectEmpty( &x_rect ) ? rect : x_rect,
++                                     event->send_event );
+     }
+ 
+     /* only handle GravityNotify events, that we generate ourselves, for embedded windows,
+@@ -1037,6 +1043,18 @@ static BOOL X11DRV_GravityNotify( HWND hwnd, XEvent *xev )
+         OffsetRect( &rect, pos.x - rect.left, pos.y - rect.top );
+         window_configure_notify( data, event->serial, &rect );
+     }
++    /* The window manager moved its frame. Mutter and its forks (Cinnamon's Muffin) send no
++     * synthetic ConfigureNotify when they also resize the window, as when maximizing it: its
++     * own ConfigureNotify, relative to the frame, came before the frame's and was placed at the
++     * frame's old position. Wine then hit-tested the menu bar and toolbars of a maximized window
++     * at its restored position, and they ignored the mouse. */
++    else if (data->managed && !event->send_event && !IsRectEmpty( &x_rect ))
++    {
++        pos = host_window_map_point( data->parent, x_rect.left, x_rect.top );
++        pos = root_to_virtual_screen( pos.x, pos.y );
++        OffsetRect( &x_rect, pos.x - x_rect.left, pos.y - x_rect.top );
++        window_configure_notify( data, event->serial, &x_rect );
++    }
+ 
+     release_win_data( data );
+ 
