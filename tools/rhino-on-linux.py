@@ -767,6 +767,23 @@ class Window(Adw.ApplicationWindow):
             self.toast(f"Rhino's interface is {scale} % from its next start")
         row.connect("notify::selected", changed)
         group.add(row)
+
+        # RHINO_COLORS: with Rhino's dark mode, the menus, message boxes and file dialogs it
+        # leaves to Windows follow Windows' colors, which rhino-linux makes dark here.
+        colors = [("light", "Light", "Wine's own look"),
+                  ("dark", "Dark", "For Rhino's dark mode: menus, message boxes and file dialogs too")]
+        colors_row = Adw.ComboRow(title="Windows colors", model=Gtk.StringList.new([c[1] for c in colors]))
+        index = 1 if read_config().get("RHINO_COLORS") == "dark" else 0
+        colors_row.set_selected(index)
+        colors_row.set_subtitle(colors[index][2])
+
+        def colors_changed(combo, _param):
+            key, name, subtitle = colors[combo.get_selected()]
+            combo.set_subtitle(subtitle)
+            write_config("RHINO_COLORS", key)
+            self.toast(f"Windows colors are {name.lower()} from Rhino's next start")
+        colors_row.connect("notify::selected", colors_changed)
+        group.add(colors_row)
         return group
 
     def versions_group(self, versions):

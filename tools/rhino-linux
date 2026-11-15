@@ -73,6 +73,7 @@ while [ $# -gt 0 ]; do
             echo "  RHINO_PREFIX     Use this Wine prefix instead"
             echo "  WINE             Path to Wine binary"
             echo "  RHINO_SCALE      Interface size in percent (100-200), as Windows' display scaling"
+            echo "  RHINO_COLORS     dark or light: Windows' colors (menus, message boxes, file dialogs)"
             exit 0
             ;;
         *) break ;;
@@ -477,6 +478,24 @@ if [[ "$RHINO_SCALE" =~ ^[0-9]+$ ]] && [ "$RHINO_SCALE" -ge 100 ] && [ "$RHINO_S
     if [ "$current_dpi" != "$dpi" ]; then
         WINEDEBUG=-all "$WINE_BIN" reg add 'HKCU\Control Panel\Desktop' /v LogPixels /t REG_DWORD \
             /d "$dpi" /f >/dev/null 2>&1 || true
+    fi
+fi
+
+# Windows colors, chosen in the app or with RHINO_COLORS=dark|light: with Rhino's dark
+# mode, the menus, message boxes, file dialogs and plain dialog controls it leaves to
+# Windows stay light unless Windows' own colors are dark. Empty leaves the prefix's own.
+RHINO_COLORS="${RHINO_COLORS-$(rhino_config_get RHINO_COLORS)}"
+case "$RHINO_COLORS" in
+    dark) want_window="43 43 43" ;;
+    light) want_window="255 255 255" ;;
+    *) want_window="" ;;
+esac
+if [ -n "$want_window" ] && [ -f "$SCRIPT_DIR/windows-colors-$RHINO_COLORS.reg" ]; then
+    current_window="$(awk '/^\[Control Panel\\\\Colors\]/ { s = 1; next } /^\[/ { s = 0 }
+                           s && /^"Window"=/ { sub(/^"Window"="/, ""); sub(/"$/, ""); print }' \
+                      "$WINEPREFIX/user.reg" 2>/dev/null)"
+    if [ "$current_window" != "$want_window" ]; then
+        WINEDEBUG=-all "$WINE_BIN" regedit /S "$SCRIPT_DIR/windows-colors-$RHINO_COLORS.reg" >/dev/null 2>&1 || true
     fi
 fi
 

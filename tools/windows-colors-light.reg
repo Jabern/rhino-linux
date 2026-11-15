@@ -1,0 +1,33 @@
+Windows Registry Editor Version 5.00
+
+; Wine's own light Windows colors (rhino-linux, RHINO_COLORS=light): undoes
+; windows-colors-dark.reg.
+
+[HKEY_CURRENT_USER\Software\Microsoft\Windows\CurrentVersion\Themes\Personalize]
+"AppsUseLightTheme"=dword:00000001
+"SystemUsesLightTheme"=dword:00000001
+
+[HKEY_CURRENT_USER\Software\Microsoft\Windows\CurrentVersion\ThemeManager]
+"ThemeActive"="1"
+
+[HKEY_CURRENT_USER\Control Panel\Colors]
+"ActiveBorder"="255 255 255"
+"AppWorkSpace"="128 128 128"
+"ButtonAlternateFace"="255 255 255"
+"ButtonDkShadow"="106 106 106"
+"ButtonFace"="245 245 245"
+"ButtonHilight"="255 255 255"
+"ButtonLight"="227 227 227"
+"ButtonShadow"="166 166 166"
+"ButtonText"="0 0 0"
+"GrayText"="106 106 106"
+"InactiveBorder"="255 255 255"
+"InfoText"="0 0 0"
+"InfoWindow"="255 255 255"
+"Menu"="255 255 255"
+"MenuBar"="255 255 255"
+"MenuText"="0 0 0"
+"Scrollbar"="255 255 255"
+"Window"="255 255 255"
+"WindowFrame"="158 158 158"
+"WindowText"="0 0 0"

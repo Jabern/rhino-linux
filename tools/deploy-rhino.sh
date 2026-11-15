@@ -771,7 +771,7 @@ fi
 echo "[5/6] Deploying companion assets & saving launcher configuration..."
 DATA_DIR="${XDG_DATA_HOME:-$HOME/.local/share}/rhino-linux"
 mkdir -p "$DATA_DIR"
-for asset in "msedgewebview2-stub.exe" "dxvk-rhino.conf" "windows-fonts.reg" "rhino9-256.png" "rhino9-icon.png" "rhino-versions.sh"; do
+for asset in "msedgewebview2-stub.exe" "dxvk-rhino.conf" "windows-fonts.reg" "windows-colors-dark.reg" "windows-colors-light.reg" "rhino9-256.png" "rhino9-icon.png" "rhino-versions.sh"; do
     if [ -f "$SCRIPT_DIR/$asset" ]; then
         cp -f "$SCRIPT_DIR/$asset" "$DATA_DIR/$asset"
     fi

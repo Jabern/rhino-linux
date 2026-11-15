@@ -233,6 +233,11 @@ RHINO_SCALE=150 rhino-linux
 flatpak run --env=RHINO_SCALE=150 --command=rhino-linux io.github.jabern.RhinoOnLinux
 ```
 
+With Rhino's dark mode (Options › Appearance), the menus, message boxes and file
+dialogs that Rhino leaves to Windows stay light. Set **Windows colors** to
+**Dark** in the same section, or start Rhino with `RHINO_COLORS=dark`, to make
+them dark too.
+
 ## Using a 3Dconnexion SpaceMouse
 
 Tested with a SpacePilot Pro by alexander_rollay on the McNeel forum:

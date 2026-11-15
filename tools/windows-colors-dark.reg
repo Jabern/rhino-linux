@@ -1,0 +1,34 @@
+Windows Registry Editor Version 5.00
+
+; Dark Windows colors for Rhino's dark mode (rhino-linux, RHINO_COLORS=dark): the
+; menus, message boxes, file dialogs and plain dialog controls Rhino leaves to Windows.
+
+[HKEY_CURRENT_USER\Software\Microsoft\Windows\CurrentVersion\Themes\Personalize]
+"AppsUseLightTheme"=dword:00000000
+"SystemUsesLightTheme"=dword:00000000
+
+; Classic controls: the aero theme draws buttons, check boxes and headers light whatever the colors.
+[HKEY_CURRENT_USER\Software\Microsoft\Windows\CurrentVersion\ThemeManager]
+"ThemeActive"="0"
+
+[HKEY_CURRENT_USER\Control Panel\Colors]
+"ActiveBorder"="56 56 56"
+"AppWorkSpace"="40 40 40"
+"ButtonAlternateFace"="56 56 56"
+"ButtonDkShadow"="20 20 20"
+"ButtonFace"="56 56 56"
+"ButtonHilight"="90 90 90"
+"ButtonLight"="72 72 72"
+"ButtonShadow"="32 32 32"
+"ButtonText"="230 230 230"
+"GrayText"="140 140 140"
+"InactiveBorder"="56 56 56"
+"InfoText"="230 230 230"
+"InfoWindow"="60 60 60"
+"Menu"="43 43 43"
+"MenuBar"="43 43 43"
+"MenuText"="230 230 230"
+"Scrollbar"="60 60 60"
+"Window"="43 43 43"
+"WindowFrame"="90 90 90"
+"WindowText"="230 230 230"
