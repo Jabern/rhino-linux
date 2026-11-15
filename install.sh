@@ -124,7 +124,7 @@ Usage:
 Options:
   -y, --yes               Non-interactive mode (use defaults)
   --deps                  Install distro packages
-  --prefix <PATH>         Wine prefix directory (default: ~/.wine-rhino)
+  --prefix <PATH>         Wine prefix directory (default: one per version, ~/.wine-rhino8)
   --wine <PATH>           Path to custom Wine binary
   --dxvk-dir <PATH>       Path to custom DXVK 64-bit DLL directory
   --build-wine            Build Wine from source with the patch stack
