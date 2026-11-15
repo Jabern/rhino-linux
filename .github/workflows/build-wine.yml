@@ -22,6 +22,7 @@ on:
       - dev
     paths:
       - 'patches/**'
+      - 'gpu-bridges/**'
       - '.github/workflows/build-wine.yml'
   release:
     types: [published]
@@ -185,6 +186,12 @@ jobs:
           make -j$(nproc)
           ccache -s
 
+      - name: Build the GPU bridges for Cycles (HIP, oneAPI)
+        run: |
+          for bridge in amdhip64 ze_loader; do
+            make -C "gpu-bridges/$bridge" WINE_BUILD="$GITHUB_WORKSPACE/build-wine" WINE_SRC="$GITHUB_WORKSPACE/wine-src"
+          done
+
       - name: Stage and Package Wine Runtime
         run: |
           cd build-wine
@@ -216,6 +223,12 @@ jobs:
           strip --strip-unneeded bin/wineserver lib/wine/x86_64-unix/wine lib/wine/x86_64-unix/wine-preloader 2>/dev/null || true
           find lib/wine/x86_64-windows -type f -exec x86_64-w64-mingw32-strip --strip-unneeded {} + 2>/dev/null || true
           find lib/wine/i386-windows -type f -exec i686-w64-mingw32-strip --strip-unneeded {} + 2>/dev/null || true
+          # Cycles on AMD and Intel GPUs: tools/rhino-linux puts this folder on WINEDLLPATH
+          # when it finds the GPU and its Linux runtime (gpu-bridges/README.md).
+          mkdir -p lib/wine/rhino-bridges
+          cp "$GITHUB_WORKSPACE/gpu-bridges/amdhip64/amdhip64_6.dll.so" \
+             "$GITHUB_WORKSPACE/gpu-bridges/ze_loader/ze_loader.dll.so" lib/wine/rhino-bridges/
+          strip --strip-unneeded lib/wine/rhino-bridges/*.so
           ./bin/wine --version
           # Refuse runtimes that only start on newer CPUs: glibc will not load a binary
           # whose ISA note asks for more than baseline x86-64 (v1.1.0 asked for v4).

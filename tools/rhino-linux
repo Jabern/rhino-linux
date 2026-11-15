@@ -74,6 +74,7 @@ while [ $# -gt 0 ]; do
             echo "  WINE             Path to Wine binary"
             echo "  RHINO_SCALE      Interface size in percent (100-200), as Windows' display scaling"
             echo "  RHINO_COLORS     dark or light: Windows' colors (menus, message boxes, file dialogs)"
+            echo "  RHINO_GPU_BRIDGES  1: Cycles on AMD (HIP) and Intel (oneAPI) GPUs, for testing"
             exit 0
             ;;
         *) break ;;
@@ -465,6 +466,39 @@ if grep -qF '"Tahoma"=str(7):"M\0S\0G\0O\0' "$WINEPREFIX/system.reg" 2>/dev/null
    [ "$(head -c 2 "$fonts_reg" 2>/dev/null | od -An -tx1 | tr -d ' ')" = fffe ]; then
     WINEDEBUG=-all "$WINE_BIN" reg delete 'HKLM\Software\Microsoft\Windows NT\CurrentVersion\FontLink\SystemLink' /f >/dev/null 2>&1 || true
     WINEDEBUG=-all "$WINE_BIN" regedit /S "$fonts_reg" >/dev/null 2>&1 || true
+fi
+
+# Cycles on AMD (HIP) and Intel (oneAPI) GPUs, through the bridges in the runtime's
+# lib/wine/rhino-bridges (gpu-bridges/README.md): each one only with its GPU and its Linux
+# runtime (ROCm's libamdhip64, the Level Zero loader). Testing: opt in with
+# RHINO_GPU_BRIDGES=1 until testers have confirmed them on real cards.
+RHINO_GPU_BRIDGES="${RHINO_GPU_BRIDGES-$(rhino_config_get RHINO_GPU_BRIDGES)}"
+if [ "$RHINO_GPU_BRIDGES" = 1 ]; then
+    bridges_dir="${RHINO_BRIDGES_DIR:-$(dirname "$WINE_BIN")/../lib/wine/rhino-bridges}"
+    has_gpu() { grep -x "$1" /sys/class/drm/card*/device/vendor >/dev/null 2>&1; }
+    # grep reads all of ldconfig's output: with -q, ldconfig dies of SIGPIPE
+    has_lib() { ldconfig -p 2>/dev/null | grep -E "^[[:space:]]+${1//./\\.} " >/dev/null || [ -e "/opt/rocm/lib/$1" ]; }
+    bridges=""
+    if has_gpu 0x1002 && { has_lib libamdhip64.so.6 || has_lib libamdhip64.so.7; } &&
+       [ -e "$bridges_dir/amdhip64_6.dll.so" ]; then
+        bridges="amdhip64_6"
+    fi
+    if has_gpu 0x8086 && has_lib libze_loader.so.1 && [ -e "$bridges_dir/ze_loader.dll.so" ]; then
+        bridges="${bridges:+$bridges }ze_loader"   # instead of the ze_loader.dll Rhino ships
+    fi
+    if [ -n "$bridges" ]; then
+        export WINEDLLPATH="$bridges_dir${WINEDLLPATH:+:$WINEDLLPATH}"
+        for dll in $bridges; do WINEDLLOVERRIDES="$dll=b;$WINEDLLOVERRIDES"; done
+        export WINEDLLOVERRIDES
+        echo "rhino-linux: Cycles GPU bridges: $bridges" >&2
+    fi
+    # Cycles remembers that it found no GPU; give it a fresh look when the bridges change.
+    marker="$WINEPREFIX/.rhino-linux-gpu-bridges"
+    if [ "$bridges" != "$(cat "$marker" 2>/dev/null)" ]; then
+        find "$WINEPREFIX/drive_c/users" -path '*/McNeel/Rhinoceros/*/Plug-ins/RhinoCycles*' \
+            -name gpu_absent -type f -delete 2>/dev/null || true
+        printf '%s' "$bridges" > "$marker" 2>/dev/null || true
+    fi
 fi
 
 # UI scale, chosen in the app or with RHINO_SCALE=<percent> as in Windows' display

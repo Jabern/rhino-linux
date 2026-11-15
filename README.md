@@ -197,6 +197,28 @@ Rhino's calls to the Linux driver. In Rhino, pick the GPU under
   while the driver compiles its kernels; later starts are quick.
 - To skip this step, run the setup with `RHINO_NO_CUDA=1`.
 
+### AMD and Intel GPUs (testing)
+
+Rhino's Cycles also renders on AMD GPUs (HIP, Vega and newer) and Intel Arc GPUs
+(oneAPI). The runtime brings [bridges](gpu-bridges/README.md) that pass these calls to
+the Linux drivers. They need the vendor's compute runtime installed on your system
+(not yet in the Flatpak):
+
+- **AMD**: ROCm's HIP runtime (`libamdhip64.so.6` or `.7`), for example the `rocm-hip-runtime`
+  or `hip-runtime-amd` package.
+- **Intel Arc**: the Level Zero loader and Intel's compute runtime (`level-zero-loader`
+  and `intel-compute-runtime`, or `libze1` and `intel-opencl-icd` on Ubuntu).
+
+They are new and not yet confirmed on real cards, so turn them on yourself:
+
+```bash
+RHINO_GPU_BRIDGES=1 rhino-linux
+```
+
+Then pick the GPU under **Options › Cycles**. If you try it, please tell us how it
+went in the [forum thread](https://discourse.mcneel.com/t/rhino-on-linux/8820) or an
+[issue](https://github.com/Jabern/rhino-linux/issues), with your card and distribution.
+
 ## What the patches do
 
 Stock Wine crashes, shows blank panels or misplaces windows with Rhino. This
