@@ -72,6 +72,7 @@ while [ $# -gt 0 ]; do
             echo "  RHINO_VERSION    Same as --version"
             echo "  RHINO_PREFIX     Use this Wine prefix instead"
             echo "  WINE             Path to Wine binary"
+            echo "  RHINO_SCALE      Interface size in percent (100-200), as Windows' display scaling"
             exit 0
             ;;
         *) break ;;
@@ -463,6 +464,20 @@ if grep -qF '"Tahoma"=str(7):"M\0S\0G\0O\0' "$WINEPREFIX/system.reg" 2>/dev/null
    [ "$(head -c 2 "$fonts_reg" 2>/dev/null | od -An -tx1 | tr -d ' ')" = fffe ]; then
     WINEDEBUG=-all "$WINE_BIN" reg delete 'HKLM\Software\Microsoft\Windows NT\CurrentVersion\FontLink\SystemLink' /f >/dev/null 2>&1 || true
     WINEDEBUG=-all "$WINE_BIN" regedit /S "$fonts_reg" >/dev/null 2>&1 || true
+fi
+
+# UI scale, chosen in the app or with RHINO_SCALE=<percent> as in Windows' display
+# settings: Wine's screen resolution, 96 dpi at 100 %. Empty leaves the prefix's own.
+RHINO_SCALE="${RHINO_SCALE-$(rhino_config_get RHINO_SCALE)}"
+if [[ "$RHINO_SCALE" =~ ^[0-9]+$ ]] && [ "$RHINO_SCALE" -ge 100 ] && [ "$RHINO_SCALE" -le 300 ]; then
+    dpi=$(( (96 * RHINO_SCALE + 50) / 100 ))
+    current_dpi="$(awk '/^\[Control Panel\\\\Desktop\]/ { s = 1; next } /^\[/ { s = 0 }
+                        s && /^"LogPixels"=dword:/ { sub(/.*dword:/, ""); print strtonum("0x" $0) }' \
+                   "$WINEPREFIX/user.reg" 2>/dev/null)"
+    if [ "$current_dpi" != "$dpi" ]; then
+        WINEDEBUG=-all "$WINE_BIN" reg add 'HKCU\Control Panel\Desktop' /v LogPixels /t REG_DWORD \
+            /d "$dpi" /f >/dev/null 2>&1 || true
+    fi
 fi
 
 cd "$RHINO_DIR"

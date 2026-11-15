@@ -665,6 +665,7 @@ class Window(Adw.ApplicationWindow):
         if len(gpus) > 1:
             box.append(self.graphics_group(gpus))
         box.append(self.opengl_group())
+        box.append(self.scale_group())
 
         plugins = Adw.PreferencesGroup(title="Plug-ins",
                                        description="You can also drop a plug-in file on this window, or double-click it in your file manager.")
@@ -745,6 +746,25 @@ class Window(Adw.ApplicationWindow):
             combo.set_subtitle(subtitle)
             write_config("RHINO_GL", key)
             self.toast(f"Rhino uses {'Zink' if key else 'the native driver'} from its next start")
+        row.connect("notify::selected", changed)
+        group.add(row)
+        return group
+
+    def scale_group(self):
+        """UI scale (RHINO_SCALE, a percentage that rhino-linux sets as Wine's dpi), as
+        Windows' display scaling: Rhino's menus, toolbars and panels follow it."""
+        group = Adw.PreferencesGroup(title="Display",
+                                     description="Make Rhino's menus, toolbars and panels larger, "
+                                                 "as with Windows' display scaling.")
+        choices = ["100", "125", "150", "175", "200"]
+        row = Adw.ComboRow(title="Interface size", model=Gtk.StringList.new([c + " %" for c in choices]))
+        current = read_config().get("RHINO_SCALE", "100")
+        row.set_selected(choices.index(current) if current in choices else 0)
+
+        def changed(combo, _param):
+            scale = choices[combo.get_selected()]
+            write_config("RHINO_SCALE", scale)
+            self.toast(f"Rhino's interface is {scale} % from its next start")
         row.connect("notify::selected", changed)
         group.add(row)
         return group
