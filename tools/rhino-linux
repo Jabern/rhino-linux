@@ -492,11 +492,13 @@ if [ "$RHINO_GPU_BRIDGES" = 1 ]; then
         export WINEDLLOVERRIDES
         echo "rhino-linux: Cycles GPU bridges: $bridges" >&2
     fi
-    # Cycles remembers that it found no GPU; give it a fresh look when the bridges change.
+    # RhinoCycles keeps a GPU type off for good once its initialisation threw
+    # (disable_hip, disable_oneapi: Utilities._GpuSentinels), and remembers finding no
+    # GPU; give them a fresh look when the bridges change.
     marker="$WINEPREFIX/.rhino-linux-gpu-bridges"
     if [ "$bridges" != "$(cat "$marker" 2>/dev/null)" ]; then
         find "$WINEPREFIX/drive_c/users" -path '*/McNeel/Rhinoceros/*/Plug-ins/RhinoCycles*' \
-            -name gpu_absent -type f -delete 2>/dev/null || true
+            \( -name gpu_absent -o -name disable_hip -o -name disable_oneapi \) -type f -delete 2>/dev/null || true
         printf '%s' "$bridges" > "$marker" 2>/dev/null || true
     fi
 fi

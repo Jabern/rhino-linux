@@ -53,7 +53,11 @@ BOOL WINAPI DllMain( HINSTANCE instance, DWORD reason, void *reserved )
         /* Without ROCm, still load, and report no device: every call fails, hipInit with
          * hipErrorNoDevice, and Cycles lists no HIP device. Failing DllMain instead hung
          * Rhino's start, the loader lock taken by a thread that never let it go. */
-        if (hip_lib) load_functions( hip_lib );
+        if (hip_lib)
+        {
+            load_functions( hip_lib );
+            load_props_functions( hip_lib );
+        }
         else WINE_WARN( "no libamdhip64.so.6 or .so.7 (ROCm's HIP runtime) found\n" );
         DisableThreadLibraryCalls( instance );
         break;

@@ -14,12 +14,12 @@ WINELIB_FILES = libs/winecrt0/libwinecrt0.a dlls/kernel32/libkernel32.a dlls/ntd
 
 all: amdhip64_6.dll.so
 
-amdhip64_6_thunks.c amdhip64_6.spec: gen_amdhip64.py hip-functions.txt ../third_party/hipew.h
+amdhip64_6_thunks.c amdhip64_6_props.c amdhip64_6.spec: gen_amdhip64.py hip-functions.txt ../third_party/hipew.h ../third_party/hip_device_prop_r0600.h
 	python3 gen_amdhip64.py
 
-amdhip64_6.dll.so: amdhip64_6.spec amdhip64_main.c amdhip64_6_thunks.c amdhip64_private.h
+amdhip64_6.dll.so: amdhip64_6.spec amdhip64_main.c amdhip64_6_thunks.c amdhip64_6_props.c amdhip64_private.h
 	$(MAKE) -C $(WINE_BUILD) $(WINELIB_FILES)
-	$(WINEGCC) $(CFLAGS) -shared amdhip64_6.spec amdhip64_main.c amdhip64_6_thunks.c \
+	$(WINEGCC) $(CFLAGS) -shared amdhip64_6.spec amdhip64_main.c amdhip64_6_thunks.c amdhip64_6_props.c \
 	    -o amdhip64_6.dll -ldl $(WINELIBS)
 
 clean:

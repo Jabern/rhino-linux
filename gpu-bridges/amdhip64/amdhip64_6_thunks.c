@@ -398,7 +398,7 @@ static hipError_t (*p_hipGetDeviceProperties)(hipDeviceProp_t* props, int device
 hipError_t WINAPI wine_hipGetDeviceProperties(hipDeviceProp_t* props, int deviceId)
 {
     WINE_TRACE("\n");
-    if (!p_hipGetDeviceProperties) return hipErrorNotSupported;
+    if (!p_hipGetDeviceProperties) return get_props_from_r0600(props, deviceId);
     return p_hipGetDeviceProperties(props, deviceId);
 }
 
@@ -939,7 +939,7 @@ void load_functions(void *lib)
     LOAD(hipFuncSetCacheConfig, "hipFuncSetCacheConfig");
     LOAD(hipGetDevice, "hipGetDevice");
     LOAD(hipGetDeviceCount, "hipGetDeviceCount");
-    LOAD(hipGetDeviceProperties, "hipGetDevicePropertiesR0000", "hipGetDeviceProperties");
+    LOAD(hipGetDeviceProperties, "hipGetDevicePropertiesR0000");
     LOAD(hipGetErrorName, "hipGetErrorName");
     LOAD(hipHostFree, "hipHostFree");
     LOAD(hipHostGetDevicePointer, "hipHostGetDevicePointer");

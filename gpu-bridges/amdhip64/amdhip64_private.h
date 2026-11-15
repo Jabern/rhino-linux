@@ -33,6 +33,8 @@ typedef struct dim3
 char *unix_path( const char *dos_path );
 void free_unix_path( char *path );
 void load_functions( void *lib );
+void load_props_functions( void *lib );
+hipError_t get_props_from_r0600( hipDeviceProp_t *prop, int device );
 
 #define LOAD(name, ...) \
     do { \
