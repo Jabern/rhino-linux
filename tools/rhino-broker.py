@@ -21,6 +21,7 @@ import fcntl
 import json
 import os
 import socket
+import stat
 import struct
 import subprocess
 import sys
@@ -38,8 +39,13 @@ def prefix_id(prefix):
 
 
 def broker_dir():
+    """/tmp/rhino-linux-<uid>, which must be ours and private: another user who made it
+    first could reach the broker's socket and have it run commands as us."""
     path = "/tmp/rhino-linux-%d" % os.getuid()
     os.makedirs(path, mode=0o700, exist_ok=True)
+    st = os.lstat(path)
+    if not stat.S_ISDIR(st.st_mode) or st.st_uid != os.getuid() or stat.S_IMODE(st.st_mode) != 0o700:
+        raise OSError("%s is not a private folder of this user" % path)
     return path
 
 
@@ -205,6 +211,12 @@ def claim(prefix):
 
 
 def main():
+    if len(sys.argv) >= 3 and sys.argv[1] in ("claim", "run"):
+        try:
+            broker_dir()
+        except OSError as e:  # the launcher then runs Rhino itself, without a broker
+            sys.stderr.write("rhino-broker: %s\n" % e)
+            return NO_BROKER if sys.argv[1] == "run" else 1
     if len(sys.argv) >= 3 and sys.argv[1] == "claim":
         return claim(sys.argv[2])
     if len(sys.argv) >= 5 and sys.argv[1] == "run" and sys.argv[3] == "--":
