@@ -585,10 +585,14 @@ if [ -n "$RHINO_INSTALLER" ]; then
             # environment reaches every process the installer starts.
             installer_env=(WINEDLLOVERRIDES="mscoree=native;winemenubuilder.exe=d")
         fi
-        env "${installer_env[@]}" "$WINE_BIN" "$RHINO_INSTALLER" "${installer_flags[@]}" || [ $? -eq 3010 ]
-        # Wait for any lingering msiexec tasks to complete
-        while "$WINESERVER_BIN" -k 0 2>/dev/null && pgrep -f -u "$UID" "msiexec" >/dev/null 2>&1; do
+        # 3010 (installed, Windows would restart) arrives as 3010 % 256 = 194
+        env "${installer_env[@]}" "$WINE_BIN" "$RHINO_INSTALLER" "${installer_flags[@]}" || [ $? -eq 194 ]
+        # Wait for any lingering msiexec tasks to complete. (Not "wineserver -k 0":
+        # wineserver reads only an attached signal number, so that killed the server.)
+        waited=0
+        while [ "$waited" -lt 300 ] && pgrep -f -u "$UID" "msiexec" >/dev/null 2>&1; do
             sleep 2
+            waited=$((waited + 2))
         done
         timeout 10 "$WINESERVER_BIN" -w 2>/dev/null || true
         # Re-run deployment script to patch greeting & configs
