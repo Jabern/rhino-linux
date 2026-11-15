@@ -390,7 +390,7 @@ static hipError_t (*p_hipGetDeviceCount)(int* count);
 hipError_t WINAPI wine_hipGetDeviceCount(int* count)
 {
     WINE_TRACE("\n");
-    if (!p_hipGetDeviceCount) return hipErrorNotSupported;
+    if (!p_hipGetDeviceCount) return hipErrorNoDevice;
     return p_hipGetDeviceCount(count);
 }
 
@@ -488,7 +488,7 @@ static hipError_t (*p_hipInit)(unsigned int Flags);
 hipError_t WINAPI wine_hipInit(unsigned int Flags)
 {
     WINE_TRACE("\n");
-    if (!p_hipInit) return hipErrorNotSupported;
+    if (!p_hipInit) return hipErrorNoDevice;
     return p_hipInit(Flags);
 }
 

@@ -71,7 +71,8 @@ for name in FUNCTIONS:
         c.append(f"    WINE_FIXME(\"not supported through Wine\\n\");")
         c.append("    return hipErrorNotSupported;")
     else:
-        c.append(f"    if (!p_{name}) return hipErrorNotSupported;")
+        missing_ret = "hipErrorNoDevice" if name in ("hipInit", "hipGetDeviceCount") else "hipErrorNotSupported"
+        c.append(f"    if (!p_{name}) return {missing_ret};")
         call = f"p_{name}({', '.join(names)})"
         if name == "hipModuleLoad":
             c.append("    {")

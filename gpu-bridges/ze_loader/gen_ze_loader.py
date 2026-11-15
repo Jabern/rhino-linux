@@ -68,7 +68,8 @@ for name in FUNCTIONS:
         c.append("    if (ppFunctionAddress) *ppFunctionAddress = NULL;")
         c.append("    return ZE_RESULT_ERROR_INVALID_ARGUMENT;")
     else:
-        c.append(f"    if (!p_{name}) return ZE_RESULT_ERROR_UNSUPPORTED_FEATURE;")
+        missing_ret = "ZE_RESULT_ERROR_UNINITIALIZED" if name in ("zeInit", "zeDriverGet") else "ZE_RESULT_ERROR_UNSUPPORTED_FEATURE"
+        c.append(f"    if (!p_{name}) return {missing_ret};")
         c.append(f"    return p_{name}({', '.join(names)});")
     c.append("}")
     c.append("")

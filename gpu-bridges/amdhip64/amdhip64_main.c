@@ -50,18 +50,15 @@ BOOL WINAPI DllMain( HINSTANCE instance, DWORD reason, void *reserved )
     case DLL_PROCESS_ATTACH:
         for (i = 0; i < ARRAY_SIZE(libraries) && !hip_lib; i++)
             hip_lib = dlopen( libraries[i], RTLD_NOW );
-        /* Without ROCm, fail to load as amdhip64_6.dll does without AMD's driver on
-         * Windows: Cycles then lists no HIP device. */
-        if (!hip_lib)
-        {
-            WINE_WARN( "no libamdhip64.so.6 or .so.7 (ROCm's HIP runtime) found\n" );
-            return FALSE;
-        }
-        load_functions( hip_lib );
+        /* Without ROCm, still load, and report no device: every call fails, hipInit with
+         * hipErrorNoDevice, and Cycles lists no HIP device. Failing DllMain instead hung
+         * Rhino's start, the loader lock taken by a thread that never let it go. */
+        if (hip_lib) load_functions( hip_lib );
+        else WINE_WARN( "no libamdhip64.so.6 or .so.7 (ROCm's HIP runtime) found\n" );
         DisableThreadLibraryCalls( instance );
         break;
     case DLL_PROCESS_DETACH:
-        if (reserved) break;
+        if (reserved || !hip_lib) break;
         dlclose( hip_lib );
         break;
     }

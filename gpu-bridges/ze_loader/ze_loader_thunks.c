@@ -278,7 +278,7 @@ static ze_result_t (*p_zeDriverGet)(uint32_t* pCount, ze_driver_handle_t* phDriv
 ze_result_t WINAPI wine_zeDriverGet(uint32_t* pCount, ze_driver_handle_t* phDrivers)
 {
     WINE_TRACE("\n");
-    if (!p_zeDriverGet) return ZE_RESULT_ERROR_UNSUPPORTED_FEATURE;
+    if (!p_zeDriverGet) return ZE_RESULT_ERROR_UNINITIALIZED;
     return p_zeDriverGet(pCount, phDrivers);
 }
 
@@ -438,7 +438,7 @@ static ze_result_t (*p_zeInit)(ze_init_flags_t flags);
 ze_result_t WINAPI wine_zeInit(ze_init_flags_t flags)
 {
     WINE_TRACE("\n");
-    if (!p_zeInit) return ZE_RESULT_ERROR_UNSUPPORTED_FEATURE;
+    if (!p_zeInit) return ZE_RESULT_ERROR_UNINITIALIZED;
     return p_zeInit(flags);
 }
 

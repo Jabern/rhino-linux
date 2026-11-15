@@ -15,8 +15,9 @@ Both are Wine builtin libraries in ELF form, generated from the API headers in
 functions Rhino 8 uses (`hip-functions.txt`, `ze-functions.txt`). Calls that cannot work
 through Wine report "not supported", and Cycles goes on without them: OpenGL interop
 (the Raytraced viewport copies its frames instead), HIP stream callbacks, Level Zero
-extensions and loader tracing. Without the Linux runtime, a bridge refuses to load, and
-Cycles lists no device of that kind, as on Windows without the vendor's driver.
+extensions and loader tracing. Without the Linux runtime, a bridge still loads and
+reports no device (`hipInit`, `zeInit` fail), and Cycles lists no device of that kind, as
+on Windows without the vendor's driver. (Failing to load instead hung Rhino at start.)
 
 The runtime build (`.github/workflows/build-wine.yml`) builds them with Wine and ships
 them in `lib/wine/rhino-bridges/`; `tools/rhino-linux` turns each one on when it finds
