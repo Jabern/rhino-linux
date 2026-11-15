@@ -1,0 +1,90 @@
+diff --git a/dlls/winex11.drv/event.c b/dlls/winex11.drv/event.c
+index ce5c06f..8d57f21 100644
+--- a/dlls/winex11.drv/event.c
++++ b/dlls/winex11.drv/event.c
+@@ -1159,6 +1159,53 @@ static void handle_net_wm_state_notify( HWND hwnd, XPropertyEvent *event )
+  * the client area that many pixels below the work area, while the WM places it below
+  * its title bar; any difference triggers a second layout once the WM's geometry
+  * arrives. Follow the WM's title bar height, for this session only. */
++/* Whether the window manager is Mutter or one of its forks (Muffin for Cinnamon, GNOME Shell).
++ * A new caption height changes the layout, and for small windows the decorations, of the
++ * windows already shown; when a window's decorations change, Mutter recreates its damage object
++ * outside of an X error trap, and the whole desktop shell exits on the BadDrawable error if
++ * the window is being destroyed meanwhile (Cinnamon dies while wineboot runs). */
++static int wm_check_error( Display *display, XErrorEvent *event, void *arg )
++{
++    return (event->error_code == BadWindow);
++}
++
++static BOOL wm_is_mutter( Display *display )
++{
++    static int is_mutter = -1;
++    unsigned long count, remaining;
++    unsigned char *data;
++    Window wm = 0;
++    int format;
++    Atom type;
++
++    if (is_mutter != -1) return is_mutter;
++    is_mutter = 0;
++
++    if (XGetWindowProperty( display, DefaultRootWindow( display ), x11drv_atom(_NET_SUPPORTING_WM_CHECK),
++                            0, 1, False, XA_WINDOW, &type, &format, &count, &remaining, &data ) != Success)
++        return is_mutter;
++    if (type == XA_WINDOW && format == 32 && count == 1) wm = *(Window *)data;
++    XFree( data );
++    if (!wm) return is_mutter;
++
++    X11DRV_expect_error( display, wm_check_error, NULL );
++    if (XGetWindowProperty( display, wm, x11drv_atom(_NET_WM_NAME), 0, 64, False, x11drv_atom(UTF8_STRING),
++                            &type, &format, &count, &remaining, &data ) == Success)
++    {
++        if (type == x11drv_atom(UTF8_STRING) && format == 8 && count)
++        {
++            char name[257];
++            memcpy( name, data, min( count, sizeof(name) - 1 ) );
++            name[min( count, sizeof(name) - 1 )] = 0;
++            is_mutter = strstr( name, "Mutter" ) || strstr( name, "Muffin" ) || strstr( name, "GNOME Shell" );
++            TRACE( "window manager %s\n", debugstr_a(name) );
++        }
++        XFree( data );
++    }
++    X11DRV_check_error();
++    return is_mutter;
++}
++
+ static void handle_net_frame_extents_notify( HWND hwnd, XPropertyEvent *event )
+ {
+     NONCLIENTMETRICSW ncm = {.cbSize = sizeof(ncm)};
+@@ -1178,6 +1225,7 @@ static void handle_net_frame_extents_notify( HWND hwnd, XPropertyEvent *event )
+     managed = data->managed;
+     release_win_data( data );
+     if (!managed) return;
++    if (wm_is_mutter( event->display )) return;
+ 
+     if (XGetWindowProperty( event->display, event->window, x11drv_atom(_NET_FRAME_EXTENTS), 0, 4, False,
+                             XA_CARDINAL, &type, &format, &count, &remaining, &extents ) != Success)
+diff --git a/dlls/winex11.drv/x11drv.h b/dlls/winex11.drv/x11drv.h
+index 47dccb5..c9dd983 100644
+--- a/dlls/winex11.drv/x11drv.h
++++ b/dlls/winex11.drv/x11drv.h
+@@ -539,6 +539,7 @@ enum x11drv_atoms
+     XATOM__NET_STARTUP_INFO_BEGIN,
+     XATOM__NET_STARTUP_INFO,
+     XATOM__NET_SUPPORTED,
++    XATOM__NET_SUPPORTING_WM_CHECK,
+     XATOM__NET_SYSTEM_TRAY_OPCODE,
+     XATOM__NET_SYSTEM_TRAY_S0,
+     XATOM__NET_SYSTEM_TRAY_VISUAL,
+diff --git a/dlls/winex11.drv/x11drv_main.c b/dlls/winex11.drv/x11drv_main.c
+index a5d7d8d..e2723dc 100644
+--- a/dlls/winex11.drv/x11drv_main.c
++++ b/dlls/winex11.drv/x11drv_main.c
+@@ -134,6 +134,7 @@ const char * const X11DRV_atom_names[NB_XATOMS - FIRST_XATOM] =
+     "_NET_STARTUP_INFO_BEGIN",
+     "_NET_STARTUP_INFO",
+     "_NET_SUPPORTED",
++    "_NET_SUPPORTING_WM_CHECK",
+     "_NET_SYSTEM_TRAY_OPCODE",
+     "_NET_SYSTEM_TRAY_S0",
+     "_NET_SYSTEM_TRAY_VISUAL",

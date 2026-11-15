@@ -1,6 +1,6 @@
 # Wine Patches for Rhinoceros on Linux
 
-This directory contains 42 modular topic patches for Wine 11.20 (41 core patches for X11 / XWayland and 1 optional patch for pure Wayland) to run **McNeel Rhinoceros** on Linux with native performance, hardware-accelerated Direct3D 11 viewports, and Cloud Zoo licensing support.
+This directory contains 43 modular topic patches for Wine 11.20 (42 core patches for X11 / XWayland and 1 optional patch for pure Wayland) to run **McNeel Rhinoceros** on Linux with native performance, hardware-accelerated Direct3D 11 viewports, and Cloud Zoo licensing support.
 
 ---
 
@@ -50,6 +50,7 @@ This directory contains 42 modular topic patches for Wine 11.20 (41 core patches
 | **40** | `40-ntdll-environment-scan.patch` | `ntdll` | Environment lookups find the end of each string four characters at a time; .NET's JIT makes two lookups per compiled method. |
 | **41** | `41-opengl32-default-fbo-attachment-queries.patch` | `opengl32` | Attachment queries on the default framebuffer (`glGetFramebufferAttachmentParameteriv`) of a window drawn through Wine's framebuffer object, as patch 34 does on NVIDIA, describe that framebuffer object (its alpha channel, depth, samples) instead of the host window surface without alpha: Rhino's OpenGL viewports keep antialiasing after showing a layout with NVIDIA's own driver. |
 | **42** | `42-x11-no-focus-steal-from-background.patch` | `winex11.drv` | Rhino no longer pops up and takes the focus while a script runs in the background: when a Wayland window has the focus, no Wine window stays foreground, and a minimized window isn't restored just because the application activates it. |
+| **43** | `43-x11-no-frame-extents-under-mutter.patch` | `winex11.drv` | Under Mutter and its forks (Cinnamon's Muffin, GNOME Shell) Wine keeps its own caption height instead of following the window manager's title bar (patch 24): the change re-decorated windows being destroyed, and Cinnamon exited, leaving the desktop without panel, window controls or keyboard while Rhino was installed. |
 
 ---
 
