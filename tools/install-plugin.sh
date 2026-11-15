@@ -98,11 +98,11 @@ install_yak() {
 install_grasshopper() {
     local kind="$1" src="$2" dest
     if [ "$kind" = "gha" ]; then dest="$ROAMING/Grasshopper/Libraries"; else dest="$ROAMING/Grasshopper/UserObjects"; fi
-    mkdir -p "$dest"
+    mkdir -p "$dest" || return 1
     if [ -d "$src" ]; then
         echo "Copying Grasshopper add-on folder $(basename "$src") to $dest..."
         rm -rf "${dest:?}/$(basename "$src")"
-        cp -a "$src" "$dest/"
+        cp -a "$src" "$dest/" || return 1
     else
         echo "Copying $(basename "$src") to $dest..."
         cp -f "$src" "$dest/"
@@ -110,22 +110,32 @@ install_grasshopper() {
 }
 
 install_windows_installer() {
+    local rc=0
     echo "Running the Windows installer $(basename "$1")..."
     echo "Follow its steps. Keep the default install location."
     case "${1,,}" in
-        *.msi) "$WINE_BIN" msiexec /i "$(winpath "$1")" ;;
-        *)     "$WINE_BIN" "$(winpath "$1")" ;;
+        *.msi) "$WINE_BIN" msiexec /i "$(winpath "$1")" || rc=$? ;;
+        *)     "$WINE_BIN" "$(winpath "$1")" || rc=$? ;;
     esac
     "${WINE_BIN%/wine}/wineserver" -w 2>/dev/null || true
+    # 3010 and 1641: installed, Windows would restart (194 and 105 as Unix exit codes)
+    case "$rc" in
+        0|194|105) return 0 ;;
+        *) echo "The installer exited with code $rc (cancelled or failed)."; return 1 ;;
+    esac
 }
 
+# install_one runs as an "if" condition, where set -e is off: every step checks its own status.
 install_zip() {
-    local dir="$WORK/zip" found=0 f
+    local dir="$WORK/zip" found=0 failed=0 f
     echo "Unpacking $(basename "$1")..."
-    python3 -m zipfile -e "$1" "$dir"
+    if ! python3 -m zipfile -e "$1" "$dir"; then
+        echo "Error: $(basename "$1") could not be unpacked."
+        return 1
+    fi
     while IFS= read -r -d '' f; do
         found=1
-        install_one "$f"
+        install_one "$f" || failed=1
     done < <(find "$dir" -type f \( -iname '*.rhi' -o -iname '*.yak' -o -iname '*.exe' -o -iname '*.msi' \) -print0 | sort -z)
     # Grasshopper add-ons often ship .gha files with helper DLLs: copy their whole folder.
     if [ "$found" -eq 0 ]; then
@@ -139,18 +149,19 @@ install_zip() {
                     install_grasshopper gha "$WORK/$(basename "${1%.*}")"
                     return
                 fi
-                install_grasshopper gha "$f"
+                install_grasshopper gha "$f" || failed=1
             done <<< "$gha_dirs"
         fi
         while IFS= read -r -d '' f; do
             found=1
-            install_grasshopper ghuser "$f"
+            install_grasshopper ghuser "$f" || failed=1
         done < <(find "$dir" -type f -iname '*.ghuser' -print0 2>/dev/null)
     fi
     if [ "$found" -eq 0 ]; then
         echo "Error: no Rhino or Grasshopper plug-in was found inside $(basename "$1")."
         exit 2
     fi
+    return "$failed"
 }
 
 install_one() {
