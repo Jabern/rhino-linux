@@ -1,0 +1,66 @@
+diff --git a/dlls/win32u/vulkan.c b/dlls/win32u/vulkan.c
+index 0e03ec3..ac507bf 100644
+--- a/dlls/win32u/vulkan.c
++++ b/dlls/win32u/vulkan.c
+@@ -1961,6 +1961,39 @@ static void win32u_vkDestroySwapchainKHR( VkDevice client_device, VkSwapchainKHR
+     free( swapchain );
+ }
+ 
++/* An acquire asked to wait for ever can wait for ever: when the window system never gives
++ * an image back (seen with NVIDIA under Xwayland), DXVK's present thread blocked in it and
++ * Rhino froze with black windows. Wait in slices, and after ACQUIRE_STALL_NS without an
++ * image report the swapchain out of date, which applications handle by recreating it. */
++#define ACQUIRE_SLICE_NS 1000000000ull
++#define ACQUIRE_STALL_NS 10000000000ull
++
++/* info: vkAcquireNextImage2KHR's parameters, or NULL for vkAcquireNextImageKHR's */
++static VkResult acquire_with_stall_check( struct vulkan_device *device, VkAcquireNextImageInfoKHR *info,
++                                          VkSwapchainKHR swapchain, uint64_t timeout, VkSemaphore semaphore,
++                                          VkFence fence, uint32_t *image_index )
++{
++    uint64_t waited = 0, slice = timeout == UINT64_MAX ? ACQUIRE_SLICE_NS : timeout;
++    VkResult res;
++
++    for (;;)
++    {
++        if (info)
++        {
++            info->timeout = slice;
++            res = device->p_vkAcquireNextImage2KHR( device->host.device, info, image_index );
++            info->timeout = timeout;
++        }
++        else res = device->p_vkAcquireNextImageKHR( device->host.device, swapchain, slice, semaphore, fence, image_index );
++
++        if (res != VK_TIMEOUT || timeout != UINT64_MAX) return res;
++        if ((waited += slice) < ACQUIRE_STALL_NS) continue;
++        ERR( "no swapchain image after %llu s, reporting the swapchain out of date\n",
++             (unsigned long long)(waited / 1000000000) );
++        return VK_ERROR_OUT_OF_DATE_KHR;
++    }
++}
++
+ static VkResult win32u_vkAcquireNextImage2KHR( VkDevice client_device, const VkAcquireNextImageInfoKHR *acquire_info,
+                                                uint32_t *image_index )
+ {
+@@ -1976,7 +2009,7 @@ static VkResult win32u_vkAcquireNextImage2KHR( VkDevice client_device, const VkA
+     acquire_info_host.swapchain = swapchain->obj.host.swapchain;
+     acquire_info_host.semaphore = semaphore ? semaphore->host.semaphore : 0;
+     acquire_info_host.fence = fence ? fence->host.fence : 0;
+-    res = device->p_vkAcquireNextImage2KHR( device->host.device, &acquire_info_host, image_index );
++    res = acquire_with_stall_check( device, &acquire_info_host, 0, acquire_info->timeout, 0, 0, image_index );
+ 
+     if (!res && get_surface_rect( surface->hwnd, &client_rect, get_dpi_for_window( surface->hwnd ) ) &&
+         !extents_equals( &swapchain->extents, &client_rect ))
+@@ -2000,9 +2033,9 @@ static VkResult win32u_vkAcquireNextImageKHR( VkDevice client_device, VkSwapchai
+     RECT client_rect;
+     VkResult res;
+ 
+-    res = device->p_vkAcquireNextImageKHR( device->host.device, swapchain->obj.host.swapchain, timeout,
+-                                              semaphore ? semaphore->host.semaphore : 0, fence ? fence->host.fence : 0,
+-                                              image_index );
++    res = acquire_with_stall_check( device, NULL, swapchain->obj.host.swapchain, timeout,
++                                    semaphore ? semaphore->host.semaphore : 0, fence ? fence->host.fence : 0,
++                                    image_index );
+ 
+     if (!res && get_surface_rect( surface->hwnd, &client_rect, get_dpi_for_window( surface->hwnd ) ) &&
+         !extents_equals( &swapchain->extents, &client_rect ))
