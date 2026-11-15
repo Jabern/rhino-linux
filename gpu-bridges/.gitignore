@@ -1,4 +1,5 @@
 *.dll.so
 *.dll
 tests/*.exe
-tests/*.so.*
+tests/**/*.so*
+tests/*.so*
