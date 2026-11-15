@@ -579,7 +579,12 @@ class Window(Adw.ApplicationWindow):
 
     def read_line(self, stream, on_done):
         def got(src, res):
-            line, _ = src.read_line_finish_utf8(res)
+            # A line that is not UTF-8 (a Windows installer's output) raises; it is
+            # consumed, so go on reading: stopping filled the pipe and hung the setup.
+            try:
+                line, _ = src.read_line_finish_utf8(res)
+            except GLib.Error:
+                line = "\ufffd"
             if line is None:
                 self.proc.wait_check_async(None, lambda p, r: self.on_exit(p, r, on_done))
                 return
@@ -1101,8 +1106,12 @@ class Window(Adw.ApplicationWindow):
     def repair(self, versions):
         """deploy-rhino.sh for each version in turn."""
         deploy = os.path.join(REPO_DIR, "tools/deploy-rhino.sh")
-        steps = [f'"{deploy}" --prefix "{prefix_for(v)}" --wine "{wine_path()}" --version {v}' for v in versions]
-        argv = ["bash", "-c", " && ".join(steps) or "true"]
+        # paths as arguments, never pasted into the script: a prefix may hold " or $
+        script = ('deploy=$1 wine=$2; shift 2; while [ $# -gt 0 ]; do '
+                  '"$deploy" --prefix "$1" --wine "$wine" --version "$2" || exit; shift 2; done')
+        argv = ["bash", "-c", script, "bash", deploy, wine_path()]
+        for v in versions:
+            argv += [prefix_for(v), v]
         names = " and ".join(rhino_name(v) for v in versions) or "Rhino"
         self.run_script("Repairing " + names, argv, lambda ok, d: self.after_maintenance(ok, d, "Repair finished"))
 
@@ -1118,11 +1127,13 @@ class Window(Adw.ApplicationWindow):
             self.show_failure("That did not work", detail)
 
     def on_stop(self, *_):
-        try:
+        # in a thread: stopping can take up to a minute, and the window must not freeze
+        def stop():
             subprocess.run([launcher(), "--stop"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=60)
-            self.toast("Rhino was closed")
-        except (OSError, subprocess.SubprocessError):
-            self.toast("Rhino is not running")
+
+        def done(_result, error):
+            self.toast("Rhino was closed" if error is None else "Rhino is not running")
+        in_thread(stop, done)
 
     def uninstall_targets(self, version=None):
         """Only paths this project created: Wine prefixes, our runtime, our files.
