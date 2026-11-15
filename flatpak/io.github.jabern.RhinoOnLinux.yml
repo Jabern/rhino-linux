@@ -14,6 +14,8 @@ finish-args:
   - --socket=pulseaudio
   - --device=all           # GPU for Vulkan/DXVK, and /dev/ntsync
   - --filesystem=home      # open and save models anywhere, as in Windows
+  - --filesystem=host      # other drives too (/mnt, /media, /run/media): models opened from there
+                           # otherwise come through the document portal, where saving lost them
   - --allow=multiarch      # WoW64 needs modify_ldt to run 32-bit installers
   - --env=WINEDEBUG=-all
 modules:

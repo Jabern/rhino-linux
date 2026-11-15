@@ -229,6 +229,18 @@ for arg in "$@"; do
         arg="${arg#file://}"
     fi
     decoded_arg=$(printf '%b' "${arg//%/\\x}")
+    # A file the sandbox couldn't reach comes through the document portal, in a
+    # folder of its own where any other file is a hidden temporary one: Rhino's
+    # save renames the model to name.3dmbak there, so the model vanished from its
+    # real folder and the backup was dropped with the portal entry. Open it at
+    # its real path when the sandbox reaches it.
+    if [[ "$decoded_arg" == /run/user/*/doc/* ]] && command -v python3 >/dev/null 2>&1; then
+        host_path="$(python3 -c 'import os, sys; print(os.fsdecode(os.getxattr(sys.argv[1], "user.document-portal.host-path")))' \
+                     "$decoded_arg" 2>/dev/null)" || host_path=""
+        if [ -n "$host_path" ] && [ -w "$(dirname "$host_path")" ]; then
+            decoded_arg="$host_path"
+        fi
+    fi
     if [ -e "$decoded_arg" ]; then
         abs_arg="$(readlink -f "$decoded_arg")"
         args+=("Z:${abs_arg//\//\\}")
