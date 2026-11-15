@@ -74,17 +74,12 @@ for name in FUNCTIONS:
         c.append("    return hipErrorNotSupported;")
     else:
         missing_ret = "hipErrorNoDevice" if name in ("hipInit", "hipGetDeviceCount") else "hipErrorNotSupported"
-        if name != "hipGetDeviceProperties":
+        if name == "hipGetDeviceProperties":
+            # no R0000 symbol: translate from the 6.0 layout
+            c.append(f"    if (!p_{name}) return get_props_from_r0600({names[0]}, {names[1]});")
+        else:
             c.append(f"    if (!p_{name}) return {missing_ret};")
         call = f"p_{name}({', '.join(names)})"
-        if name == "hipGetDeviceProperties":
-            c.append(f"    if (!p_hipGetDeviceProperties) return get_props_from_r0600({names[0]}, {names[1]});")
-            c.append(f"    return {call};")
-            c.append("}")
-            c.append("")
-            spec.append(f"@ cdecl -norelay {name}() wine_{name}")
-            loads.append('    LOAD(hipGetDeviceProperties, "hipGetDevicePropertiesR0000");')
-            continue
         if name == "hipModuleLoad":
             c.append("    {")
             c.append("        char *unix_name = unix_path(fname);")

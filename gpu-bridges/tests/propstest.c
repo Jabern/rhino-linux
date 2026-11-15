@@ -10,10 +10,14 @@ int main(void)
     hipDeviceProp_t props;
     hipError_t (*getprops)(hipDeviceProp_t *, int) = (void *)GetProcAddress(m, "hipGetDeviceProperties");
     hipError_t ret;
+    char arch[sizeof(props.gcnArchName)];
     memset(&props, 0xcc, sizeof(props));
     ret = getprops(&props, 0);
+    /* strtok on a copy: the full gcnArchName is printed as the bridge copied it */
+    memcpy(arch, props.gcnArchName, sizeof(arch));
+    arch[sizeof(arch) - 1] = 0;
     printf("hipGetDeviceProperties -> %d: name '%s', gcnArchName '%s' (arch '%s'), %zu GB, %d CUs, %d.%d, bus %d\n",
-           ret, props.name, props.gcnArchName, strtok(props.gcnArchName, ":"), props.totalGlobalMem >> 30,
+           ret, props.name, props.gcnArchName, strtok(arch, ":"), props.totalGlobalMem >> 30,
            props.multiProcessorCount, props.major, props.minor, props.pciBusID);
     return 0;
 }
