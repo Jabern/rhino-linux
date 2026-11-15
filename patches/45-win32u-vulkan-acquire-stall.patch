@@ -1,8 +1,16 @@
 diff --git a/dlls/win32u/vulkan.c b/dlls/win32u/vulkan.c
-index 0e03ec3..ac507bf 100644
+index 0e03ec3..1b09bc2 100644
 --- a/dlls/win32u/vulkan.c
 +++ b/dlls/win32u/vulkan.c
-@@ -1961,6 +1961,39 @@ static void win32u_vkDestroySwapchainKHR( VkDevice client_device, VkSwapchainKHR
+@@ -26,6 +26,7 @@
+ 
+ #include <dlfcn.h>
+ #include <pthread.h>
++#include <time.h>
+ #include <unistd.h>
+ 
+ #include "ntstatus.h"
+@@ -1961,6 +1962,47 @@ static void win32u_vkDestroySwapchainKHR( VkDevice client_device, VkSwapchainKHR
      free( swapchain );
  }
  
@@ -13,12 +21,19 @@ index 0e03ec3..ac507bf 100644
 +#define ACQUIRE_SLICE_NS 1000000000ull
 +#define ACQUIRE_STALL_NS 10000000000ull
 +
++static uint64_t monotonic_ns(void)
++{
++    struct timespec ts;
++    clock_gettime( CLOCK_MONOTONIC, &ts );
++    return (uint64_t)ts.tv_sec * 1000000000 + ts.tv_nsec;
++}
++
 +/* info: vkAcquireNextImage2KHR's parameters, or NULL for vkAcquireNextImageKHR's */
 +static VkResult acquire_with_stall_check( struct vulkan_device *device, VkAcquireNextImageInfoKHR *info,
 +                                          VkSwapchainKHR swapchain, uint64_t timeout, VkSemaphore semaphore,
 +                                          VkFence fence, uint32_t *image_index )
 +{
-+    uint64_t waited = 0, slice = timeout == UINT64_MAX ? ACQUIRE_SLICE_NS : timeout;
++    uint64_t start = monotonic_ns(), waited, slice = timeout == UINT64_MAX ? ACQUIRE_SLICE_NS : timeout;
 +    VkResult res;
 +
 +    for (;;)
@@ -32,7 +47,8 @@ index 0e03ec3..ac507bf 100644
 +        else res = device->p_vkAcquireNextImageKHR( device->host.device, swapchain, slice, semaphore, fence, image_index );
 +
 +        if (res != VK_TIMEOUT || timeout != UINT64_MAX) return res;
-+        if ((waited += slice) < ACQUIRE_STALL_NS) continue;
++        /* the time actually waited: a driver may give up on a slice early */
++        if ((waited = monotonic_ns() - start) < ACQUIRE_STALL_NS) continue;
 +        ERR( "no swapchain image after %llu s, reporting the swapchain out of date\n",
 +             (unsigned long long)(waited / 1000000000) );
 +        return VK_ERROR_OUT_OF_DATE_KHR;
@@ -42,7 +58,7 @@ index 0e03ec3..ac507bf 100644
  static VkResult win32u_vkAcquireNextImage2KHR( VkDevice client_device, const VkAcquireNextImageInfoKHR *acquire_info,
                                                 uint32_t *image_index )
  {
-@@ -1976,7 +2009,7 @@ static VkResult win32u_vkAcquireNextImage2KHR( VkDevice client_device, const VkA
+@@ -1976,7 +2018,7 @@ static VkResult win32u_vkAcquireNextImage2KHR( VkDevice client_device, const VkA
      acquire_info_host.swapchain = swapchain->obj.host.swapchain;
      acquire_info_host.semaphore = semaphore ? semaphore->host.semaphore : 0;
      acquire_info_host.fence = fence ? fence->host.fence : 0;
@@ -51,7 +67,7 @@ index 0e03ec3..ac507bf 100644
  
      if (!res && get_surface_rect( surface->hwnd, &client_rect, get_dpi_for_window( surface->hwnd ) ) &&
          !extents_equals( &swapchain->extents, &client_rect ))
-@@ -2000,9 +2033,9 @@ static VkResult win32u_vkAcquireNextImageKHR( VkDevice client_device, VkSwapchai
+@@ -2000,9 +2042,9 @@ static VkResult win32u_vkAcquireNextImageKHR( VkDevice client_device, VkSwapchai
      RECT client_rect;
      VkResult res;
  
