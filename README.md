@@ -175,6 +175,9 @@ too. The Flatpak keeps Rhino and its Windows environments in
   `rhino-linux --stop`.
 - **Cloud Zoo sign-in doesn't come back to Rhino**: start Rhino with
   `rhino-linux --fresh`.
+- **No printers in Rhino's Print dialog**: printing goes through CUPS. Install
+  your distribution's CUPS client library (`libcups2`, `cups-libs`), and `cups-pdf`
+  for a "print to PDF" printer.
 - **Viewports freeze for a few seconds on NVIDIA**: a driver fault (`Xid 109` in
   `journalctl -k`); NVIDIA's own OpenGL recovers from it, Zink doesn't, which is why
   Zink isn't the default.

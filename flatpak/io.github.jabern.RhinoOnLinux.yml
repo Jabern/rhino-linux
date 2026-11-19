@@ -12,6 +12,7 @@ finish-args:
   - --socket=x11           # Wine's X11 driver (XWayland on Wayland desktops)
   - --socket=wayland       # the setup app itself
   - --socket=pulseaudio
+  - --socket=cups          # printers (Rhino's Print dialog)
   - --device=all           # GPU for Vulkan/DXVK, and /dev/ntsync
   - --filesystem=home      # open and save models anywhere, as in Windows
   - --filesystem=host      # other drives too (/mnt, /media, /run/media): models opened from there

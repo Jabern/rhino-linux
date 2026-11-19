@@ -74,6 +74,7 @@ jobs:
             libwayland-dev \
             wayland-protocols \
             libxkbcommon-dev \
+            libcups2-dev \
             xz-utils
           echo "=== MinGW Toolchain Versions ==="
           x86_64-w64-mingw32-gcc --version | head -n 1
@@ -163,6 +164,7 @@ jobs:
           grep -q '^#define HAVE_LINUX_NTSYNC_H 1' include/config.h || { echo "::error::ntsync support missing from Wine configuration"; err=1; }
           grep -q '^#define SONAME_LIBX11 ' include/config.h || { echo "::error::X11 support missing from Wine configuration"; err=1; }
           grep -q '^#define SONAME_LIBFREETYPE ' include/config.h || { echo "::error::FreeType font rendering missing from Wine configuration"; err=1; }
+          grep -q '^#define SONAME_LIBCUPS ' include/config.h || { echo "::error::CUPS printing missing from Wine configuration (libcups2-dev)"; err=1; }
 
           # Verify that ICU is enabled in Makefile for both architectures
           if ! grep -q 'dlls/icu/x86_64-windows/icu.dll' Makefile; then
