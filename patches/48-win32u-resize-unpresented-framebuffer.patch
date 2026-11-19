@@ -1,0 +1,33 @@
+diff --git a/dlls/win32u/opengl.c b/dlls/win32u/opengl.c
+index 025045c..e521e68 100644
+--- a/dlls/win32u/opengl.c
++++ b/dlls/win32u/opengl.c
+@@ -671,6 +671,7 @@ struct framebuffer_surface
+     struct opengl_drawable *target;         /* driver drawable to present to */
+     SIZE size;                              /* size of the framebuffer objects */
+     BOOL resize;                            /* resize them once their frame is presented */
++    BOOL presented;                         /* a frame was presented at least once */
+ 
+     LONG gamma_serial;
+     GLuint program;
+@@ -1096,8 +1097,10 @@ static void framebuffer_surface_flush( struct opengl_drawable *drawable, UINT fl
+     else if (flags & GL_FLUSH_UPDATED || (flags & GL_FLUSH_ACTIVATE && surface->resize))
+     {
+         /* resizing discards the contents: when the size changed while the application drew its
+-         * frame, present it first, like a window drawable shows its last frame until the next */
+-        if (flags & GL_FLUSH_ACTIVATE) framebuffer_surface_resize( drawable );
++         * frame, present it first, like a window drawable shows its last frame until the next.
++         * A surface that never presented has no frame on screen, and the application may only
++         * read the pixels back (Rhino printing a viewport to an image): resize it now. */
++        if (flags & GL_FLUSH_ACTIVATE || !surface->presented) framebuffer_surface_resize( drawable );
+         else surface->resize = TRUE;
+     }
+ 
+@@ -1108,6 +1111,7 @@ static void framebuffer_surface_flush( struct opengl_drawable *drawable, UINT fl
+ 
+         if (flags & GL_FLUSH_PRESENT)
+         {
++            surface->presented = TRUE;
+             make_thread_context_current( surface->root_context, surface->target );
+             blit_framebuffer_surface( drawable );
+             opengl_drawable_swap( surface->target );

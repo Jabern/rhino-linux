@@ -335,3 +335,23 @@ Below is the technical breakdown of all 35 patches.
 - **Subsystem**: `dlls/win32u/vulkan.c`
 - **Problem**: DXVK asks for the next swapchain image with no time limit. Rhino froze once with black windows: its UI thread waited for WPF's render thread, which waited for DXVK's present thread, blocked in `vkAcquireNextImageKHR` (NVIDIA driver, Xwayland; no GPU fault). Not reproduced since, in about 310 steps of window changes and a 15-minute soak.
 - **Solution**: an acquire with an infinite timeout waits in 1 s slices; after 10 s without an image, it returns `VK_ERROR_OUT_OF_DATE_KHR`, which Vulkan applications handle by recreating the swapchain. Checked with an acquire that can never be satisfied (`rhino-linux-testing/vkstall`): out of date after 10 s. In normal use (Rhino with Bella rendering, windows resized, maximized and moved) it never fires.
+
+### Patch 46: Client Window Resizes Reach the X Server First
+- **File**: [`46-x11-sync-client-window-resize.patch`](../patches/46-x11-sync-client-window-resize.patch)
+- **Subsystem**: `dlls/winex11.drv/init.c`
+- **Author**: krolaper ([issue #3](https://github.com/Jabern/rhino-linux/issues/3))
+- **Problem**: Rhino 5 renders its raster print preview and output ("Image File" destination) through a hidden 50x50 window: it resizes it to the bitmap size, draws, and reads the pixels back with `glReadPixels`, without ever swapping buffers. The resize stayed queued on Wine's X connection, and Mesa's GLX driver, which asks the server for the size on its own connection, kept drawing at 50x50: the page was black except a 50x50 px tile.
+- **Solution**: `XSync` after `XConfigureWindow` when a client window changes size. Fixes the preview with GLX (`UseEGL=N`) on Intel/Mesa hardware.
+
+### Patch 47: EGL Surfaces of Windows That Never Swapped Follow Resizes
+- **File**: [`47-x11-egl-recreate-surface-on-resize.patch`](../patches/47-x11-egl-recreate-surface-on-resize.patch)
+- **Subsystem**: `dlls/winex11.drv/opengl.c`
+- **Author**: krolaper, limited to windows that never swapped by Jabern
+- **Problem**: Mesa's EGL driver only follows the size of a window surface on `eglSwapBuffers`, so with EGL (the default) the same Rhino 5 preview stayed a 50x50 tile.
+- **Solution**: when a flush that isn't a present reports a new size for a surface that never swapped, Wine destroys the `EGLSurface` (a window can only have one), creates a new one, makes the current context current on it again and restores its swap interval. Windows that swapped already follow the size on their next swap and are left alone, so viewports keep their frame while they are resized. Checked on Mesa llvmpipe: 2500 of 31684 pixels valid without it, all with it.
+
+### Patch 48: Framebuffer Surfaces That Never Presented Resize at Once
+- **File**: [`48-win32u-resize-unpresented-framebuffer.patch`](../patches/48-win32u-resize-unpresented-framebuffer.patch)
+- **Subsystem**: `dlls/win32u/opengl.c`
+- **Problem**: windows with an alpha pixel format on EGL render into a framebuffer object (patch 34), which waits for its frame to be presented before following a size change, so a resize during a frame doesn't discard it. A window that never presents (the same Rhino 5 preview) kept its first size for ever. On NVIDIA this was the cause: its EGL driver follows window sizes on its own.
+- **Solution**: a framebuffer surface that never presented a frame has nothing on screen to keep, and resizes as soon as the new size is seen. Surfaces that presented keep waiting for their present. Checked with a Win32 program doing Rhino 5's sequence (NVIDIA EGL and GLX, Mesa llvmpipe EGL, formats with and without alpha, 40 resizes with swaps), and in Rhino 8 (window resizes, `ViewCaptureToFile` at 2400x1600).

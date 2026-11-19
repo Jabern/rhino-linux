@@ -1,0 +1,17 @@
+diff --git a/dlls/winex11.drv/init.c b/dlls/winex11.drv/init.c
+index a4571f7..870cd6d 100644
+--- a/dlls/winex11.drv/init.c
++++ b/dlls/winex11.drv/init.c
+@@ -462,6 +462,12 @@ static void client_surface_update_geometry( HWND hwnd, struct x11drv_client_surf
+      * until the application presents one at the new size */
+     if (mask & (CWWidth | CWHeight))
+     {
++        /* The GL driver learns about the new size from the X server, on its own connection.
++         * An application can resize a window, render to it and read the pixels back without
++         * ever swapping buffers (e.g. printing a viewport to an image through a hidden window):
++         * make sure the server has applied the resize before this call returns, or the driver
++         * keeps rendering into a buffer of the old size and only that part of the image is valid. */
++        XSync( gdi_display, False );
+         surface->has_frame = FALSE;
+         InterlockedExchange( &surface->client.presented, FALSE );
+     }

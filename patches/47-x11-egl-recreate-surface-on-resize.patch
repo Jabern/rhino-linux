@@ -1,0 +1,60 @@
+diff --git a/dlls/winex11.drv/opengl.c b/dlls/winex11.drv/opengl.c
+index d36a42e..c6a4a82 100644
+--- a/dlls/winex11.drv/opengl.c
++++ b/dlls/winex11.drv/opengl.c
+@@ -195,6 +195,7 @@ struct gl_drawable
+ {
+     struct opengl_drawable         base;
+     GLXDrawable                    drawable;     /* drawable for rendering with GL */
++    BOOL                           swapped;      /* EGL buffers were swapped at least once */
+ };
+ 
+ static struct gl_drawable *impl_from_opengl_drawable( struct opengl_drawable *base )
+@@ -1544,9 +1545,39 @@ static void x11drv_egl_surface_destroy( struct opengl_drawable *base )
+ 
+ static void x11drv_egl_surface_flush( struct opengl_drawable *base, UINT flags )
+ {
++    struct x11drv_client_surface *client = impl_from_client_surface( base->client );
++    struct gl_drawable *gl = impl_from_opengl_drawable( base );
++
+     TRACE( "%s\n", debugstr_opengl_drawable( base ) );
+ 
+     if (flags & GL_FLUSH_INTERVAL) funcs->p_eglSwapInterval( egl->display, abs( base->interval ) );
++
++    /* The driver only follows the size of a window surface when its buffers are swapped. An
++     * application can resize a window, draw into it and read the pixels back without ever
++     * swapping (Rhino printing a viewport to an image through a hidden window): re-create the
++     * surface of a window that never swapped, or only its old size would hold valid pixels.
++     * A window can only have one EGL surface, so destroy the old one first. */
++    if ((flags & GL_FLUSH_UPDATED) && !(flags & GL_FLUSH_PRESENT) && !gl->swapped)
++    {
++        EGLSurface old = base->surface, draw = funcs->p_eglGetCurrentSurface( EGL_DRAW ),
++                   read = funcs->p_eglGetCurrentSurface( EGL_READ );
++        EGLContext ctx = funcs->p_eglGetCurrentContext();
++
++        if (old && ctx != EGL_NO_CONTEXT && (draw == old || read == old))
++        {
++            funcs->p_eglMakeCurrent( egl->display, EGL_NO_SURFACE, EGL_NO_SURFACE, EGL_NO_CONTEXT );
++            funcs->p_eglDestroySurface( egl->display, old );
++            if (!(base->surface = funcs->p_eglCreateWindowSurface( egl->display, egl_config_for_format( base->format ),
++                                                                   (void *)client->window, NULL )))
++                ERR( "Failed to re-create the EGL surface, error %#x\n", funcs->p_eglGetError() );
++            funcs->p_eglMakeCurrent( egl->display, draw == old ? base->surface : draw,
++                                     read == old ? base->surface : read, ctx );
++            /* a new surface starts with the default swap interval */
++            if (draw == old) funcs->p_eglSwapInterval( egl->display, abs( base->interval ) );
++            TRACE( "re-created the EGL surface for %s\n", debugstr_opengl_drawable( base ) );
++        }
++    }
++
+     if (!(flags & GL_FLUSH_PRESENT)) return;
+ 
+     /* before presenting: the damage event of the frame may be handled before this returns */
+@@ -1571,6 +1602,7 @@ static BOOL x11drv_egl_surface_swap( struct opengl_drawable *base )
+     InterlockedExchange( &base->client->presented, TRUE );
+ 
+     funcs->p_eglSwapBuffers( egl->display, gl->base.surface );
++    gl->swapped = TRUE;
+ 
+     if (InterlockedCompareExchange( &base->client->offscreen, 0, 0 ))
+         XFlush( gdi_display );
