@@ -585,22 +585,31 @@ class Window(Adw.ApplicationWindow):
             self.finish(False, str(e), on_done)
             return
         stream = Gio.DataInputStream.new(self.proc.get_stdout_pipe())
-        self.read_line(stream, on_done)
+        # The script's end is its exit, not the end of its output: Wine's background
+        # processes (wineserver, services, whatever the Rhino installer leaves running)
+        # inherit the pipe and can keep it open until the session ends, and the setup
+        # then never finished in the app although it was done.
+        self.reading = Gio.Cancellable()
+        self.proc.wait_check_async(None, lambda p, r: self.on_exit(p, r, on_done))
+        self.read_line(stream)
 
-    def read_line(self, stream, on_done):
+    def read_line(self, stream):
+        cancellable = self.reading
+
         def got(src, res):
             # A line that is not UTF-8 (a Windows installer's output) raises; it is
             # consumed, so go on reading: stopping filled the pipe and hung the setup.
             try:
                 line, _ = src.read_line_finish_utf8(res)
-            except GLib.Error:
+            except GLib.Error as e:
+                if e.matches(Gio.io_error_quark(), Gio.IOErrorEnum.CANCELLED):
+                    return
                 line = "\ufffd"
             if line is None:
-                self.proc.wait_check_async(None, lambda p, r: self.on_exit(p, r, on_done))
                 return
             self.on_output(ANSI.sub("", line))
-            self.read_line(stream, on_done)
-        stream.read_line_async(GLib.PRIORITY_DEFAULT, None, got)
+            self.read_line(stream)
+        stream.read_line_async(GLib.PRIORITY_DEFAULT, cancellable, got)
 
     def on_output(self, line):
         self.log_lines.append(line)
@@ -618,8 +627,15 @@ class Window(Adw.ApplicationWindow):
         except GLib.Error:
             ok = False
         self.exit_status = proc.get_exit_status() if proc.get_if_exited() else -1
-        tail = "\n".join(l for l in self.log_lines[-8:] if l.strip())
-        self.finish(ok, tail, on_done)
+
+        # the script's last lines may still be in the pipe: give them a moment, then stop
+        # reading (the pipe may never close, see run_script)
+        def done():
+            self.reading.cancel()
+            tail = "\n".join(l for l in self.log_lines[-8:] if l.strip())
+            self.finish(ok, tail, on_done)
+            return False
+        GLib.timeout_add(500, done)
 
     def finish(self, ok, detail, on_done):
         self.proc = None
