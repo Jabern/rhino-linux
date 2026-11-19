@@ -208,12 +208,10 @@ Rhino's calls to the Linux driver. In Rhino, pick the GPU under
 
 ### AMD GPUs
 
-Rhino Render and Raytraced also render on AMD GPUs (Vega and newer) through HIP. Most
-systems don't come with AMD's HIP runtime (SteamOS doesn't, nor does the Flatpak), so
-for a GPU Rhino's Cycles supports, Rhino on Linux downloads it, about 45 MB, from
-AMD's ROCm packages; the runtime brings a [bridge](gpu-bridges/README.md) that passes
-Cycles' calls to it. Then pick the GPU under **Tools › Options › Rhino Render**, in
-**Device settings**.
+Rhino Render and Raytraced also render on AMD GPUs (Vega and newer) through HIP. For a
+GPU Rhino's Cycles supports, Rhino on Linux downloads AMD's HIP runtime, about 45 MB;
+the runtime brings a [bridge](gpu-bridges/README.md) that passes Cycles' calls to it.
+Then pick the GPU under **Tools › Options › Rhino Render**, in **Device settings**.
 
 - It's on by default when the setup finds such a GPU; turn it off with the app's
   **Render with the AMD GPU** switch, or `RHINO_HIP=0`.
