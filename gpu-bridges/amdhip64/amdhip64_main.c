@@ -2,6 +2,7 @@
  * amdhip64_6.dll for Wine: loading ROCm's libamdhip64.so, and path conversion.
  */
 #include <dlfcn.h>
+#include <stdio.h>
 #include <stdlib.h>
 
 #include "amdhip64_private.h"
@@ -17,6 +18,31 @@ static const char * const libraries[] =
 };
 
 static void *hip_lib;
+
+/* The HIP runtime rhino-linux downloads (gpu-bridges/hip-runtime), when RHINO_HIP_RUNTIME
+ * names its folder: tried before the system's ROCm, as the version checked with Cycles.
+ * Its lib/fallback has the libraries the Flatpak runtime lacks; loaded only when the
+ * system has none, so the graphics drivers keep their own libdrm_amdgpu. */
+static void *load_bundled_hip(void)
+{
+    static const char * const deps[] = { "libnuma.so.1", "libdrm_amdgpu.so.1" };
+    const char *dir = getenv( "RHINO_HIP_RUNTIME" );
+    char path[4096];
+    unsigned int i;
+    void *lib;
+
+    if (!dir || !*dir) return NULL;
+    for (i = 0; i < ARRAY_SIZE(deps); i++)
+    {
+        if (dlopen( deps[i], RTLD_NOW | RTLD_GLOBAL )) continue;
+        snprintf( path, sizeof(path), "%s/lib/fallback/%s", dir, deps[i] );
+        if (!dlopen( path, RTLD_NOW | RTLD_GLOBAL )) WINE_WARN( "%s: %s\n", path, dlerror() );
+    }
+    snprintf( path, sizeof(path), "%s/lib/libamdhip64.so.6", dir );
+    if (!(lib = dlopen( path, RTLD_NOW ))) WINE_WARN( "%s: %s\n", path, dlerror() );
+    else WINE_TRACE( "using %s\n", path );
+    return lib;
+}
 
 char * CDECL wine_get_unix_file_name( const WCHAR *dos );
 
@@ -48,6 +74,7 @@ BOOL WINAPI DllMain( HINSTANCE instance, DWORD reason, void *reserved )
     switch (reason)
     {
     case DLL_PROCESS_ATTACH:
+        hip_lib = load_bundled_hip();
         for (i = 0; i < ARRAY_SIZE(libraries) && !hip_lib; i++)
             hip_lib = dlopen( libraries[i], RTLD_NOW );
         /* Without ROCm, still load, and report no device: every call fails, hipInit with

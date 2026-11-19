@@ -767,11 +767,26 @@ elif [ -e /proc/driver/nvidia/version ] && have_libcuda; then
     esac
 fi
 
+# Rhino Render and Raytraced on AMD GPUs: the amdhip64 bridge in the runtime needs a HIP
+# runtime, which most systems lack (SteamOS, the Flatpak); rhino-hip.sh downloads AMD's for
+# a GPU Rhino's Cycles has kernels for. RHINO_HIP=0 (the app's switch) skips it.
+# shellcheck source=rhino-hip.sh
+. "$SCRIPT_DIR/rhino-hip.sh"
+if [ "${RHINO_HIP:-$(rhino_config_get RHINO_HIP)}" = 0 ]; then
+    echo "      AMD GPU rendering skipped (RHINO_HIP=0)"
+elif hip_target="$(hip_supported_gpu "$TARGET_PREFIX")"; then
+    if hip_runtime_install; then
+        echo "      [PASS] GPU rendering on the AMD $hip_target with HIP $HIP_RUNTIME_VERSION"
+    else
+        echo "      [WARN] Could not fetch the HIP runtime; Rhino starts will try again"
+    fi
+fi
+
 # 5. Shared Companion Assets & Config Persistence
 echo "[5/6] Deploying companion assets & saving launcher configuration..."
 DATA_DIR="${XDG_DATA_HOME:-$HOME/.local/share}/rhino-linux"
 mkdir -p "$DATA_DIR"
-for asset in "msedgewebview2-stub.exe" "dxvk-rhino.conf" "windows-fonts.reg" "windows-colors-dark.reg" "windows-colors-light.reg" "rhino9-256.png" "rhino9-icon.png" "rhino-versions.sh"; do
+for asset in "msedgewebview2-stub.exe" "dxvk-rhino.conf" "windows-fonts.reg" "windows-colors-dark.reg" "windows-colors-light.reg" "rhino9-256.png" "rhino9-icon.png" "rhino-versions.sh" "rhino-hip.sh"; do
     if [ -f "$SCRIPT_DIR/$asset" ]; then
         cp -f "$SCRIPT_DIR/$asset" "$DATA_DIR/$asset"
     fi

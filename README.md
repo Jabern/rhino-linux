@@ -206,27 +206,35 @@ Rhino's calls to the Linux driver. In Rhino, pick the GPU under
   while the driver compiles its kernels; later starts are quick.
 - To skip this step, run the setup with `RHINO_NO_CUDA=1`.
 
-### AMD and Intel GPUs (testing)
+### AMD GPUs
 
-Rhino's Cycles also renders on AMD GPUs (HIP, Vega and newer) and Intel Arc GPUs
-(oneAPI). The runtime brings [bridges](gpu-bridges/README.md) that pass these calls to
-the Linux drivers. They need the vendor's compute runtime installed on your system
-(not yet in the Flatpak):
+Rhino Render and Raytraced also render on AMD GPUs (Vega and newer) through HIP. Most
+systems don't come with AMD's HIP runtime (SteamOS doesn't, nor does the Flatpak), so
+for a GPU Rhino's Cycles supports, Rhino on Linux downloads it, about 45 MB, from
+AMD's ROCm packages; the runtime brings a [bridge](gpu-bridges/README.md) that passes
+Cycles' calls to it. Then pick the GPU under **Tools › Options › Rhino Render**, in
+**Device settings**.
 
-- **AMD**: ROCm's HIP runtime (`libamdhip64.so.6` or `.7`), for example the `rocm-hip-runtime`
-  or `hip-runtime-amd` package.
-- **Intel Arc**: the Level Zero loader and Intel's compute runtime (`level-zero-loader`
-  and `intel-compute-runtime`, or `libze1` and `intel-opencl-icd` on Ubuntu).
+- It's on by default when the setup finds such a GPU; turn it off with the app's
+  **Render with the AMD GPU** switch, or `RHINO_HIP=0`.
+- Needs the kernel's `amdgpu` driver with GPU compute (`/dev/kfd`), as every recent
+  distribution has.
+- New and not yet confirmed on real cards: if you try it, please tell us how it went
+  in the [forum thread](https://discourse.mcneel.com/t/rhino-on-linux/8820) or an
+  [issue](https://github.com/Jabern/rhino-linux/issues), with your card and distribution.
 
-They are new and not yet confirmed on real cards, so turn them on yourself:
+### Intel Arc GPUs (testing)
+
+Rhino's Cycles also renders on Intel Arc GPUs (oneAPI), through a bridge that needs
+the Level Zero loader and Intel's compute runtime on your system (`level-zero-loader`
+and `intel-compute-runtime`, or `libze1` and `intel-opencl-icd` on Ubuntu; not in
+the Flatpak). It is new and not yet confirmed on real cards, so turn it on yourself:
 
 ```bash
 RHINO_GPU_BRIDGES=1 rhino-linux
 ```
 
-Then pick the GPU under **Tools › Options › Rhino Render**, in **Device settings**. If you try it, please tell us how it
-went in the [forum thread](https://discourse.mcneel.com/t/rhino-on-linux/8820) or an
-[issue](https://github.com/Jabern/rhino-linux/issues), with your card and distribution.
+Then pick the GPU under **Tools › Options › Rhino Render**, in **Device settings**.
 
 ## What the patches do
 

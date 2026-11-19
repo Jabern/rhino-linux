@@ -1,0 +1,62 @@
+name: Publish HIP Runtime
+
+# AMD's HIP runtime for Cycles on AMD GPUs (gpu-bridges/hip-runtime), as the release
+# tools/rhino-hip.sh downloads from. The archive must have the checksum rhino-hip.sh pins:
+# make-hip-runtime.sh builds the same bytes anywhere.
+
+on:
+  workflow_dispatch:
+    inputs:
+      publish:
+        description: 'Publish the archive as the hip-runtime-<version> release'
+        required: false
+        type: boolean
+        default: false
+  push:
+    branches:
+      - main
+    paths:
+      - 'gpu-bridges/hip-runtime/**'
+      - 'tools/rhino-hip.sh'
+      - '.github/workflows/hip-runtime.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  hip-runtime:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+
+      - name: Build the archive
+        run: gpu-bridges/hip-runtime/make-hip-runtime.sh out
+
+      - name: Check it against the pinned checksum
+        id: pin
+        run: |
+          version="$(sed -n 's/^HIP_RUNTIME_VERSION="\(.*\)"$/\1/p' tools/rhino-hip.sh)"
+          sha="$(sed -n 's/^HIP_RUNTIME_SHA256="\(.*\)"$/\1/p' tools/rhino-hip.sh)"
+          archive="out/rocm-hip-runtime-$version-x86_64.tar.xz"
+          echo "$sha  $archive" | sha256sum -c || {
+            echo "::error::$archive does not have the checksum tools/rhino-hip.sh pins ($sha)"
+            exit 1
+          }
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "archive=$archive" >> "$GITHUB_OUTPUT"
+
+      - name: Publish
+        if: inputs.publish == true
+        uses: softprops/action-gh-release@v3
+        with:
+          tag_name: hip-runtime-${{ steps.pin.outputs.version }}
+          name: HIP runtime ${{ steps.pin.outputs.version }} (Cycles on AMD GPUs)
+          body: |
+            AMD's ROCm ${{ steps.pin.outputs.version }} HIP runtime for Rhino's Cycles on AMD GPUs, as Rhino on Linux downloads it for a GPU Cycles supports. Built by `gpu-bridges/hip-runtime/make-hip-runtime.sh` from AMD's and Ubuntu's packages; their licenses are in `licenses/`.
+          files: ${{ steps.pin.outputs.archive }}
+          # never the "latest" release, which the app's update check reads
+          prerelease: true
+          make_latest: false
+          # tools/rhino-hip.sh pins this archive's checksum
+          overwrite_files: false

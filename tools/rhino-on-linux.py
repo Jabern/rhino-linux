@@ -208,6 +208,16 @@ def graphics_cards():
     return [tuple(line.split("\t", 1)) for line in out.splitlines() if "\t" in line]
 
 
+def amd_render_gpu(versions):
+    """(gfx target, runtime installed) for an AMD GPU the Cycles of an installed Rhino has
+    kernels for (tools/rhino-hip.sh status), or None."""
+    for v in versions:
+        out = run_quiet("bash", os.path.join(REPO_DIR, "tools", "rhino-hip.sh"), "status", prefix_for(v)).split()
+        if len(out) == 2:
+            return out[0], out[1] == "installed"
+    return None
+
+
 def menu_files(version):
     """The menu entry and icon rhino_write_menu_entries writes for a version, in
     the host's ~/.local/share (HOME is the real home folder in the Flatpak)."""
@@ -670,6 +680,9 @@ class Window(Adw.ApplicationWindow):
         if len(gpus) > 1:
             box.append(self.graphics_group(gpus))
         box.append(self.opengl_group())
+        amd_gpu = amd_render_gpu(versions)
+        if amd_gpu:
+            box.append(self.amd_render_group(*amd_gpu))
         box.append(self.scale_group())
 
         plugins = Adw.PreferencesGroup(title="Plug-ins",
@@ -752,6 +765,42 @@ class Window(Adw.ApplicationWindow):
             write_config("RHINO_GL", key)
             self.toast(f"Rhino uses {'Zink' if key else 'the native driver'} from its next start")
         row.connect("notify::selected", changed)
+        group.add(row)
+        return group
+
+    def amd_render_group(self, target, installed):
+        """Rhino Render and Raytraced on an AMD GPU Cycles supports: the HIP runtime
+        tools/rhino-hip.sh downloads; on unless RHINO_HIP=0."""
+        group = Adw.PreferencesGroup(title="AMD GPU rendering",
+                                     description="Rhino Render and the Raytraced display mode render on the GPU "
+                                                 "with AMD's HIP runtime, which this app downloads (about 45 MB).")
+        row = Adw.SwitchRow(title="Render with the AMD GPU")
+        row.set_active(read_config().get("RHINO_HIP") != "0")
+
+        def subtitle(state):
+            row.set_subtitle({"installed": f"Ready ({target})", "missing": f"{target}: downloads at Rhino's next start",
+                              "downloading": "Downloading…", "off": "Rhino renders on the CPU"}[state])
+        subtitle(("installed" if installed else "missing") if row.get_active() else "off")
+
+        def downloaded(_result, error):
+            if error:
+                subtitle("missing")
+                self.toast("Could not download the HIP runtime; Rhino tries again at its next start")
+            else:
+                subtitle("installed")
+                self.toast("Rhino renders on the AMD GPU from its next start")
+
+        def changed(switch, _param):
+            if switch.get_active():
+                write_config("RHINO_HIP", "")
+                subtitle("downloading")
+                in_thread(lambda: subprocess.run(["bash", os.path.join(REPO_DIR, "tools", "rhino-hip.sh"), "install"],
+                                                 check=True, capture_output=True, timeout=1800), downloaded)
+            else:
+                write_config("RHINO_HIP", "0")
+                subtitle("off")
+                self.toast("Rhino renders on the CPU from its next start")
+        row.connect("notify::active", changed)
         group.add(row)
         return group
 

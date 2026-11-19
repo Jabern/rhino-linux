@@ -76,7 +76,8 @@ while [ $# -gt 0 ]; do
             echo "  WINE             Path to Wine binary"
             echo "  RHINO_SCALE      Interface size in percent (100-200), as Windows' display scaling"
             echo "  RHINO_COLORS     dark or light: Windows' colors (menus, message boxes, file dialogs)"
-            echo "  RHINO_GPU_BRIDGES  1: Cycles on AMD (HIP) and Intel (oneAPI) GPUs, for testing"
+            echo "  RHINO_HIP        0: no Cycles on AMD GPUs (on by default for a GPU Cycles supports)"
+            echo "  RHINO_GPU_BRIDGES  1: Cycles on Intel GPUs (oneAPI), for testing"
             exit 0
             ;;
         *) break ;;
@@ -472,43 +473,68 @@ if grep -qF '"Tahoma"=str(7):"M\0S\0G\0O\0' "$WINEPREFIX/system.reg" 2>/dev/null
 fi
 
 # Cycles on AMD (HIP) and Intel (oneAPI) GPUs, through the bridges in the runtime's
-# lib/wine/rhino-bridges (gpu-bridges/README.md): each one only with its GPU and its Linux
-# runtime (ROCm's libamdhip64, the Level Zero loader). Testing: opt in with
-# RHINO_GPU_BRIDGES=1 until testers have confirmed them on real cards.
+# lib/wine/rhino-bridges (gpu-bridges/README.md), each one only with its GPU.
+# AMD: on for a GPU Rhino's Cycles has kernels for, with the HIP runtime rhino-hip.sh
+# downloads (or the system's ROCm); RHINO_HIP=0 turns it off. Intel: still for testing,
+# with RHINO_GPU_BRIDGES=1 and the system's Level Zero loader.
+bridges_dir="${RHINO_BRIDGES_DIR:-$(dirname "$WINE_BIN")/../lib/wine/rhino-bridges}"
+has_gpu() { grep -x "$1" /sys/class/drm/card*/device/vendor >/dev/null 2>&1; }
+# grep reads all of ldconfig's output: with -q, ldconfig dies of SIGPIPE
+has_lib() { ldconfig -p 2>/dev/null | grep -E "^[[:space:]]+${1//./\\.} " >/dev/null || [ -e "/opt/rocm/lib/$1" ]; }
+bridges=""
+RHINO_HIP="${RHINO_HIP-$(rhino_config_get RHINO_HIP)}"
+hip_lib="$(find_asset rhino-hip.sh)"
+if [ "$RHINO_HIP" != 0 ] && [ -n "$hip_lib" ] && [ -e "$bridges_dir/amdhip64_6.dll.so" ]; then
+    # shellcheck source=rhino-hip.sh
+    . "$hip_lib"
+    if hip_target="$(hip_supported_gpu "$WINEPREFIX")"; then
+        if ! hip_runtime_installed; then
+            echo "rhino-linux: downloading AMD's HIP runtime for Cycles on $hip_target (about 45 MB)" >&2
+            hip_runtime_install || echo "rhino-linux: could not download the HIP runtime; Cycles uses the CPU" >&2
+        fi
+        if hip_runtime_installed; then
+            export RHINO_HIP_RUNTIME="$HIP_RUNTIME_DIR"
+            bridges="amdhip64_6"
+        elif has_lib libamdhip64.so.6 || has_lib libamdhip64.so.7; then
+            bridges="amdhip64_6"
+        fi
+    fi
+fi
 RHINO_GPU_BRIDGES="${RHINO_GPU_BRIDGES-$(rhino_config_get RHINO_GPU_BRIDGES)}"
-if [ "$RHINO_GPU_BRIDGES" = 1 ]; then
-    bridges_dir="${RHINO_BRIDGES_DIR:-$(dirname "$WINE_BIN")/../lib/wine/rhino-bridges}"
-    has_gpu() { grep -x "$1" /sys/class/drm/card*/device/vendor >/dev/null 2>&1; }
-    # grep reads all of ldconfig's output: with -q, ldconfig dies of SIGPIPE
-    has_lib() { ldconfig -p 2>/dev/null | grep -E "^[[:space:]]+${1//./\\.} " >/dev/null || [ -e "/opt/rocm/lib/$1" ]; }
-    bridges=""
-    if has_gpu 0x1002 && { has_lib libamdhip64.so.6 || has_lib libamdhip64.so.7; } &&
-       [ -e "$bridges_dir/amdhip64_6.dll.so" ]; then
-        bridges="amdhip64_6"
-    fi
-    if has_gpu 0x8086 && has_lib libze_loader.so.1 && [ -e "$bridges_dir/ze_loader.dll.so" ]; then
-        bridges="${bridges:+$bridges }ze_loader"   # instead of the ze_loader.dll Rhino ships
-    fi
-    if [ -n "$bridges" ]; then
-        export WINEDLLPATH="$bridges_dir${WINEDLLPATH:+:$WINEDLLPATH}"
-        for dll in $bridges; do WINEDLLOVERRIDES="$dll=b;$WINEDLLOVERRIDES"; done
-        export WINEDLLOVERRIDES
-        echo "rhino-linux: Cycles GPU bridges: $bridges" >&2
-    fi
-    # RhinoCycles keeps a GPU type off for good once its initialisation threw
-    # (disable_hip, disable_oneapi: Utilities._GpuSentinels), and remembers finding no
-    # GPU; give them a fresh look when the bridges change, or a new runtime brings new
-    # builds of them (a sentinel the previous build caused would keep its fix away).
-    marker="$WINEPREFIX/.rhino-linux-gpu-bridges"
-    bridges_state="$bridges"
-    for dll in $bridges; do
-        bridges_state="$bridges_state $(stat -c '%s-%Y' "$bridges_dir/$dll.dll.so" 2>/dev/null)"
-    done
-    if [ "$bridges_state" != "$(cat "$marker" 2>/dev/null)" ]; then
-        find "$WINEPREFIX/drive_c/users" -path '*/McNeel/Rhinoceros/*/Plug-ins/RhinoCycles*' \
-            \( -name gpu_absent -o -name disable_hip -o -name disable_oneapi \) -type f -delete 2>/dev/null || true
-        printf '%s' "$bridges_state" > "$marker" 2>/dev/null || true
-    fi
+if [ "$RHINO_GPU_BRIDGES" = 1 ] && has_gpu 0x8086 && has_lib libze_loader.so.1 && [ -e "$bridges_dir/ze_loader.dll.so" ]; then
+    bridges="${bridges:+$bridges }ze_loader"   # instead of the ze_loader.dll Rhino ships
+fi
+# Wine only looks for a builtin library in WINEDLLPATH when a file of that name was
+# found (Rhino's own ze_loader.dll), so amdhip64_6.dll, which Rhino doesn't ship, goes into
+# system32 as nvidia-libs' nvcuda.dll does; it leaves again when AMD rendering is off.
+hip_dll="$WINEPREFIX/drive_c/windows/system32/amdhip64_6.dll"
+case " $bridges " in
+    *" amdhip64_6 "*)
+        cmp -s "$bridges_dir/amdhip64_6.dll.so" "$hip_dll" ||
+            cp -f "$bridges_dir/amdhip64_6.dll.so" "$hip_dll" 2>/dev/null || true ;;
+    *)
+        # ours is an ELF file (AMD's own would be a PE one)
+        if [ "$(head -c 4 "$hip_dll" 2>/dev/null)" = $'\x7fELF' ]; then rm -f "$hip_dll"; fi ;;
+esac
+if [ -n "$bridges" ]; then
+    export WINEDLLPATH="$bridges_dir${WINEDLLPATH:+:$WINEDLLPATH}"
+    for dll in $bridges; do WINEDLLOVERRIDES="$dll=b;$WINEDLLOVERRIDES"; done
+    export WINEDLLOVERRIDES
+    echo "rhino-linux: Cycles GPU bridges: $bridges" >&2
+fi
+# RhinoCycles keeps a GPU type off for good once its initialisation threw
+# (disable_hip, disable_oneapi: Utilities._GpuSentinels), and remembers finding no
+# GPU; give them a fresh look when the bridges change, or a new runtime brings new
+# builds of them (a sentinel the previous build caused would keep its fix away).
+marker="$WINEPREFIX/.rhino-linux-gpu-bridges"
+bridges_state="$bridges${RHINO_HIP_RUNTIME:+ hip-$HIP_RUNTIME_VERSION}"
+for dll in $bridges; do
+    bridges_state="$bridges_state $(stat -c '%s-%Y' "$bridges_dir/$dll.dll.so" 2>/dev/null)"
+done
+if [ "$bridges_state" != "$(cat "$marker" 2>/dev/null)" ]; then
+    find "$WINEPREFIX/drive_c/users" -path '*/McNeel/Rhinoceros/*/Plug-ins/RhinoCycles*' \
+        \( -name gpu_absent -o -name disable_hip -o -name disable_oneapi \) -type f -delete 2>/dev/null || true
+    printf '%s' "$bridges_state" > "$marker" 2>/dev/null || true
 fi
 
 # UI scale, chosen in the app or with RHINO_SCALE=<percent> as in Windows' display
