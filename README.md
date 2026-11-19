@@ -107,6 +107,12 @@ starting Rhino from a terminal, for example `RHINO_SCALE=150 rhino-linux`.
 | **Graphics card** | with several graphics cards, the one Rhino draws with (it can hang at its start screen on the wrong one) | `RHINO_GPU=4080` (part of its name) |
 | **OpenGL** | your driver's own OpenGL, or [Zink](https://docs.mesa3d.org/drivers/zink.html) (Mesa's OpenGL on Vulkan) for the viewports of Rhino 7 and 8 | `RHINO_GL=zink` |
 
+With **Dark** Windows colors, the file names and tabs of Rhino's start screen are
+hard to read: Rhino draws that window white and its text in the Windows colors,
+which are dark-mode colors here (on Windows, dark mode leaves them light). A
+known limitation; the rest of the window works as usual. Switch dark mode on or
+off with this setting rather than winecfg's *WinRT theme*.
+
 Settings apply from Rhino's next start. Turn on *Expert mode* in the app's menu
 for the Wine side of things: winecfg, the registry editor, the DXVK settings and
 the prefix folder.
