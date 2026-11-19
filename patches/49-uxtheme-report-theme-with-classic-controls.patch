@@ -1,0 +1,97 @@
+diff --git a/dlls/uxtheme/system.c b/dlls/uxtheme/system.c
+index b5f659d..84d920e 100644
+--- a/dlls/uxtheme/system.c
++++ b/dlls/uxtheme/system.c
+@@ -51,6 +51,8 @@ static ATOM atSubAppName;
+ static ATOM atSubIdList;
+ 
+ static BOOL bThemeActive = FALSE;
++/* Wine: tell applications the Aero theme is active while controls are drawn classic */
++static BOOL report_theme;
+ static WCHAR szCurrentTheme[MAX_PATH];
+ static WCHAR szCurrentColor[64];
+ static WCHAR szCurrentSize[64];
+@@ -130,6 +132,41 @@ static DWORD query_reg_path (HKEY hKey, LPCWSTR lpszValue,
+   return dwRet;
+ }
+ 
++/* HKCU\Software\Wine\AppDefaults\<app.exe>\Uxtheme or HKCU\Software\Wine\Uxtheme,
++ * "ReportTheme": with the theme off (classic controls drawn with the system colors), still
++ * report the Aero theme to applications that choose their own look from it. WPF picks its
++ * Aero2 styles from IsThemeActive and GetCurrentThemeName; with "classic" the styles some
++ * controls fall back to hardcode light colors that clash with dark system colors. */
++static BOOL get_report_value( const WCHAR *path, BOOL *ret )
++{
++    WCHAR value[8];
++    DWORD size = sizeof(value);
++    HKEY key;
++    LSTATUS status;
++
++    if (RegOpenKeyExW( HKEY_CURRENT_USER, path, 0, KEY_QUERY_VALUE, &key )) return FALSE;
++    status = RegQueryValueExW( key, L"ReportTheme", NULL, NULL, (BYTE *)value, &size );
++    RegCloseKey( key );
++    if (status || !size) return FALSE;
++    *ret = value[0] == 'y' || value[0] == 'Y' || value[0] == '1';
++    return TRUE;
++}
++
++static BOOL get_report_theme(void)
++{
++    WCHAR module[MAX_PATH], path[MAX_PATH + 64], *name;
++    BOOL ret = FALSE;
++
++    if (GetModuleFileNameW( NULL, module, ARRAY_SIZE(module) ))
++    {
++        name = wcsrchr( module, '\\' );
++        swprintf( path, ARRAY_SIZE(path), L"Software\\Wine\\AppDefaults\\%s\\Uxtheme", name ? name + 1 : module );
++        if (get_report_value( path, &ret )) return ret;
++    }
++    get_report_value( L"Software\\Wine\\Uxtheme", &ret );
++    return ret;
++}
++
+ /***********************************************************************
+  *      UXTHEME_LoadTheme
+  *
+@@ -167,6 +204,8 @@ static void UXTHEME_LoadTheme(void)
+     else
+         TRACE("Failed to open theme registry key\n");
+ 
++    report_theme = get_report_theme();
++
+     if(bThemeActive) {
+         /* Make sure the theme requested is actually valid */
+         hr = MSSTYLES_OpenThemeFile(szCurrentTheme,
+@@ -530,7 +569,7 @@ void UXTHEME_UninitSystem(void)
+  */
+ BOOL WINAPI IsAppThemed(void)
+ {
+-    return IsThemeActive();
++    return bThemeActive;
+ }
+ 
+ /***********************************************************************
+@@ -540,7 +579,7 @@ BOOL WINAPI IsThemeActive(void)
+ {
+     TRACE("\n");
+     SetLastError(ERROR_SUCCESS);
+-    return bThemeActive;
++    return bThemeActive || report_theme;
+ }
+ 
+ /************************************************************
+@@ -744,6 +783,14 @@ HRESULT WINAPI GetCurrentThemeName(LPWSTR pszThemeFileName, int dwMaxNameChars,
+                                    LPWSTR pszColorBuff, int cchMaxColorChars,
+                                    LPWSTR pszSizeBuff, int cchMaxSizeChars)
+ {
++    if(!bThemeActive && report_theme)
++    {
++        /* the names Windows reports for its Aero theme */
++        if(pszThemeFileName) lstrcpynW(pszThemeFileName, L"C:\\Windows\\resources\\themes\\Aero\\aero.msstyles", dwMaxNameChars);
++        if(pszColorBuff) lstrcpynW(pszColorBuff, L"NormalColor", cchMaxColorChars);
++        if(pszSizeBuff) lstrcpynW(pszSizeBuff, L"NormalSize", cchMaxSizeChars);
++        return S_OK;
++    }
+     if(!bThemeActive)
+         return E_PROP_ID_UNSUPPORTED;
+     if(pszThemeFileName) lstrcpynW(pszThemeFileName, szCurrentTheme, dwMaxNameChars);

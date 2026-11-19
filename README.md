@@ -225,7 +225,7 @@ went in the [forum thread](https://discourse.mcneel.com/t/rhino-on-linux/8820) o
 ## What the patches do
 
 Stock Wine crashes, shows blank panels or misplaces windows with Rhino. This
-project keeps 48 patches for Wine 11.20 (in [`patches/`](patches)), grouped here
+project keeps 49 patches for Wine 11.20 (in [`patches/`](patches)), grouped here
 by what they fix:
 
 - **Stability and speed**: OpenMP loop scheduling, thread pools, CPU affinity,

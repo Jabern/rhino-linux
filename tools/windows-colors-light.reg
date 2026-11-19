@@ -31,3 +31,32 @@ Windows Registry Editor Version 5.00
 "Window"="255 255 255"
 "WindowFrame"="158 158 158"
 "WindowText"="0 0 0"
+
+; The colors Wine's uxtheme restores when a theme is turned off (winecfg's Apply with
+; "(No Theme)"): without them winecfg brings Wine's light colors back.
+[HKEY_CURRENT_USER\Software\Microsoft\Windows\CurrentVersion\ThemeManager\Control Panel\Colors]
+"ActiveBorder"="255 255 255"
+"AppWorkSpace"="128 128 128"
+"ButtonAlternateFace"="255 255 255"
+"ButtonDkShadow"="106 106 106"
+"ButtonFace"="245 245 245"
+"ButtonHilight"="255 255 255"
+"ButtonLight"="227 227 227"
+"ButtonShadow"="166 166 166"
+"ButtonText"="0 0 0"
+"GrayText"="106 106 106"
+"InactiveBorder"="255 255 255"
+"InfoText"="0 0 0"
+"InfoWindow"="255 255 255"
+"Menu"="255 255 255"
+"MenuBar"="255 255 255"
+"MenuText"="0 0 0"
+"Scrollbar"="255 255 255"
+"Window"="255 255 255"
+"WindowFrame"="158 158 158"
+"WindowText"="0 0 0"
+
+; Patch 49: Rhino's WPF panels pick their Windows 10/11 (Aero2) styles, whose number fields
+; follow Rhino's colors, instead of the fallback ones with a white background.
+[HKEY_CURRENT_USER\Software\Wine\AppDefaults\Rhino.exe\Uxtheme]
+"ReportTheme"="N"

@@ -532,8 +532,8 @@ fi
 # Windows stay light unless Windows' own colors are dark. Empty leaves the prefix's own.
 RHINO_COLORS="${RHINO_COLORS-$(rhino_config_get RHINO_COLORS)}"
 case "$RHINO_COLORS" in
-    dark) want_window="43 43 43" ;;
-    light) want_window="255 255 255" ;;
+    dark) want_window="43 43 43" want_report=Y ;;
+    light) want_window="255 255 255" want_report=N ;;
     *) want_window="" ;;
 esac
 colors_reg="$(find_asset "windows-colors-$RHINO_COLORS.reg")"
@@ -541,7 +541,11 @@ if [ -n "$want_window" ] && [ -n "$colors_reg" ]; then
     current_window="$(awk '/^\[Control Panel\\\\Colors\]/ { s = 1; next } /^\[/ { s = 0 }
                            s && /^"Window"=/ { sub(/^"Window"="/, ""); sub(/"$/, ""); print }' \
                       "$WINEPREFIX/user.reg" 2>/dev/null)"
-    if [ "$current_window" != "$want_window" ]; then
+    # ReportTheme came after the colors: prefixes set up before it get the file again
+    current_report="$(awk '/^\[Software\\\\Wine\\\\AppDefaults\\\\Rhino.exe\\\\Uxtheme\]/ { s = 1; next } /^\[/ { s = 0 }
+                           s && /^"ReportTheme"=/ { sub(/^"ReportTheme"="/, ""); sub(/"$/, ""); print }' \
+                      "$WINEPREFIX/user.reg" 2>/dev/null)"
+    if [ "$current_window" != "$want_window" ] || [ "$current_report" != "$want_report" ]; then
         WINEDEBUG=-all "$WINE_BIN" regedit /S "$colors_reg" >/dev/null 2>&1 || true
     fi
 fi

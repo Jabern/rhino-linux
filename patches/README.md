@@ -56,6 +56,7 @@ This directory contains 45 modular topic patches for Wine 11.20 (44 core patches
 | **46** | `46-x11-sync-client-window-resize.patch` | `winex11.drv` | Wine waits for the X server to apply a client window resize, so a GL driver that asks the server for the size (Mesa GLX) draws at the new size when an application resizes a window and reads the pixels back without swapping. By krolaper. |
 | **47** | `47-x11-egl-recreate-surface-on-resize.patch` | `winex11.drv` | EGL: a resized window that never swapped its buffers gets a new `EGLSurface` at its new size (Mesa only follows the size on a swap). Rhino 5's raster print preview ("Image File" destination) is no longer black outside a 50x50 px tile. By krolaper. |
 | **48** | `48-win32u-resize-unpresented-framebuffer.patch` | `win32u` | Same Rhino 5 print preview on NVIDIA and with window formats that have alpha (patch 34): a framebuffer surface that never presented a frame follows a resize at once instead of waiting for its first present. |
+| **49** | `49-uxtheme-report-theme-with-classic-controls.patch` | `uxtheme` | Rhino's dark mode: with `ReportTheme` set for Rhino.exe (the launcher does), WPF is told Windows' Aero theme is active while the controls stay classic with the dark colors, so it loads its Windows 10/11 styles. The number fields of Rhino's WPF panels (Rhino Render's Throttle, Seed, Samples, ...) were white with light text. |
 
 ---
 
