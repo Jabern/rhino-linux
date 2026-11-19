@@ -103,7 +103,7 @@ starting Rhino from a terminal, for example `RHINO_SCALE=150 rhino-linux`.
 | Setting | What it does | Variable |
 |---|---|---|
 | **Interface size** | Rhino's menus, toolbars and panels at 100 to 200 %, as Windows' display scaling, for large or high-resolution screens | `RHINO_SCALE=150` |
-| **Windows colors** | **Dark** makes the menus, message boxes and file dialogs dark too, to go with Rhino's dark mode (Options › Appearance) | `RHINO_COLORS=dark` |
+| **Windows colors** | **Dark** makes the menus, message boxes and file dialogs dark too, to go with Rhino's dark mode (Tools › Options › Appearance › Colors: Dark) | `RHINO_COLORS=dark` |
 | **Graphics card** | with several graphics cards, the one Rhino draws with (it can hang at its start screen on the wrong one) | `RHINO_GPU=4080` (part of its name) |
 | **OpenGL** | your driver's own OpenGL, or [Zink](https://docs.mesa3d.org/drivers/zink.html) (Mesa's OpenGL on Vulkan) for the viewports of Rhino 7 and 8 | `RHINO_GL=zink` |
 
@@ -198,7 +198,7 @@ Rhino Render and the Raytraced display mode (Cycles) render on NVIDIA GPUs with
 CUDA or OptiX. When the setup finds the NVIDIA driver, it adds `nvcuda` and
 `nvoptix` from [nvidia-libs](https://github.com/SveSop/nvidia-libs), which pass
 Rhino's calls to the Linux driver. In Rhino, pick the GPU under
-**Options › Cycles**.
+**Tools › Options › Rhino Render**, in **Device settings**.
 
 - Needs the proprietary NVIDIA driver; the Flatpak gets CUDA and OptiX from its
   NVIDIA driver extension.
@@ -224,7 +224,7 @@ They are new and not yet confirmed on real cards, so turn them on yourself:
 RHINO_GPU_BRIDGES=1 rhino-linux
 ```
 
-Then pick the GPU under **Options › Cycles**. If you try it, please tell us how it
+Then pick the GPU under **Tools › Options › Rhino Render**, in **Device settings**. If you try it, please tell us how it
 went in the [forum thread](https://discourse.mcneel.com/t/rhino-on-linux/8820) or an
 [issue](https://github.com/Jabern/rhino-linux/issues), with your card and distribution.
 
