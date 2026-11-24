@@ -826,7 +826,7 @@ class Window(Adw.ApplicationWindow):
         group = Adw.PreferencesGroup(title="Display",
                                      description="Make Rhino's menus, toolbars and panels larger, "
                                                  "as with Windows' display scaling.")
-        choices = ["100", "125", "150", "175", "200"]
+        choices = ["100", "125", "150", "175", "200", "250", "300"]
         row = Adw.ComboRow(title="Interface size", model=Gtk.StringList.new([c + " %" for c in choices]))
         current = read_config().get("RHINO_SCALE", "100")
         row.set_selected(choices.index(current) if current in choices else 0)

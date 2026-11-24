@@ -74,7 +74,7 @@ while [ $# -gt 0 ]; do
             echo "  RHINO_VERSION    Same as --version"
             echo "  RHINO_PREFIX     Use this Wine prefix instead"
             echo "  WINE             Path to Wine binary"
-            echo "  RHINO_SCALE      Interface size in percent (100-200), as Windows' display scaling"
+            echo "  RHINO_SCALE      Interface size in percent (100-300), as Windows' display scaling"
             echo "  RHINO_COLORS     dark or light: Windows' colors (menus, message boxes, file dialogs)"
             echo "  RHINO_HIP        0: no Cycles on AMD GPUs (on by default for a GPU Cycles supports)"
             echo "  RHINO_GPU_BRIDGES  1: Cycles on Intel GPUs (oneAPI), for testing"
@@ -540,14 +540,16 @@ fi
 # UI scale, chosen in the app or with RHINO_SCALE=<percent> as in Windows' display
 # settings: Wine's screen resolution, 96 dpi at 100 %. Empty leaves the prefix's own.
 RHINO_SCALE="${RHINO_SCALE-$(rhino_config_get RHINO_SCALE)}"
-if [[ "$RHINO_SCALE" =~ ^[0-9]+$ ]] && [ "$RHINO_SCALE" -ge 100 ] && [ "$RHINO_SCALE" -le 200 ]; then
+if [[ "$RHINO_SCALE" =~ ^[0-9]+$ ]] && [ "$RHINO_SCALE" -ge 100 ] && [ "$RHINO_SCALE" -le 300 ]; then
     dpi=$(( (96 * RHINO_SCALE + 50) / 100 ))
     # the value in hex, converted by bash: strtonum is GNU awk's (Debian and Ubuntu have mawk)
     current_dpi="$(awk '/^\[Control Panel\\\\Desktop\]/ { s = 1; next } /^\[/ { s = 0 }
                         s && /^"LogPixels"=dword:/ { sub(/.*dword:/, ""); sub(/\r$/, ""); print }' \
                    "$WINEPREFIX/user.reg" 2>/dev/null)"
     [[ "$current_dpi" =~ ^[0-9a-fA-F]+$ ]] && current_dpi=$((16#$current_dpi))
-    if [ "$current_dpi" != "$dpi" ]; then
+    # user.reg is what the prefix's wineserver saved last: while it runs (another Rhino,
+    # or "-k0", signal 0, finds it), its own value may differ, so set it anyway.
+    if [ "$current_dpi" != "$dpi" ] || "$WINESERVER_BIN" -k0 2>/dev/null; then
         WINEDEBUG=-all "$WINE_BIN" reg add 'HKCU\Control Panel\Desktop' /v LogPixels /t REG_DWORD \
             /d "$dpi" /f >/dev/null 2>&1 || true
     fi

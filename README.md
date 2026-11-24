@@ -102,7 +102,7 @@ starting Rhino from a terminal, for example `RHINO_SCALE=150 rhino-linux`.
 
 | Setting | What it does | Variable |
 |---|---|---|
-| **Interface size** | Rhino's menus, toolbars and panels at 100 to 200 %, as Windows' display scaling, for large or high-resolution screens | `RHINO_SCALE=150` |
+| **Interface size** | Rhino's menus, toolbars and panels at 100 to 300 %, as Windows' display scaling, for large or high-resolution screens | `RHINO_SCALE=150` |
 | **Windows colors** | **Dark** makes the menus, message boxes and file dialogs dark too, to go with Rhino's dark mode (Tools › Options › Appearance › Colors: Dark) | `RHINO_COLORS=dark` |
 | **Graphics card** | with several graphics cards, the one Rhino draws with (it can hang at its start screen on the wrong one) | `RHINO_GPU=4080` (part of its name) |
 | **OpenGL** | your driver's own OpenGL, or [Zink](https://docs.mesa3d.org/drivers/zink.html) (Mesa's OpenGL on Vulkan) for the viewports of Rhino 7 and 8 | `RHINO_GL=zink` |
@@ -112,6 +112,11 @@ hard to read: Rhino draws that window white and its text in the Windows colors,
 which are dark-mode colors here (on Windows, dark mode leaves them light). A
 known limitation; the rest of the window works as usual. Switch dark mode on or
 off with this setting rather than winecfg's *WinRT theme*.
+
+Once chosen, the **Interface size** replaces winecfg's *Screen resolution* each
+time Rhino starts. Between 100 and 200 % (most visibly at 175 %), some labels
+show uneven gaps between their letters, such as "Disa ble"; 200 % draws them
+evenly. Another known limitation, of Wine's text at those sizes.
 
 Settings apply from Rhino's next start. Turn on *Expert mode* in the app's menu
 for the Wine side of things: winecfg, the registry editor, the DXVK settings and
