@@ -1,10 +1,10 @@
 # Wine Patches Reference
 
-This repository maintains 35 targeted patches against Wine (tested against Wine 11.20) to run McNeel Rhinoceros 8 and Rhino 9 WIP smoothly on Linux.
+This repository maintains 52 targeted patches against Wine (tested against Wine 11.20) to run McNeel Rhinoceros 8 and Rhino 9 WIP smoothly on Linux.
 
 Stock Wine encounters several critical blockers when running Rhino: multi-threaded OpenMP crashes, blank Cloud Zoo login windows (due to incomplete DirectComposition visual tree hosting), black borders around toolbars and menus, startup template screen dismissal, viewport rendering glitches upon maximizing, and multi-monitor coordinate bugs.
 
-Below is the technical breakdown of all 35 patches.
+Below is the technical breakdown of all 52 patches.
 
 ---
 
@@ -361,3 +361,23 @@ Below is the technical breakdown of all 35 patches.
 - **Subsystem**: `dlls/uxtheme/system.c`
 - **Problem**: Wine has no dark visual style, so Rhino's dark mode turns the theme off and uses classic controls with dark system colors (`tools/windows-colors-dark.reg`). WPF then loads its classic styles. Eto draws Rhino's WPF number fields with the Xceed toolkit, which only ships Aero2 styles: it fell back to its generic style, whose background is a fixed white, under Rhino's light text (Rhino Render options, Rendering panel). On Windows 10/11 WPF loads the Aero2 styles, where the field follows the window color Rhino sets. Found by reading the live WPF tree from a Rhino script (`EtoDoubleUpDown`, background `#FFFFFFFF` from its default style).
 - **Solution**: a Wine setting, `ReportTheme` in `HKCU\Software\Wine\AppDefaults\<app.exe>\Uxtheme` (or `HKCU\Software\Wine\Uxtheme`). With it and the theme off, `IsThemeActive` returns TRUE and `GetCurrentThemeName` returns Windows' names for Aero (`aero.msstyles`, `NormalColor`, `NormalSize`), which WPF needs to pick Aero2. `IsAppThemed` and `OpenThemeData` keep following the real theme, so WinForms and the common controls stay classic and dark, as for a Windows application without themed controls. The dark colors file sets it for Rhino.exe only, so winecfg still sees the theme as off. Checked: Options and Document Properties pages and the Properties panel otherwise unchanged.
+
+### Patch 50: Viewports Drawn Whole After Maximizing
+- **File**: [`50-win32u-repaint-after-client-surface-resize.patch`](../patches/50-win32u-repaint-after-client-surface-resize.patch)
+- **Subsystem**: `dlls/win32u/window.c`
+- **Author**: embedk ([issue #3](https://github.com/Jabern/rhino-linux/issues/3))
+- **Problem**: maximizing a viewport (double-click on its title) left the newly shown part black until Rhino drew again for some other reason. The host drawable of a GL or Vulkan client surface usually follows a new size only once a frame was presented, so the frame Rhino draws for the `WM_PAINT` of the resize still has the old size. Seen on AMD (RX 9070, Mesa) and NVIDIA (RTX 3070, proprietary driver, Zink).
+- **Solution**: Wine remembers windows whose client surface changed size, and invalidates them once after their first present at the new size, so Rhino draws one more frame, at the right size. One frame of the old size can still flash. Checked in Rhino 8 on NVIDIA: without the patch three quarters of the maximized Perspective stayed black for over a second, with it the first capture 250 ms later shows the whole viewport.
+
+### Patch 51: Command History Scrolls by Its Rows
+- **File**: [`51-riched20-line-scroll-by-row-height.patch`](../patches/51-riched20-line-scroll-by-row-height.patch)
+- **Subsystem**: `dlls/riched20/editor.c`
+- **Author**: embedk ([issue #3](https://github.com/Jabern/rhino-linux/issues/3))
+- **Problem**: the newest line of Rhino's command history (above the `Command:` prompt) was cut off. Rhino appends its text, then sends `WM_VSCROLL` `SB_BOTTOM` and `SB_LINEUP` to hide the trailing empty line. Wine scrolled one line by the default style's height, which falls back to 24 px when that style was never measured: with 15 px rows that is more than a row.
+- **Solution**: `SB_LINEUP` and `SB_LINEDOWN` scroll by the row at the top of the view, as native rich edit scrolls by whole rows, and the default line height falls back to the first row's height before 24 px. `EM_SCROLL` reports one line for them. Wine's riched20 `editor` tests give the same results with and without it (two `EM_SETUNDOLIMIT` failures either way).
+
+### Patch 52: The Interface Size Applies at Once
+- **File**: [`52-x11-monitor-dpi-follows-process.patch`](../patches/52-x11-monitor-dpi-follows-process.patch)
+- **Subsystem**: `dlls/winex11.drv/display.c`
+- **Problem**: Rhino on Linux's Interface size sets Wine's `LogPixels`, which each process reads when it starts as its system DPI. The X11 driver also gave each monitor a DPI: the system DPI of the process that updated the display cache, which then stayed for the whole session (the cache is in the volatile registry). Rhino's per-monitor aware windows use the monitor's DPI. So after a change, Rhino came up at the old size when the session was started by a process that read the old value (the launcher's own `reg add`: a race), or, with another Rhino of the prefix open, with menus, toolbars and panels at different sizes and parts of the window black ([issue #4](https://github.com/Jabern/rhino-linux/issues/4)).
+- **Solution**: the X11 driver reports its monitors without a DPI (0), which win32u already reads as "the process's system DPI". Each process now sees one DPI, the one it started with, as on Windows after a scale change. Checked in Rhino 8: a start at 100 % right after 200 %, and a second Rhino at 200 % next to one at 100 %, are now laid out at their own size; without the patch the first came up at the previous 150 % and the second mixed sizes.

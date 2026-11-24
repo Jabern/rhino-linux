@@ -1,0 +1,93 @@
+diff --git a/dlls/riched20/editor.c b/dlls/riched20/editor.c
+index 72d25d3..956b874 100644
+--- a/dlls/riched20/editor.c
++++ b/dlls/riched20/editor.c
+@@ -3166,11 +3166,58 @@ static inline int get_default_line_height( ME_TextEditor *editor )
+ 
+     if (editor->pBuffer && editor->pBuffer->pDefaultStyle)
+         height = editor->pBuffer->pDefaultStyle->tm.tmHeight;
++    /* The default style's metrics are only filled in once it has been
++     * selected into a DC, which may never happen if all text uses other
++     * styles.  Prefer the height of the first laid out row over a guess. */
++    if (height <= 0 && editor->pBuffer)
++    {
++        ME_Paragraph *para = editor_first_para( editor );
++        ME_Row *row = para ? para_first_row( para ) : NULL;
++        if (row) height = row->nHeight;
++    }
+     if (height <= 0) height = 24;
+ 
+     return height;
+ }
+ 
++/* Distance for a single SB_LINEUP / SB_LINEDOWN step.  Native rich edit
++ * scrolls by whole rows, so use the row bordering the top of the view rather
++ * than the default font height.  Scrolling up moves the top of the view to
++ * the top of the row just above it; scrolling down moves it to the bottom of
++ * the row currently at the top.  Applications such as Rhino rely on this when
++ * they send SB_BOTTOM followed by SB_LINEUP to hide a trailing empty line. */
++static int get_line_scroll_height( ME_TextEditor *editor, BOOL up )
++{
++    ME_Paragraph *para = editor_first_para( editor );
++    ME_Row *row;
++    int pos = editor->vert_si.nPos;
++    int y = up ? pos - 1 : pos;
++
++    if (up && pos <= 0) return get_default_line_height( editor );
++
++    while (para && para_next( para ))
++    {
++        if (y < para->pt.y + para->nHeight) break;
++        para = para_next( para );
++    }
++
++    for (row = para ? para_first_row( para ) : NULL; row; row = row_next( row ))
++    {
++        int top = para->pt.y + row->pt.y;
++        int bottom = top + row->nHeight;
++
++        if (y < top) break;
++        if (y < bottom)
++        {
++            int amount = up ? pos - top : bottom - pos;
++            if (amount > 0) return amount;
++            break;
++        }
++    }
++
++    return get_default_line_height( editor );
++}
++
+ static inline int calc_wheel_change( int *remain, int amount_per_click )
+ {
+     int change = amount_per_click * (float)*remain / WHEEL_DELTA;
+@@ -4113,10 +4160,10 @@ LRESULT editor_handle_message( ME_TextEditor *editor, UINT msg, WPARAM wParam,
+                     editor->vert_si.nMax - (int)editor->vert_si.nPage, TRUE );
+         break;
+       case SB_LINEUP:
+-        ME_ScrollUp(editor,lineHeight);
++        ME_ScrollUp( editor, get_line_scroll_height( editor, TRUE ) );
+         break;
+       case SB_LINEDOWN:
+-        ME_ScrollDown(editor,lineHeight);
++        ME_ScrollDown( editor, get_line_scroll_height( editor, FALSE ) );
+         break;
+       case SB_PAGEUP:
+         ME_ScrollUp(editor,editor->sizeWindow.cy);
+@@ -4135,7 +4182,15 @@ LRESULT editor_handle_message( ME_TextEditor *editor, UINT msg, WPARAM wParam,
+       }
+     }
+     if (msg == EM_SCROLL)
+-      return 0x00010000 | (((editor->vert_si.nPos - origNPos)/lineHeight) & 0xffff);
++    {
++      int lines;
++
++      if (LOWORD(wParam) == SB_LINEUP || LOWORD(wParam) == SB_LINEDOWN)
++        lines = (editor->vert_si.nPos > origNPos) - (editor->vert_si.nPos < origNPos);
++      else
++        lines = (editor->vert_si.nPos - origNPos) / lineHeight;
++      return 0x00010000 | (lines & 0xffff);
++    }
+     break;
+   }
+   case WM_MOUSEWHEEL:

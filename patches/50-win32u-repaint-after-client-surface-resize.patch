@@ -1,0 +1,101 @@
+diff --git a/dlls/win32u/window.c b/dlls/win32u/window.c
+index f1fde7d..f1e9d9f 100644
+--- a/dlls/win32u/window.c
++++ b/dlls/win32u/window.c
+@@ -333,10 +333,45 @@ static pthread_mutex_t surfaces_lock = PTHREAD_MUTEX_INITIALIZER;
+ static struct list client_surfaces = LIST_INIT( client_surfaces ); /* non-owning used client surfaces */
+ static struct list unused_surfaces = LIST_INIT( unused_surfaces ); /* owning unused client surfaces */
+ 
++/* Windows whose client surface changed size and haven't presented a frame since. The host
++ * drawable usually only follows the new size once a frame has been presented, so the first
++ * frame an application draws after a resize (in response to the WM_PAINT the resize caused)
++ * still has the old size, and the newly exposed part of the window stays black until the
++ * application happens to draw again. Remember such windows, and after that first present ask
++ * for one more frame by invalidating them, as the Windows compositor would show a full frame.
++ * Protected by surfaces_lock. */
++static HWND resized_surface_windows[32];
++
++static void add_resized_surface_window_locked( HWND hwnd )
++{
++    UINT i, free_slot = ARRAY_SIZE(resized_surface_windows);
++
++    for (i = 0; i < ARRAY_SIZE(resized_surface_windows); i++)
++    {
++        if (resized_surface_windows[i] == hwnd) return;
++        if (!resized_surface_windows[i] && free_slot == ARRAY_SIZE(resized_surface_windows)) free_slot = i;
++    }
++    if (free_slot < ARRAY_SIZE(resized_surface_windows)) resized_surface_windows[free_slot] = hwnd;
++}
++
++static BOOL take_resized_surface_window_locked( HWND hwnd )
++{
++    UINT i;
++
++    for (i = 0; i < ARRAY_SIZE(resized_surface_windows); i++)
++    {
++        if (resized_surface_windows[i] != hwnd) continue;
++        resized_surface_windows[i] = NULL;
++        return TRUE;
++    }
++    return FALSE;
++}
++
+ static void client_surface_detach_locked( struct client_surface *surface )
+ {
+     if (!surface->hwnd) return;
+ 
++    take_resized_surface_window_locked( surface->hwnd );
+     list_remove( &surface->entry );
+     surface->funcs->detach( surface );
+     surface->toplevel = NULL;
+@@ -395,6 +430,11 @@ static RECT get_client_surface_rects( HWND toplevel, HWND hwnd, RECT *monitor_re
+     return rect;
+ }
+ 
++static BOOL rect_size_differs( const RECT *a, const RECT *b )
++{
++    return a->right - a->left != b->right - b->left || a->bottom - a->top != b->bottom - b->top;
++}
++
+ static void client_surface_update_locked( struct client_surface *surface )
+ {
+     RECT virtual_rect = surface->virtual_rect, monitor_rect = surface->monitor_rect;
+@@ -407,6 +447,12 @@ static void client_surface_update_locked( struct client_surface *surface )
+            wine_dbgstr_rect( &surface->virtual_rect ), wine_dbgstr_rect( &surface->monitor_rect ) );
+     surface->funcs->update( surface );
+ 
++    if (rect_size_differs( &surface->monitor_rect, &monitor_rect ) && !IsRectEmpty( &monitor_rect ))
++    {
++        TRACE( "%s changed size, repainting after its next present\n", debugstr_client_surface( surface ) );
++        add_resized_surface_window_locked( surface->hwnd );
++    }
++
+     surface->updated = surface->updated || surface->toplevel != toplevel ||
+                        !EqualRect( &surface->virtual_rect, &virtual_rect ) ||
+                        !EqualRect( &surface->monitor_rect, &monitor_rect );
+@@ -467,6 +513,7 @@ void client_surface_release( struct client_surface *surface )
+ 
+ void client_surface_present( struct client_surface *surface )
+ {
++    BOOL repaint = FALSE;
+     HDC hdc = 0;
+     HWND hwnd;
+ 
+@@ -477,8 +524,17 @@ void client_surface_present( struct client_surface *surface )
+         if (surface->offscreen) hdc = NtUserGetDCEx( hwnd, 0, DCX_CACHE | DCX_USESTYLE );
+         surface->funcs->present( surface, hdc );
+         if (hdc) NtUserReleaseDC( hwnd, hdc );
++        repaint = take_resized_surface_window_locked( hwnd );
+     }
+     pthread_mutex_unlock( &surfaces_lock );
++
++    /* the frame just presented was likely drawn before the drawable followed the new size,
++     * see resized_surface_windows; have the application draw one more at the new size */
++    if (repaint)
++    {
++        TRACE( "hwnd %p presented its first frame after a resize, requesting another\n", hwnd );
++        NtUserRedrawWindow( hwnd, NULL, NULL, RDW_INVALIDATE );
++    }
+ }
+ 
+ void client_surface_update( struct client_surface *surface )

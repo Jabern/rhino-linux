@@ -1,0 +1,18 @@
+diff --git a/dlls/winex11.drv/display.c b/dlls/winex11.drv/display.c
+index 5bd999a..1c665c4 100644
+--- a/dlls/winex11.drv/display.c
++++ b/dlls/winex11.drv/display.c
+@@ -415,7 +415,12 @@ UINT X11DRV_UpdateDisplayDevices( const struct gdi_device_manager *device_manage
+             char buffer[32];
+             x11drv_settings_id settings_id;
+             BOOL is_primary = adapters[adapter].state_flags & DISPLAY_DEVICE_PRIMARY_DEVICE;
+-            UINT dpi = NtUserGetSystemDpiForProcess( NULL );
++            /* X11 gives a monitor no DPI of its own: 0 has each process use its system
++             * DPI. The system DPI of the process updating the display cache stayed the
++             * monitors' DPI for the whole session, while each process reads LogPixels
++             * when it starts: after a change, the windows of a per-monitor aware
++             * application mixed both until every process of the prefix had ended. */
++            UINT dpi = 0;
+ 
+             sprintf( buffer, "%04lx", adapters[adapter].id );
+             device_manager->add_source( buffer, adapters[adapter].state_flags, dpi, param );

@@ -1,6 +1,6 @@
 # Wine Patches for Rhinoceros on Linux
 
-This directory contains 45 modular topic patches for Wine 11.20 (44 core patches for X11 / XWayland and 1 optional patch for pure Wayland) to run **McNeel Rhinoceros** on Linux with native performance, hardware-accelerated Direct3D 11 viewports, and Cloud Zoo licensing support.
+This directory contains 52 modular topic patches for Wine 11.20 (51 core patches for X11 / XWayland and 1 optional patch for pure Wayland) to run **McNeel Rhinoceros** on Linux with native performance, hardware-accelerated Direct3D 11 viewports, and Cloud Zoo licensing support.
 
 ---
 
@@ -57,6 +57,9 @@ This directory contains 45 modular topic patches for Wine 11.20 (44 core patches
 | **47** | `47-x11-egl-recreate-surface-on-resize.patch` | `winex11.drv` | EGL: a resized window that never swapped its buffers gets a new `EGLSurface` at its new size (Mesa only follows the size on a swap). Rhino 5's raster print preview ("Image File" destination) is no longer black outside a 50x50 px tile. By krolaper. |
 | **48** | `48-win32u-resize-unpresented-framebuffer.patch` | `win32u` | Same Rhino 5 print preview on NVIDIA and with window formats that have alpha (patch 34): a framebuffer surface that never presented a frame follows a resize at once instead of waiting for its first present. |
 | **49** | `49-uxtheme-report-theme-with-classic-controls.patch` | `uxtheme` | Rhino's dark mode: with `ReportTheme` set for Rhino.exe (the launcher does), WPF is told Windows' Aero theme is active while the controls stay classic with the dark colors, so it loads its Windows 10/11 styles. The number fields of Rhino's WPF panels (Rhino Render's Throttle, Seed, Samples, ...) were white with light text. |
+| **50** | `50-win32u-repaint-after-client-surface-resize.patch` | `win32u` | A window whose GL/Vulkan client surface changed size is invalidated once after its first present at the new size, which the host drawable may not have followed yet: maximizing a viewport (double-click on its title) no longer leaves the newly shown part black until the next redraw. By embedk. |
+| **51** | `51-riched20-line-scroll-by-row-height.patch` | `riched20` | `SB_LINEUP`/`SB_LINEDOWN` scroll a rich edit control by its rows instead of the default style's height, which fell back to 24 px while unmeasured: Rhino's command history (it scrolls to the bottom, then one line up) no longer shows its newest line cut off. By embedk. |
+| **52** | `52-x11-monitor-dpi-follows-process.patch` | `winex11.drv` | Monitors have no DPI of their own under X11, so each process uses its system DPI (`LogPixels` when it starts) for them too. They kept the system DPI of the process that set up the session's display cache: after a change of Rhino on Linux's Interface size, Rhino often came up at the old size, or with menus, toolbars and panels at different sizes and black areas, until every Wine process of the prefix had ended. |
 
 ---
 

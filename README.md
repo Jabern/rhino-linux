@@ -237,7 +237,7 @@ Then pick the GPU under **Tools › Options › Rhino Render**, in **Device sett
 ## What the patches do
 
 Stock Wine crashes, shows blank panels or misplaces windows with Rhino. This
-project keeps 49 patches for Wine 11.20 (in [`patches/`](patches)), grouped here
+project keeps 52 patches for Wine 11.20 (in [`patches/`](patches)), grouped here
 by what they fix:
 
 - **Stability and speed**: OpenMP loop scheduling, thread pools, CPU affinity,
@@ -246,10 +246,10 @@ by what they fix:
   DirectComposition, ECDSA sign-in keys, Session 0 services, HTML dialogs.
 - **Windows and menus**: layered and alpha-blended windows, task dialogs, the
   start screen, popups, focus, maximizing and window placement under KWin,
-  Mutter and Cinnamon.
+  Mutter and Cinnamon, the command history, interface sizes that apply at once.
 - **Viewports**: Vulkan and OpenGL surfaces that redraw on resize without black
-  frames, antialiasing on NVIDIA, smooth frame pacing under Xwayland, raster
-  printing (Rhino 5).
+  frames (also when a viewport is maximized), antialiasing on NVIDIA, smooth
+  frame pacing under Xwayland, raster printing (Rhino 5).
 - **Multi-monitor and Wayland**: monitor offsets, pointer drift, Wayland popups.
 
 [docs/patches.md](docs/patches.md) explains each patch, and
