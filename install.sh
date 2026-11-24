@@ -597,6 +597,25 @@ if [ -n "$RHINO_INSTALLER" ]; then
         timeout 10 "$WINESERVER_BIN" -w 2>/dev/null || true
         # Re-run deployment script to patch greeting & configs
         "${deploy_cmd[@]}"
+        # End the Edge Update service that WebView2's installer starts, and what it runs
+        # from its folder: it never exits (deploy-rhino.sh only keeps it from starting
+        # again), and it kept this setup's wineserver alive. In the Flatpak, Rhino started
+        # from the applications menu, another instance, was then refused by it (patch 32)
+        # until the app was closed. Only this prefix's (Wine starts each process with its
+        # parent's WINEPREFIX), and not "wineserver -k": a Rhino already open in this
+        # prefix keeps running, its WebView2 (Microsoft\EdgeWebView) too.
+        edge_update=()
+        for pid in $(pgrep -u "$UID" -i -f 'Microsoft[\\/]EdgeUpdate[\\/]' 2>/dev/null); do
+            pid_prefix="$(tr '\0' '\n' < "/proc/$pid/environ" 2>/dev/null | sed -n 's/^WINEPREFIX=//p')"
+            if [ -n "$pid_prefix" ] && [ "$pid_prefix" -ef "$TARGET_PREFIX" ]; then
+                edge_update+=("$pid")
+            fi
+        done
+        if [ "${#edge_update[@]}" -gt 0 ]; then
+            echo "Ending Microsoft Edge Update, which the installer left running..."
+            kill "${edge_update[@]}" 2>/dev/null || true
+            timeout 30 "$WINESERVER_BIN" -w 2>/dev/null || true
+        fi
     else
         echo -e "${RED}Error: Installer not found at: $RHINO_INSTALLER${NC}"
     fi
