@@ -147,19 +147,21 @@ dongle, don't work under Wine.
 
 Tested with a SpacePilot Pro by alexander_rollay on the McNeel forum:
 
-1. In Rhino, run `PlugInManager`, click **Install…** and pick
-   `C:\Program Files\Rhino 8\Plug-ins\3dxrhino.rhp` (your Rhino version's folder).
-2. Linux also treats the SpaceMouse as a mouse, so the cursor drifts while you
-   navigate. Find its vendor and product ids with `lsusb | grep -i 3Dconnexion`
-   (for example `046d:c629`), and tell Linux to leave it to Rhino:
+1. Let Rhino read the SpaceMouse. Wine passes it to Rhino through its
+   `/dev/hidraw` device, which only root can open on most systems. Our udev rule
+   gives it to you, and tells Linux not to use it as an ordinary mouse too (the
+   cursor would drift while you navigate). From this folder:
 
    ```bash
-   echo 'ACTION=="add|change", KERNEL=="event*", ATTRS{idVendor}=="046d", ATTRS{idProduct}=="c629", ENV{LIBINPUT_IGNORE_DEVICE}="1"' \
-       | sudo tee /etc/udev/rules.d/99-spacemouse-ignore-mouse.rules
-   sudo udevadm control --reload-rules && sudo udevadm trigger
+   sudo install -m 644 tools/70-rhino-3d-mouse.rules /etc/udev/rules.d/
+   sudo udevadm control --reload && sudo udevadm trigger
    ```
 
-   Then unplug the SpaceMouse and plug it back in.
+   Then unplug the SpaceMouse and plug it back in. With the app, the home page
+   shows this step, with the command to copy, while a SpaceMouse is plugged in
+   that Rhino can't read. FreeCAD and Blender keep working through spacenavd.
+2. In Rhino, run `PlugInManager`, click **Install…** and pick
+   `C:\Program Files\Rhino 8\Plug-ins\3dxrhino.rhp` (your Rhino version's folder).
 
 ## Updating and uninstalling
 

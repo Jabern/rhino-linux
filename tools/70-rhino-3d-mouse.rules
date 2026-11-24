@@ -1,0 +1,16 @@
+# Rhino on Linux: 3Dconnexion 3D mice (SpaceMouse, SpaceNavigator, SpacePilot, ...)
+# Install as /etc/udev/rules.d/70-rhino-3d-mouse.rules, then unplug and plug in the mouse.
+#
+# Wine hands a 3D mouse to Rhino through its /dev/hidraw* device, which only root may
+# open unless a rule allows it: "uaccess" gives it to the user at the computer. The
+# product ids are spacenavd's (also in systemd's hwdb as ID_INPUT_3D_MOUSE).
+SUBSYSTEM=="hidraw", ATTRS{idVendor}=="046d", ATTRS{idProduct}=="c603|c605|c606|c621|c623|c625|c626|c627|c628|c629|c62b|c640", TAG+="uaccess"
+SUBSYSTEM=="hidraw", ATTRS{idVendor}=="256f", ATTRS{idProduct}=="c62e|c62f|c631|c632|c633|c635|c636|c63a|c652", TAG+="uaccess"
+SUBSYSTEM=="hidraw", KERNELS=="0005:256F:C63A.*", TAG+="uaccess"
+
+# Linux also takes a 3D mouse for an ordinary mouse, and the pointer drifts while Rhino
+# navigates with it: libinput leaves it alone. (spacenavd reads it directly, so FreeCAD
+# and Blender keep working.) Not the Universal Receiver, c652: it also pairs CadMice.
+SUBSYSTEM=="input", KERNEL=="event*", ATTRS{idVendor}=="046d", ATTRS{idProduct}=="c603|c605|c606|c621|c623|c625|c626|c627|c628|c629|c62b|c640", ENV{LIBINPUT_IGNORE_DEVICE}="1"
+SUBSYSTEM=="input", KERNEL=="event*", ATTRS{idVendor}=="256f", ATTRS{idProduct}=="c62e|c62f|c631|c632|c633|c635|c636|c63a", ENV{LIBINPUT_IGNORE_DEVICE}="1"
+SUBSYSTEM=="input", KERNEL=="event*", KERNELS=="0005:256F:C63A.*", ENV{LIBINPUT_IGNORE_DEVICE}="1"

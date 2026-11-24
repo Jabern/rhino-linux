@@ -9,6 +9,7 @@ Requires: Python 3, PyGObject, GTK 4, libadwaita 1.5+.
 import json
 import os
 import re
+import shlex
 import shutil
 import subprocess
 import sys
@@ -304,6 +305,46 @@ def check_sync():
 
 
 CHECKS = [check_graphics, check_disk, check_tools, check_sync]
+
+# 3Dconnexion 3D mice, as in tools/70-rhino-3d-mouse.rules
+THREE_D_MICE = {0x046D: {0xC603, 0xC605, 0xC606, 0xC621, 0xC623, 0xC625, 0xC626, 0xC627, 0xC628, 0xC629,
+                         0xC62B, 0xC640},
+                0x256F: {0xC62E, 0xC62F, 0xC631, 0xC632, 0xC633, 0xC635, 0xC636, 0xC63A, 0xC652}}
+THREE_D_MOUSE_RULES = "70-rhino-3d-mouse.rules"
+
+
+def blocked_3d_mice():
+    """Names of the 3D mice plugged in that Rhino can't read: Wine opens them through
+    /dev/hidraw*, which only root may open until a udev rule gives it to the user."""
+    names = []
+    try:
+        entries = sorted(os.listdir("/sys/class/hidraw"))
+    except OSError:
+        return names
+    for entry in entries:
+        try:
+            with open(os.path.join("/sys/class/hidraw", entry, "device/uevent")) as f:
+                info = dict(line.rstrip("\n").split("=", 1) for line in f if "=" in line)
+            _bus, vid, pid = (int(x, 16) for x in info["HID_ID"].split(":"))
+        except (OSError, KeyError, ValueError):
+            continue
+        if pid in THREE_D_MICE.get(vid, ()) and not os.access(os.path.join("/dev", entry), os.R_OK | os.W_OK):
+            names.append(info.get("HID_NAME", "").strip() or "3D mouse")
+    return names
+
+
+def three_d_mouse_command():
+    """The command that installs the udev rule, from a copy in the data folder: the same
+    path outside the Flatpak, where the command runs."""
+    src = os.path.join(REPO_DIR, "tools", THREE_D_MOUSE_RULES)
+    dest = os.path.join(DATA_HOME, "rhino-linux", THREE_D_MOUSE_RULES)
+    try:
+        os.makedirs(os.path.dirname(dest), exist_ok=True)
+        shutil.copyfile(src, dest)
+    except OSError:
+        return None
+    return (f"sudo install -m 644 {shlex.quote(dest)} /etc/udev/rules.d/ && "
+            "sudo udevadm control --reload && sudo udevadm trigger")
 
 
 def app_icon_path():
@@ -712,6 +753,10 @@ class Window(Adw.ApplicationWindow):
 
         if ntsync_state() == "off":
             box.append(self.ntsync_group())
+        mice = blocked_3d_mice()
+        command = three_d_mouse_command() if mice else None
+        if command:
+            box.append(self.three_d_mouse_group(mice[0], command))
 
         group = Adw.PreferencesGroup(title="Maintenance")
         for title, subtitle, icon, cb in (
@@ -905,18 +950,32 @@ class Window(Adw.ApplicationWindow):
             description="Your Linux kernel has ntsync, which speeds up Rhino's multithreaded work, but it is "
                         "switched off. Run this command once in a terminal; it asks for your password and "
                         "stays on after a restart. Then restart Rhino.")
-        row = Adw.ActionRow(title=NTSYNC_COMMAND, title_selectable=True, use_markup=False)
+        group.add(self.command_row(NTSYNC_COMMAND))
+        return group
+
+    def three_d_mouse_group(self, name, command):
+        group = Adw.PreferencesGroup(
+            title="3D mouse",
+            description=f"Rhino can't use your {GLib.markup_escape_text(name)} yet: Linux lets only the administrator read it. "
+                        "Run this command once in a terminal; it asks for your password. Then unplug the "
+                        "mouse and plug it in again. In Rhino, install the 3Dconnexion plug-in once: "
+                        "PlugInManager › Install… › 3dxrhino.rhp in Rhino's Plug-ins folder.")
+        group.add(self.command_row(command))
+        return group
+
+    def command_row(self, command):
+        """A terminal command to read, select or copy."""
+        row = Adw.ActionRow(title=command, title_selectable=True, use_markup=False)
         row.add_css_class("monospace")
         copy = Gtk.Button(icon_name="edit-copy-symbolic", valign=Gtk.Align.CENTER, tooltip_text="Copy")
         copy.add_css_class("flat")
 
         def copied(*_):
-            self.get_clipboard().set(NTSYNC_COMMAND)
+            self.get_clipboard().set(command)
             self.toast("Command copied")
         copy.connect("clicked", copied)
         row.add_suffix(copy)
-        group.add(row)
-        return group
+        return row
 
     def expert_group(self):
         group = Adw.PreferencesGroup(title="Expert", description="Direct access to the Wine environments.")
