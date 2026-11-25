@@ -297,6 +297,7 @@ flatpak run org.flatpak.Builder --user --install --install-deps-from=flathub \
 - Thanks to [eqeka](https://github.com/eqeka) for testing, and for tracking down the straight Grasshopper wires (fixed in Patch 21) and the Grasshopper menu focus issue on Niri.
 - Thanks to [Gavin Metzler](https://github.com/gavinmetzler) for Patch 41 (antialiasing kept after a layout on NVIDIA) and Patch 42 (no focus stealing from the background), and for his testing and bug reports.
 - Thanks to [krolaper](https://github.com/krolaper) for Patches 46 and 47 (Rhino 5 raster print preview) and for finding that the runtime was built without CUPS printing.
+- Thanks to [embedk](https://github.com/embedk) for Patch 50 (maximized viewports drawn whole on NVIDIA) and Patch 51 (the command history scrolls by its rows).
 - Thanks to alexander_rollay for the 3Dconnexion SpaceMouse setup, and to the McNeel forum testers whose reports led to the 1.5 fixes.
 - The ring scene in the picture at the top is one of [Bella's sample scenes](https://bellarender.com/scenes/).
 
