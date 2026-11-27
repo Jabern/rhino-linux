@@ -98,3 +98,18 @@
  
      if(RegCreateKeyExW(HKEY_LOCAL_MACHINE, L"Software\\Microsoft\\Windows\\CurrentVersion\\Shell Extensions\\Blocked", 0, 0, 0,
                  KEY_READ, NULL, &key, NULL) != ERROR_SUCCESS)
+--- a/dlls/combase/usrmarshal.c
++++ b/dlls/combase/usrmarshal.c
+@@ -476,8 +476,10 @@
+ 
+     if (context == WDT_INPROC_CALL)
+     {
+-        *bmp = *(HBITMAP *)buffer;
+-        buffer += sizeof(*bmp);
++        /* HBITMAP_UserMarshal writes the handle as a ULONG: GDI handles are
++         * 32-bit significant, sign-extended on 64-bit. */
++        *bmp = LongToHandle(*(LONG *)buffer);
++        buffer += sizeof(ULONG);
+     }
+     else if (context == WDT_REMOTE_CALL)
+     {
