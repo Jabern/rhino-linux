@@ -1,0 +1,115 @@
+--- a/include/shobjidl.idl
++++ b/include/shobjidl.idl
+@@ -4144,3 +4144,52 @@
+     HRESULT Reset();
+     HRESULT Clone([out] IEnumObjects **ppenum);
+ }
++
++/*****************************************************************************
++ * IExtractImage / IExtractImage2 interfaces
++ */
++cpp_quote("#define IEIFLAG_ASYNC     0x0001")
++cpp_quote("#define IEIFLAG_CACHE     0x0002")
++cpp_quote("#define IEIFLAG_ASPECT    0x0004")
++cpp_quote("#define IEIFLAG_OFFLINE   0x0008")
++cpp_quote("#define IEIFLAG_GLEAM     0x0010")
++cpp_quote("#define IEIFLAG_SCREEN    0x0020")
++cpp_quote("#define IEIFLAG_ORIGSIZE  0x0040")
++cpp_quote("#define IEIFLAG_NOSTAMP   0x0080")
++cpp_quote("#define IEIFLAG_NOBORDER  0x0100")
++cpp_quote("#define IEIFLAG_QUALITY   0x0200")
++cpp_quote("#define IEIFLAG_REFRESH   0x0400")
++
++[
++    object,
++    uuid(bb2e617c-0920-11d1-9a0b-00c04fc2d6c1),
++    pointer_default(unique)
++]
++interface IExtractImage : IUnknown
++{
++    HRESULT GetLocation(
++        [out, size_is(cch)] LPWSTR pszPathBuffer,
++        [in] DWORD cch,
++        [in, out, unique] DWORD *pdwPriority,
++        [in] const SIZE *prgSize,
++        [in] DWORD dwRecClrDepth,
++        [in, out] DWORD *pdwFlags);
++
++    HRESULT Extract(
++        [out] HBITMAP *phBmpThumbnail);
++}
++
++typedef IExtractImage *LPEXTRACTIMAGE;
++
++[
++    object,
++    uuid(953bb1ee-93b4-11d1-98a3-00c04fb687da),
++    pointer_default(unique)
++]
++interface IExtractImage2 : IExtractImage
++{
++    HRESULT GetDateStamp(
++        [out] FILETIME *pDateStamp);
++}
++
++typedef IExtractImage2 *LPEXTRACTIMAGE2;
+--- a/dlls/shell32/shfldr_fs.c
++++ b/dlls/shell32/shfldr_fs.c
+@@ -587,7 +587,8 @@
+ {
+     IPersistFile *persist_file;
+     char extensionA[20];
+-    WCHAR extensionW[20], buf[MAX_PATH];
++    WCHAR extensionW[20], buf[MAX_PATH], iid[39], progid[MAX_PATH];
++    DWORD progid_size = sizeof(progid);
+     DWORD size = sizeof(buf);
+     STRRET path;
+     WCHAR *file;
+@@ -601,14 +602,27 @@
+ 
+     MultiByteToWideChar(CP_ACP, 0, extensionA, -1, extensionW, 20);
+ 
+-    swprintf(buf, ARRAY_SIZE(buf), L".%s\\ShellEx\\{%08x-%04x-%04x-%02x%02x-%02x%02x%02x%02x%02x%02x}",
+-             extensionW, riid->Data1, riid->Data2, riid->Data3,
+-            riid->Data4[0], riid->Data4[1], riid->Data4[2], riid->Data4[3],
+-            riid->Data4[4], riid->Data4[5], riid->Data4[6], riid->Data4[7]);
++    swprintf(iid, ARRAY_SIZE(iid), L"{%08x-%04x-%04x-%02x%02x-%02x%02x%02x%02x%02x%02x}",
++             riid->Data1, riid->Data2, riid->Data3,
++             riid->Data4[0], riid->Data4[1], riid->Data4[2], riid->Data4[3],
++             riid->Data4[4], riid->Data4[5], riid->Data4[6], riid->Data4[7]);
+ 
++    /* Handlers can be registered under the extension or under its ProgID. */
++    swprintf(buf, ARRAY_SIZE(buf), L".%s\\ShellEx\\%s", extensionW, iid);
+     if(RegGetValueW(HKEY_CLASSES_ROOT, buf, NULL, RRF_RT_REG_SZ,
+                 NULL, buf, &size) != ERROR_SUCCESS)
+-        return S_FALSE;
++    {
++        swprintf(buf, ARRAY_SIZE(buf), L".%s", extensionW);
++        if(RegGetValueW(HKEY_CLASSES_ROOT, buf, NULL, RRF_RT_REG_SZ,
++                    NULL, progid, &progid_size) != ERROR_SUCCESS || !progid[0])
++            return S_FALSE;
++
++        swprintf(buf, ARRAY_SIZE(buf), L"%s\\ShellEx\\%s", progid, iid);
++        size = sizeof(buf);
++        if(RegGetValueW(HKEY_CLASSES_ROOT, buf, NULL, RRF_RT_REG_SZ,
++                    NULL, buf, &size) != ERROR_SUCCESS)
++            return S_FALSE;
++    }
+ 
+     if(RegCreateKeyExW(HKEY_LOCAL_MACHINE, L"Software\\Microsoft\\Windows\\CurrentVersion\\Shell Extensions\\Blocked", 0, 0, 0,
+                 KEY_READ, NULL, &key, NULL) != ERROR_SUCCESS)
+--- a/dlls/combase/usrmarshal.c
++++ b/dlls/combase/usrmarshal.c
+@@ -476,8 +476,10 @@
+ 
+     if (context == WDT_INPROC_CALL)
+     {
+-        *bmp = *(HBITMAP *)buffer;
+-        buffer += sizeof(*bmp);
++        /* HBITMAP_UserMarshal writes the handle as a ULONG: GDI handles are
++         * 32-bit significant, sign-extended on 64-bit. */
++        *bmp = LongToHandle(*(LONG *)buffer);
++        buffer += sizeof(ULONG);
+     }
+     else if (context == WDT_REMOTE_CALL)
+     {

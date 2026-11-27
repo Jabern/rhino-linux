@@ -162,6 +162,9 @@ else
     echo "[1/6] Existing prefix detected at $TARGET_PREFIX."
 fi
 
+# Register shell proxy/stubs (patch 53: IExtractImage for Libraries thumbnails)
+"$WINE_BIN" regsvr32 /s actxprxy.dll
+
 # wineboot only installs the 32-bit Gecko, but Rhino is 64-bit: its HTML views
 # (RhinoScript's Rhino.HtmlBox) need the 64-bit one. Also fixes older prefixes.
 GECKO64_MSI="${XDG_CACHE_HOME:-$HOME/.cache}/wine/wine-gecko-2.47.4-x86_64.msi"
